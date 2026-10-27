@@ -184,13 +184,24 @@ describe("product import", () => {
       inventoryQuantities: [{ locationId: "gid://shopify/Location/1", name: "available", quantity: 5 }],
       inventoryItem: { tracked: true, sku: "T-S" },
     });
-    // Variant Inventory Qty goes to the first active location.
-    expect(input.variants[1].inventoryQuantities).toEqual([{ locationId: "gid://shopify/Location/1", name: "available", quantity: 3 }]);
+    // Variant Inventory Qty is a cross-location total: ignored in a 2-location store.
+    expect(input.variants[1].inventoryQuantities).toBeUndefined();
     expect(input.files).toEqual([
       { originalSource: "https://img/a.jpg", alt: undefined, contentType: "IMAGE" },
       { originalSource: "https://img/b.jpg", alt: "back", contentType: "IMAGE" },
     ]);
     expect(m.ops()).toContain("Publish");
+  });
+
+  it("applies Variant Inventory Qty in a single-location store", async () => {
+    const m = mockGql({
+      ImportProductByHandle: () => ({ productByIdentifier: null }),
+      Locations: () => ({ locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main", isActive: true }], pageInfo: { hasNextPage: false } } }),
+      ImportProductSet: () => ({ productSet: ok({ product: { id: "gid://shopify/Product/5", handle: "x", variants: { nodes: [] } } }) }),
+    });
+    await importProduct(ctxFor(m.gql), [{ Handle: "x", Title: "X", "Variant Inventory Qty": "4" }], "NEW");
+    const v = m.calls.find((c) => c.op === "ImportProductSet")!.vars.input.variants[0];
+    expect(v.inventoryQuantities).toEqual([{ locationId: "gid://shopify/Location/1", name: "available", quantity: 4 }]);
   });
 
   it("fails NEW when the handle exists and UPDATE when missing", async () => {

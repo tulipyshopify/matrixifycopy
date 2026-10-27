@@ -626,14 +626,24 @@ interface InventoryWork {
   spec: VariantSpec;
 }
 
-async function defaultLocationId(ctx: ImportContext): Promise<string> {
+/**
+ * Location used by "Variant Inventory Qty" / "Variant Inventory Adjust" when no
+ * per-location column is given. Only defined for single-location stores: the
+ * exported quantity is a total across locations, so writing it into one
+ * location of a multi-location store would corrupt stock levels.
+ */
+async function singleLocationId(ctx: ImportContext): Promise<string | null> {
   const active = (await getLocations(ctx.gql, ctx.cache)).filter((l) => l.isActive);
-  if (!active.length) throw new ImportError("No active locations for inventory");
-  if (active.length > 1 && !ctx.cache.has("warnedQty")) {
+  if (active.length === 1) return active[0].id;
+  if (!ctx.cache.has("warnedQty")) {
     ctx.cache.set("warnedQty", true);
-    ctx.log(`Variant Inventory Qty applied to "${active[0].name}". Use "Inventory Available: <Location>" columns for other locations.`);
+    ctx.log(
+      active.length
+        ? `Variant Inventory Qty/Adjust ignored: this store has ${active.length} locations. Use "Inventory Available: <Location>" columns instead.`
+        : "Variant Inventory Qty/Adjust ignored: no active locations.",
+    );
   }
-  return active[0].id;
+  return null;
 }
 
 async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
@@ -646,13 +656,16 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
       targets.push({ locationId: loc.id, quantity: inv.quantity });
     }
     if (!w.spec.inventory.length && w.spec.totalQty !== undefined) {
-      targets.push({ locationId: await defaultLocationId(ctx), quantity: w.spec.totalQty });
+      const locationId = await singleLocationId(ctx);
+      if (locationId) targets.push({ locationId, quantity: w.spec.totalQty });
     }
     const locs = targets.map((t) => t.locationId);
     if (w.spec.adjust) {
-      const locationId = locs[0] ?? (await defaultLocationId(ctx));
-      changes.push({ inventoryItemId: w.inventoryItemId, locationId, delta: w.spec.adjust, changeFromQuantity: null });
-      locs.push(locationId);
+      const locationId = locs[0] ?? (await singleLocationId(ctx));
+      if (locationId) {
+        changes.push({ inventoryItemId: w.inventoryItemId, locationId, delta: w.spec.adjust, changeFromQuantity: null });
+        locs.push(locationId);
+      }
     }
     for (const locationId of new Set(locs)) {
       if (w.activeLocations.has(locationId)) continue;
@@ -723,7 +736,8 @@ async function createProduct(
       q.push({ locationId: (await locationByName(ctx.gql, ctx.cache, inv.locationName)).id, name: "available", quantity: inv.quantity });
     }
     if (!v.inventory.length && v.totalQty !== undefined) {
-      q.push({ locationId: await defaultLocationId(ctx), name: "available", quantity: v.totalQty });
+      const locationId = await singleLocationId(ctx);
+      if (locationId) q.push({ locationId, name: "available", quantity: v.totalQty });
     }
     if (q.length) {
       input.variants[i].inventoryQuantities = q;
@@ -956,7 +970,8 @@ async function updateProduct(
         });
       }
       if (!spec.inventory.length && spec.totalQty !== undefined) {
-        inventoryQuantities.push({ locationId: await defaultLocationId(ctx), availableQuantity: spec.totalQty });
+        const locationId = await singleLocationId(ctx);
+        if (locationId) inventoryQuantities.push({ locationId, availableQuantity: spec.totalQty });
       }
       inputs.push({
         ...spec.input,
