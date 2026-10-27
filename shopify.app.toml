@@ -3,7 +3,9 @@ client_id = ""
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+# write_* scopes include read access. read_all_orders and read_shopify_payments_payouts
+# need Shopify's approval for public apps; drop scopes for sheets you don't use.
+scopes = "write_products,write_inventory,read_locations,write_publications,write_customers,write_orders,read_all_orders,write_draft_orders,write_discounts,read_shopify_payments_payouts,write_content,write_online_store_pages,write_online_store_navigation,write_files,write_metaobjects,read_metaobject_definitions"
 
 [webhooks]
 api_version = "2026-10"

@@ -3,6 +3,10 @@ import { productsEntity } from "./products";
 import { customCollectionsEntity, smartCollectionsEntity } from "./collections";
 import { customersEntity } from "./customers";
 import { companiesEntity } from "./companies";
+import { ordersEntity } from "./orders";
+import { draftOrdersEntity } from "./draft_orders";
+import { discountsEntity } from "./discounts";
+import { payoutsEntity } from "./payouts";
 import { pagesEntity } from "./pages";
 import { blogPostsEntity } from "./blog_posts";
 import { redirectsEntity } from "./redirects";
@@ -18,6 +22,10 @@ export const ENTITIES: Entity[] = [
   customCollectionsEntity,
   customersEntity,
   companiesEntity,
+  discountsEntity,
+  draftOrdersEntity,
+  ordersEntity,
+  payoutsEntity,
   filesEntity,
   metaobjectsEntity,
   pagesEntity,

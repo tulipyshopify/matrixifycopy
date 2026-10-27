@@ -1,0 +1,549 @@
+import type { Command, Entity, ExportContext, Gql, ImportContext, ItemResult, Row } from "../core/types";
+import { ImportError } from "../core/types";
+import {
+  assertNoUserErrors,
+  boolCell,
+  buildSearchQuery,
+  cell,
+  gidToId,
+  gqlString,
+  joinTags,
+  metafieldsFromRow,
+  metafieldsToRow,
+  parseBool,
+  parseNumber,
+  parseSubCommand,
+  splitTags,
+  str,
+  toGid,
+} from "../core/util";
+import { addTags, removeTags, writeMetafields } from "../core/lookups";
+import {
+  ADDRESS_SELECTION,
+  addressColumns,
+  addressFromRow,
+  addressToRow,
+  bagAmount,
+  enumCell,
+  enumToCell,
+  LINE_COLUMNS,
+  lineToRow,
+  moneyBagInput,
+  parseLines,
+  parseMoney,
+  rowCurrency,
+  variantIdBySku,
+} from "./order_common";
+
+/**
+ * Orders. One line item per row: order fields on the top row, ID and Name on
+ * every row so rows can be sorted/filtered and still group correctly. Order
+ * transactions share the rows (transaction N sits on row N next to line N).
+ *
+ * Import creates orders with orderCreate (store migrations). Existing orders
+ * can only have their editable fields changed (email, phone, note, tags,
+ * shipping address, metafields): editing line items requires the order
+ * editing flow (orderEditBegin/...Commit) and is out of scope.
+ */
+
+// --- Columns --------------------------------------------------------------------
+
+const ORDER_COLUMNS = [
+  "ID",
+  "Name",
+  "Command",
+  "Email",
+  "Phone",
+  "Created At",
+  "Updated At",
+  "Processed At",
+  "Cancelled At",
+  "Cancel Reason",
+  "Closed At",
+  "Currency",
+  "Financial Status",
+  "Fulfillment Status",
+  "Subtotal",
+  "Total Discounts",
+  "Total Shipping",
+  "Total Tax",
+  "Total Price",
+  "Total Refunded",
+  "Tags",
+  "Tags Command",
+  "Note",
+  "Source",
+  "Customer: ID",
+  "Customer: Email",
+  "Customer: First Name",
+  "Customer: Last Name",
+  "Discount Codes",
+  "Shipping Line: Title",
+  "Shipping Line: Code",
+  "Shipping Line: Price",
+  "Send Receipt",
+  "Send Fulfillment Receipt",
+  "Inventory Behaviour",
+  "Row #",
+  "Top Row",
+];
+
+const ORDER_LINE_COLUMNS = [...LINE_COLUMNS, "Line: Fulfillable Quantity"];
+
+const TRANSACTION_COLUMNS = [
+  "Transaction: ID",
+  "Transaction: Kind",
+  "Transaction: Gateway",
+  "Transaction: Status",
+  "Transaction: Amount",
+  "Transaction: Processed At",
+];
+
+const TRANSACTION_KINDS = ["AUTHORIZATION", "CAPTURE", "CHANGE", "EMV_AUTHORIZATION", "REFUND", "SALE", "SUGGESTED_REFUND", "VOID"];
+const TRANSACTION_STATUSES = ["AWAITING_RESPONSE", "ERROR", "FAILURE", "PENDING", "SUCCESS", "UNKNOWN"];
+const FINANCIAL_STATUSES = ["AUTHORIZED", "EXPIRED", "PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED", "PENDING", "REFUNDED", "VOIDED"];
+const INVENTORY_BEHAVIOURS = ["BYPASS", "DECREMENT_IGNORING_POLICY", "DECREMENT_OBEYING_POLICY"];
+
+/** Export display fulfillment status -> OrderCreateFulfillmentStatus (null = unfulfilled). */
+const FULFILLMENT_STATUS_IN: Record<string, string | null> = {
+  FULFILLED: "FULFILLED",
+  PARTIAL: "PARTIAL",
+  PARTIALLY_FULFILLED: "PARTIAL",
+  RESTOCKED: "RESTOCKED",
+  UNFULFILLED: null,
+  OPEN: null,
+  "": null,
+};
+
+// --- Export -------------------------------------------------------------------------
+
+const MONEY = "{ shopMoney { amount } }";
+
+export function ordersBulkQuery(search: string, groups: Set<string>): string {
+  const args = search ? `(query: ${gqlString(search)})` : "";
+  const metafields = `metafields { edges { node { id namespace key type value } } }`;
+  const transactions = `transactions { id kind gateway status processedAt amountSet { shopMoney { amount currencyCode } } }`;
+  const lineItems = `lineItems { edges { node {
+      id title variantTitle sku quantity unfulfilledQuantity vendor requiresShipping taxable
+      originalUnitPriceSet ${MONEY}
+      totalDiscountSet ${MONEY}
+      variant { id }
+      product { id }
+  } } }`;
+  return `{
+    orders${args} { edges { node {
+      id name email phone createdAt updatedAt processedAt cancelledAt cancelReason closedAt currencyCode
+      displayFinancialStatus displayFulfillmentStatus tags note sourceName discountCodes
+      subtotalPriceSet ${MONEY}
+      totalDiscountsSet ${MONEY}
+      totalShippingPriceSet ${MONEY}
+      totalTaxSet ${MONEY}
+      totalPriceSet ${MONEY}
+      totalRefundedSet ${MONEY}
+      customer { id firstName lastName defaultEmailAddress { emailAddress } }
+      billingAddress { ${ADDRESS_SELECTION} }
+      shippingAddress { ${ADDRESS_SELECTION} }
+      shippingLine { title code originalPriceSet ${MONEY} }
+      ${groups.has("transactions") ? transactions : ""}
+      ${groups.has("metafields") ? metafields : ""}
+      ${groups.has("line_items") ? lineItems : ""}
+    } } }
+  }`;
+}
+
+export function orderToRows(o: any, groups: Set<string>): Row[] {
+  const lines: any[] = o.lineItems ?? [];
+  const transactions: any[] = o.transactions ?? [];
+  const count = Math.max(1, lines.length, transactions.length);
+  const rows: Row[] = [];
+  for (let i = 0; i < count; i++) {
+    const row: Row = { ID: gidToId(o.id), Name: o.name ?? "", "Row #": String(i + 1), "Top Row": boolCell(i === 0) };
+    if (i === 0) {
+      Object.assign(row, {
+        Command: "MERGE",
+        Email: o.email ?? "",
+        Phone: o.phone ?? "",
+        "Created At": o.createdAt ?? "",
+        "Updated At": o.updatedAt ?? "",
+        "Processed At": o.processedAt ?? "",
+        "Cancelled At": o.cancelledAt ?? "",
+        "Cancel Reason": enumToCell(o.cancelReason),
+        "Closed At": o.closedAt ?? "",
+        Currency: o.currencyCode ?? "",
+        "Financial Status": enumToCell(o.displayFinancialStatus),
+        "Fulfillment Status": enumToCell(o.displayFulfillmentStatus),
+        Subtotal: bagAmount(o.subtotalPriceSet),
+        "Total Discounts": bagAmount(o.totalDiscountsSet),
+        "Total Shipping": bagAmount(o.totalShippingPriceSet),
+        "Total Tax": bagAmount(o.totalTaxSet),
+        "Total Price": bagAmount(o.totalPriceSet),
+        "Total Refunded": bagAmount(o.totalRefundedSet),
+        Tags: joinTags(o.tags),
+        "Tags Command": "REPLACE",
+        Note: o.note ?? "",
+        Source: o.sourceName ?? "",
+        "Customer: ID": gidToId(o.customer?.id),
+        "Customer: Email": o.customer?.defaultEmailAddress?.emailAddress ?? "",
+        "Customer: First Name": o.customer?.firstName ?? "",
+        "Customer: Last Name": o.customer?.lastName ?? "",
+        "Discount Codes": (o.discountCodes ?? []).join(", "),
+        "Shipping Line: Title": o.shippingLine?.title ?? "",
+        "Shipping Line: Code": o.shippingLine?.code ?? "",
+        "Shipping Line: Price": bagAmount(o.shippingLine?.originalPriceSet),
+      });
+      addressToRow(row, "Billing", o.billingAddress);
+      addressToRow(row, "Shipping", o.shippingAddress);
+      if (groups.has("metafields")) metafieldsToRow(row, o.metafields);
+    }
+    const li = lines[i];
+    if (li) {
+      lineToRow(row, li);
+      row["Line: Fulfillable Quantity"] = str(li.unfulfilledQuantity);
+    }
+    const t = transactions[i];
+    if (t) {
+      Object.assign(row, {
+        "Transaction: ID": gidToId(t.id),
+        "Transaction: Kind": enumToCell(t.kind),
+        "Transaction: Gateway": t.gateway ?? "",
+        "Transaction: Status": enumToCell(t.status),
+        "Transaction: Amount": t.amountSet?.shopMoney?.amount ?? "",
+        "Transaction: Processed At": t.processedAt ?? "",
+      });
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
+  const groups = new Set(ctx.options.groups ?? ordersEntity.groups!.filter((g) => g.default).map((g) => g.key));
+  const search = buildSearchQuery(ctx.options);
+  let n = 0;
+  for await (const o of ctx.bulk(ordersBulkQuery(search, groups))) {
+    await emit(orderToRows(o, groups));
+    ctx.progress(++n);
+    if (ctx.options.limit && n >= ctx.options.limit) break;
+  }
+}
+
+// --- Import: lookups --------------------------------------------------------------------
+
+const ORDER_BY_ID = `#graphql
+  query ImportOrderById($id: ID!) { order(id: $id) { id name } }
+`;
+
+const ORDER_BY_NAME = `#graphql
+  query ImportOrderByName($query: String!) {
+    orders(first: 5, query: $query) { nodes { id name } }
+  }
+`;
+
+interface ExistingOrder {
+  id: string;
+  name: string;
+}
+
+async function fetchOrder(gql: Gql, by: { id?: string; name?: string }): Promise<ExistingOrder | null> {
+  if (by.id) {
+    const o = (await gql(ORDER_BY_ID, { id: by.id })).order;
+    if (o) return o;
+  }
+  if (by.name) {
+    const d = await gql(ORDER_BY_NAME, { query: `name:${JSON.stringify(by.name)}` });
+    const want = by.name.toLowerCase();
+    return (d.orders.nodes as ExistingOrder[]).find((o) => o.name.toLowerCase() === want) ?? null;
+  }
+  return null;
+}
+
+// --- Import: mutations ----------------------------------------------------------------
+
+const ORDER_CREATE = `#graphql
+  mutation ImportOrderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
+    orderCreate(order: $order, options: $options) {
+      order { id name lineItems(first: 250) { nodes { id } } }
+      userErrors { field message code }
+    }
+  }
+`;
+
+const ORDER_UPDATE = `#graphql
+  mutation ImportOrderUpdate($input: OrderInput!) {
+    orderUpdate(input: $input) {
+      order { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+const ORDER_DELETE = `#graphql
+  mutation ImportOrderDelete($orderId: ID!) {
+    orderDelete(orderId: $orderId) {
+      deletedId
+      userErrors { field message code }
+    }
+  }
+`;
+
+function parseEnum(v: string | undefined, allowed: string[], col: string): string | undefined {
+  if (!v) return undefined;
+  const s = enumCell(v);
+  if (!allowed.includes(s)) throw new ImportError(`${col} "${v}" is not one of ${allowed.map((a) => a.toLowerCase()).join(", ")}`);
+  return s;
+}
+
+function isTransactionRow(row: Row): boolean {
+  return ["Transaction: Amount", "Transaction: Kind"].some((c) => (cell(row, c) ?? "") !== "");
+}
+
+function parseTransactions(rows: Row[], currency: string) {
+  return rows.filter(isTransactionRow).map((row) => {
+    const amount = parseMoney(cell(row, "Transaction: Amount"), "Transaction: Amount");
+    if (amount === undefined) throw new ImportError("Transaction: Amount is required for each transaction");
+    const t: Record<string, any> = {
+      amountSet: moneyBagInput(amount, currency),
+      kind: parseEnum(cell(row, "Transaction: Kind"), TRANSACTION_KINDS, "Transaction: Kind") ?? "SALE",
+      status: parseEnum(cell(row, "Transaction: Status"), TRANSACTION_STATUSES, "Transaction: Status") ?? "SUCCESS",
+    };
+    const gateway = cell(row, "Transaction: Gateway");
+    if (gateway) t.gateway = gateway;
+    const at = cell(row, "Transaction: Processed At");
+    if (at) t.processedAt = at;
+    return t;
+  });
+}
+
+/** Builds the OrderCreateOrderInput and options from the item's rows. */
+export async function orderCreateInput(
+  ctx: ImportContext,
+  rows: Row[],
+): Promise<{ order: Record<string, any>; options: Record<string, any>; lineRows: number[]; notes: string[] }> {
+  const top = rows[0];
+  const notes: string[] = [];
+  const currency = await rowCurrency(ctx.gql, ctx.cache, top);
+  const order: Record<string, any> = { currency };
+
+  // Line items: by Variant ID, else SKU lookup, else custom title + price.
+  const lines = parseLines(rows);
+  if (!lines.length) throw new ImportError("At least one line item (Line: Title / Line: Variant ID / Line: SKU) is required to create an order");
+  order.lineItems = [];
+  for (const l of lines) {
+    const input: Record<string, any> = { quantity: l.quantity };
+    let variantId = l.variantId;
+    if (!variantId && l.sku) variantId = (await variantIdBySku(ctx.gql, ctx.cache, l.sku)) ?? undefined;
+    if (variantId) input.variantId = variantId;
+    else {
+      if (!l.title) throw new ImportError(`Line on row ${l.rowIndex + 1}: variant not found; Line: Title and Line: Price are needed for a custom line`);
+      if (l.price === undefined) throw new ImportError(`Line on row ${l.rowIndex + 1}: Line: Price is required for a custom line`);
+      input.title = l.title;
+      if (l.variantTitle) input.variantTitle = l.variantTitle;
+    }
+    if (l.sku) input.sku = l.sku;
+    if (l.price !== undefined) input.priceSet = moneyBagInput(l.price, currency);
+    if (l.vendor) input.vendor = l.vendor;
+    if (l.requiresShipping !== undefined) input.requiresShipping = l.requiresShipping;
+    if (l.taxable !== undefined) input.taxable = l.taxable;
+    order.lineItems.push(input);
+  }
+  if (lines.some((l) => cell(rows[l.rowIndex], "Line: Discount"))) {
+    notes.push("Line: Discount is not applied on create (use Discount Codes with Total Discounts)");
+  }
+
+  const text: Array<[string, string]> = [
+    ["Email", "email"],
+    ["Phone", "phone"],
+    ["Name", "name"],
+    ["Note", "note"],
+    ["Source", "sourceName"],
+  ];
+  for (const [col, key] of text) {
+    const v = cell(top, col);
+    if (v) order[key] = v;
+  }
+  const tags = cell(top, "Tags");
+  if (tags) order.tags = splitTags(tags);
+  const processedAt = cell(top, "Processed At") || cell(top, "Created At");
+  if (processedAt) order.processedAt = processedAt;
+  const closedAt = cell(top, "Closed At");
+  if (closedAt) order.closedAt = closedAt;
+
+  const fs = cell(top, "Fulfillment Status");
+  if (fs) {
+    const key = enumCell(fs);
+    if (!(key in FULFILLMENT_STATUS_IN)) throw new ImportError(`Fulfillment Status "${fs}" must be fulfilled, partial, restocked or unfulfilled`);
+    if (FULFILLMENT_STATUS_IN[key]) order.fulfillmentStatus = FULFILLMENT_STATUS_IN[key];
+  }
+
+  const billing = addressFromRow(top, "Billing");
+  if (billing) order.billingAddress = billing;
+  const shipping = addressFromRow(top, "Shipping");
+  if (shipping) order.shippingAddress = shipping;
+
+  // Customer: by ID, else upserted by email (created if missing).
+  const customerId = toGid("Customer", cell(top, "Customer: ID"));
+  const customerEmail = cell(top, "Customer: Email");
+  if (customerId) order.customer = { toAssociate: { id: customerId } };
+  else if (customerEmail) {
+    const upsert: Record<string, any> = { email: customerEmail };
+    const first = cell(top, "Customer: First Name");
+    const last = cell(top, "Customer: Last Name");
+    if (first) upsert.firstName = first;
+    if (last) upsert.lastName = last;
+    order.customer = { toUpsert: upsert };
+  }
+
+  const shipTitle = cell(top, "Shipping Line: Title");
+  if (shipTitle) {
+    const price = parseMoney(cell(top, "Shipping Line: Price"), "Shipping Line: Price") ?? "0";
+    const line: Record<string, any> = { title: shipTitle, priceSet: moneyBagInput(price, currency) };
+    const code = cell(top, "Shipping Line: Code");
+    if (code) line.code = code;
+    order.shippingLines = [line];
+  }
+
+  // Discount: orderCreate accepts a single code; it is recorded as a fixed
+  // amount equal to Total Discounts.
+  const codes = splitTags(cell(top, "Discount Codes"));
+  if (codes.length) {
+    const amount = parseMoney(cell(top, "Total Discounts"), "Total Discounts");
+    order.discountCode = {
+      itemFixedDiscountCode: { code: codes[0], ...(amount ? { amountSet: moneyBagInput(amount, currency) } : {}) },
+    };
+    if (codes.length > 1) notes.push(`Only the first discount code (${codes[0]}) can be recorded on create`);
+  }
+
+  // Taxes: a single "Tax" line for the total, with the rate derived from the subtotal.
+  const tax = parseMoney(cell(top, "Total Tax"), "Total Tax");
+  if (tax && Number(tax) > 0) {
+    const subtotal = parseNumber(cell(top, "Subtotal"));
+    const rate = subtotal ? Math.round((Number(tax) / subtotal) * 10000) / 10000 : 0;
+    order.taxLines = [{ title: "Tax", rate: String(rate), priceSet: moneyBagInput(tax, currency) }];
+  }
+
+  // Payment: explicit transactions win over a Financial Status.
+  const transactions = parseTransactions(rows, currency);
+  if (transactions.length) order.transactions = transactions;
+  else {
+    const fin = parseEnum(cell(top, "Financial Status"), FINANCIAL_STATUSES, "Financial Status");
+    if (fin) order.financialStatus = fin;
+  }
+
+  const mf = metafieldsFromRow(top).set;
+  if (mf.length) order.metafields = mf;
+
+  if (cell(top, "Cancelled At")) notes.push("Orders cannot be created cancelled; Cancelled At ignored");
+
+  const options: Record<string, any> = {
+    inventoryBehaviour: parseEnum(cell(top, "Inventory Behaviour"), INVENTORY_BEHAVIOURS, "Inventory Behaviour") ?? "BYPASS",
+    sendReceipt: parseBool(cell(top, "Send Receipt")) ?? false,
+    sendFulfillmentReceipt: parseBool(cell(top, "Send Fulfillment Receipt")) ?? false,
+  };
+  return { order, options, lineRows: lines.map((l) => l.rowIndex), notes };
+}
+
+async function createOrder(ctx: ImportContext, rows: Row[]) {
+  const { order, options, lineRows, notes } = await orderCreateInput(ctx, rows);
+  const d = await ctx.gql(ORDER_CREATE, { order, options });
+  assertNoUserErrors(d.orderCreate, "Create order");
+  const created = d.orderCreate.order;
+  const rowPatches: Array<Row | undefined> = rows.map(() => ({ ID: gidToId(created.id), Name: created.name }));
+  (created.lineItems?.nodes ?? []).forEach((li: any, i: number) => {
+    const r = lineRows[i];
+    if (r !== undefined) rowPatches[r] = { ...rowPatches[r], "Line: ID": gidToId(li.id) };
+  });
+  return { id: created.id as string, rowPatches, notes };
+}
+
+async function updateOrder(ctx: ImportContext, existing: ExistingOrder, rows: Row[]): Promise<string[]> {
+  const top = rows[0];
+  const notes: string[] = [];
+  const input: Record<string, any> = { id: existing.id };
+  for (const [col, key] of [
+    ["Email", "email"],
+    ["Phone", "phone"],
+    ["Note", "note"],
+  ] as const) {
+    const v = cell(top, col);
+    // Blank Note clears it; blank Email/Phone are left unchanged (cannot be cleared).
+    if (v !== undefined && (v || key === "note")) input[key] = v;
+  }
+  const tagsCell = cell(top, "Tags");
+  const tagsCommand = parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE");
+  if (tagsCell !== undefined && tagsCommand === "REPLACE") input.tags = splitTags(tagsCell);
+  const shipping = addressFromRow(top, "Shipping");
+  if (shipping) input.shippingAddress = shipping;
+
+  if (Object.keys(input).length > 1) {
+    const d = await ctx.gql(ORDER_UPDATE, { input });
+    assertNoUserErrors(d.orderUpdate, "Update order");
+  }
+  if (tagsCell && tagsCommand === "MERGE") await addTags(ctx.gql, existing.id, splitTags(tagsCell));
+  if (tagsCell && tagsCommand === "DELETE") await removeTags(ctx.gql, existing.id, splitTags(tagsCell));
+
+  const mf = metafieldsFromRow(top);
+  await writeMetafields(ctx.gql, existing.id, mf.set, mf.blank);
+
+  if (rows.some((r) => parseLines([r]).length)) notes.push("line items of existing orders are not changed");
+  return notes;
+}
+
+async function deleteOrder(gql: Gql, id: string) {
+  const d = await gql(ORDER_DELETE, { orderId: id });
+  assertNoUserErrors(d.orderDelete, "Delete order");
+}
+
+export async function importOrder(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
+  const top = rows[0];
+  const id = toGid("Order", cell(top, "ID"));
+  const name = cell(top, "Name");
+  const existing = id || name ? await fetchOrder(ctx.gql, { id, name }) : null;
+
+  const created = async (message: string): Promise<ItemResult> => {
+    const r = await createOrder(ctx, rows);
+    return { status: "OK", command, id: r.id, message: [message, ...r.notes].join("; "), rowPatches: r.rowPatches };
+  };
+
+  switch (command) {
+    case "DELETE": {
+      if (!existing) return { status: "Failed", command, message: "Order not found" };
+      await deleteOrder(ctx.gql, existing.id);
+      return { status: "OK", command, id: existing.id, message: "Deleted" };
+    }
+    case "NEW": {
+      if (existing) return { status: "Failed", command, id: existing.id, message: `Order ${existing.name} already exists` };
+      return created("Created");
+    }
+    case "REPLACE": {
+      if (existing) await deleteOrder(ctx.gql, existing.id);
+      return created(existing ? "Replaced" : "Created");
+    }
+    case "UPDATE":
+    case "MERGE": {
+      if (!existing) {
+        if (command === "UPDATE") return { status: "Failed", command, message: "Order not found" };
+        return created("Created");
+      }
+      const notes = await updateOrder(ctx, existing, rows);
+      return { status: "OK", command, id: existing.id, message: ["Updated", ...notes].join("; ") };
+    }
+    default:
+      return { status: "Skipped", command };
+  }
+}
+
+export const ordersEntity: Entity = {
+  key: "orders",
+  sheet: "Orders",
+  aliases: ["order"],
+  description: "Orders with line items, addresses, transactions and metafields. Import creates orders (migrations) and updates editable fields.",
+  columns: [...ORDER_COLUMNS, ...addressColumns("Billing"), ...addressColumns("Shipping"), ...ORDER_LINE_COLUMNS, ...TRANSACTION_COLUMNS],
+  supportsQuery: true,
+  groups: [
+    { key: "line_items", label: "Line items", default: true },
+    { key: "transactions", label: "Transactions", default: true },
+    { key: "metafields", label: "Order metafields", default: true },
+  ],
+  export: exportOrders,
+  import: { keyColumns: ["ID", "Name"], apply: importOrder },
+};
