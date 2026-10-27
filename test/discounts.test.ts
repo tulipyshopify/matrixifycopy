@@ -5,6 +5,7 @@ import { buildClientSchema, parse, validate } from "graphql";
 import { describe, expect, it } from "vitest";
 import type { ExportContext, ImportContext, Row } from "../app/lib/core/types";
 import { discountToRows, discountsBulkQuery, discountsEntity, importDiscount } from "../app/lib/entities/discounts";
+import { groupRows } from "../app/lib/core/importer";
 
 type Handler = (vars: any) => any;
 
@@ -96,7 +97,7 @@ describe("discounts export", () => {
       "Customer Selection: Segment IDs": "4",
       "Metafield: custom.campaign [single_line_text_field]": "spring",
     });
-    expect(rows[1]).toEqual({ ID: "100", "Row #": "2", "Top Row": "FALSE", Code: "SPRING15B" });
+    expect(rows[1]).toEqual({ ID: "100", "Row #": "2", "Top Row": "FALSE", "Additional Code": "SPRING15B" });
   });
 
   it("maps an automatic free shipping discount", () => {
@@ -332,5 +333,216 @@ describe("discounts import", () => {
     const r = await importDiscount(importCtx(m.gql), [{ Code: "SHIP" }], "DELETE");
     expect(r.status).toBe("OK");
     expect(m.calls[2]).toEqual({ op: "ImportDiscountCodeDelete", vars: { id: "gid://shopify/DiscountCodeNode/7" } });
+  });
+
+  // --- Regression tests ---------------------------------------------------------
+
+  const fixedNode = (extra: any = {}) => ({
+    discountNode: {
+      id: "gid://shopify/DiscountCodeNode/100",
+      discount: {
+        __typename: "DiscountCodeBasic",
+        title: "Ten off",
+        customerGets: {
+          value: { __typename: "DiscountAmount", amount: { amount: "10.0" }, appliesOnEachItem: true },
+          items: { __typename: "AllDiscountItems", allItems: true },
+        },
+        context: { __typename: "DiscountBuyerSelectionAll", all: "ALL" },
+        codes: { nodes: [{ code: "TEN" }] },
+        ...extra,
+      },
+    },
+  });
+
+  it("REPLACE with an invalid sheet fails before deleting the discount", async () => {
+    const bad: Row[] = [
+      { ID: "100", Method: "Code", Title: "Ten off", Code: "TEN", "Value Type": "bogus", Value: "5" },
+      { ID: "100", Method: "Code", Code: "TEN", Value: "5" }, // no Title
+      { ID: "100", Method: "Code", Title: "Ten off", Code: "TEN" }, // no Value
+      { ID: "100", Method: "Code", Title: "Ten off", Code: "TEN", Value: "5", "Metafield: custom.flag [boolean]": "maybe" },
+    ];
+    for (const row of bad) {
+      const m = mockGql({
+        DiscountDetail: () => fixedNode(),
+        ImportDiscountCodeDelete: () => ({ discountCodeDelete: { ...ok, deletedCodeDiscountId: "x" } }),
+      });
+      await expect(importDiscount(importCtx(m.gql), [row], "REPLACE")).rejects.toThrow();
+      expect(m.ops()).not.toContain("ImportDiscountCodeDelete");
+    }
+  });
+
+  it("REPLACE builds the input, then deletes and creates", async () => {
+    const m = mockGql({
+      DiscountDetail: () => fixedNode(),
+      ImportDiscountCodeDelete: () => ({ discountCodeDelete: { ...ok, deletedCodeDiscountId: "x" } }),
+      ImportDiscountCodeBasicCreate: () => ({ discountCodeBasicCreate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/101" } } }),
+    });
+    const r = await importDiscount(importCtx(m.gql), [{ ID: "100", Method: "Code", Title: "Ten off", Code: "TEN", Value: "5", "Starts At": "2026-01-01" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", message: "Replaced" });
+    expect(m.ops()).toEqual(["DiscountDetail", "ImportDiscountCodeDelete", "ImportDiscountCodeBasicCreate"]);
+  });
+
+  it("partial sheet (ID + Value) keeps a fixed amount discount fixed", async () => {
+    const m = mockGql({
+      DiscountDetail: () => fixedNode(),
+      ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
+    });
+    const r = await importDiscount(importCtx(m.gql), [{ ID: "100", Method: "Code", Value: "15" }], "MERGE");
+    expect(r.status).toBe("OK");
+    expect(m.calls[1].vars.input).toEqual({ customerGets: { value: { discountAmount: { amount: "15", appliesOnEachItem: true } } } });
+  });
+
+  it("partial sheet keeps a percentage, and changing Value Type requires a Value", async () => {
+    const pct = () =>
+      fixedNode({ customerGets: { value: { __typename: "DiscountPercentage", percentage: 0.1 }, items: { __typename: "AllDiscountItems", allItems: true } } });
+    const m = mockGql({
+      DiscountDetail: pct,
+      ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
+    });
+    await importDiscount(importCtx(m.gql), [{ ID: "100", Method: "Code", Value: "15", "Applies On Each Item": "" }], "MERGE");
+    expect(m.calls[1].vars.input).toEqual({ customerGets: { value: { percentage: 0.15 } } });
+    const m2 = mockGql({ DiscountDetail: pct });
+    await expect(importDiscount(importCtx(m2.gql), [{ ID: "100", Method: "Code", "Value Type": "fixed_amount" }], "MERGE")).rejects.toThrow(
+      /Value is required when changing Value Type/,
+    );
+  });
+
+  it("changing only Applies On Each Item re-sends the existing amount", async () => {
+    const m = mockGql({
+      DiscountDetail: () => fixedNode(),
+      ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
+    });
+    await importDiscount(importCtx(m.gql), [{ ID: "100", Method: "Code", "Applies On Each Item": "FALSE" }], "MERGE");
+    expect(m.calls[1].vars.input).toEqual({ customerGets: { value: { discountAmount: { amount: "10", appliesOnEachItem: false } } } });
+  });
+
+  it("does not merge new discounts that share a title but have different codes", () => {
+    const rows: Row[] = [
+      { Title: "Summer", Code: "SUMMER-A", Value: "10" },
+      { Title: "Summer", Code: "SUMMER-B", Value: "20" },
+      { "Additional Code": "SUMMER-B2" },
+    ];
+    const items = groupRows(rows, discountsEntity.import!.keyColumns);
+    expect(items.map((i) => i.rows.length)).toEqual([1, 2]);
+  });
+
+  it("export -> import round-trip keeps extra codes on one item, with or without the ID column", async () => {
+    const items0 = { __typename: "DiscountProducts", products: { nodes: [{ id: "gid://shopify/Product/1" }] }, productVariants: { nodes: [] } };
+    const exported = discountToRows(codeBasicNode, new Set(["codes"]), items0);
+    expect(groupRows(exported, discountsEntity.import!.keyColumns)).toHaveLength(1);
+    const noIds = exported.map(({ ID: _id, ...rest }) => rest as Row);
+    const items = groupRows(noIds, discountsEntity.import!.keyColumns);
+    expect(items).toHaveLength(1);
+
+    const m = mockGql({
+      ImportDiscountByCode: () => ({ codeDiscountNodeByCode: null }),
+      ImportDiscountCodeBasicCreate: () => ({ discountCodeBasicCreate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/300" } } }),
+      ImportDiscountCodesAdd: () => ({ discountRedeemCodeBulkAdd: ok }),
+    });
+    const r = await importDiscount(importCtx(m.gql), items[0].rows, "NEW");
+    expect(r.status).toBe("OK");
+    expect(m.calls[1].vars.input.code).toBe("SPRING15");
+    expect(m.calls[2].vars.codes).toEqual([{ code: "SPRING15B" }]);
+  });
+
+  it("fails when a continuation row has its own Value or Type", async () => {
+    const m = mockGql({ ImportDiscountByCode: () => ({ codeDiscountNodeByCode: null }) });
+    const rows: Row[] = [
+      { Title: "Summer", Code: "A", Value: "10", "Value Type": "percentage" },
+      { Value: "20", "Additional Code": "B" },
+    ];
+    await expect(importDiscount(importCtx(m.gql), rows, "NEW")).rejects.toThrow(/own Value "20"/);
+    const rows2: Row[] = [{ Title: "Auto", Type: "Basic", Value: "10" }, { Title: "Auto", Type: "Free Shipping" }];
+    await expect(importDiscount(importCtx(m.gql), rows2, "NEW")).rejects.toThrow(/own Type/);
+    expect(m.ops()).toEqual([]);
+  });
+
+  it("finds an automatic discount by exact title past other matches on later pages", async () => {
+    const m = mockGql({
+      ImportDiscountsByTitle: (v) =>
+        v.after
+          ? {
+              discountNodes: {
+                nodes: [{ id: "gid://shopify/DiscountAutomaticNode/7", discount: { __typename: "DiscountAutomaticBasic", title: "Sale" } }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            }
+          : {
+              discountNodes: {
+                nodes: Array.from({ length: 250 }, (_, i) => ({ id: `x${i}`, discount: { __typename: "DiscountAutomaticBasic", title: `Sale ${i}` } })),
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+              },
+            },
+      DiscountDetail: (v) => ({ discountNode: { id: v.id, discount: { __typename: "DiscountAutomaticBasic", title: "Sale" } } }),
+      ImportDiscountAutomaticDelete: () => ({ discountAutomaticDelete: { ...ok, deletedAutomaticDiscountId: "x" } }),
+    });
+    const r = await importDiscount(importCtx(m.gql), [{ Title: "Sale" }], "DELETE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/DiscountAutomaticNode/7" });
+    expect(m.calls[1].vars).toMatchObject({ after: "c1" });
+  });
+
+  it("reads product lists past 250 (export and update diff)", async () => {
+    const page1 = Array.from({ length: 250 }, (_, i) => ({ id: `gid://shopify/Product/${i + 1}` }));
+    const detail = (v: any) => ({
+      discountNode: {
+        id: v.id,
+        discount: {
+          __typename: "DiscountCodeBasic",
+          title: "Big",
+          customerGets: {
+            value: { __typename: "DiscountPercentage", percentage: 0.1 },
+            items: {
+              __typename: "DiscountProducts",
+              products: { nodes: page1, pageInfo: { hasNextPage: true, endCursor: "p1" } },
+              productVariants: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+          context: { __typename: "DiscountBuyerSelectionAll", all: "ALL" },
+          codes: { nodes: [{ code: "BIG" }] },
+        },
+      },
+    });
+    const itemsPage = (v: any) => {
+      expect(v).toMatchObject({ after: "p1", products: true, variants: false, collections: false });
+      return {
+        discountNode: {
+          id: v.id,
+          discount: {
+            __typename: "DiscountCodeBasic",
+            customerGets: { items: { products: { nodes: [{ id: "gid://shopify/Product/251" }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+          },
+        },
+      };
+    };
+
+    // Export: all 251 products.
+    const m = mockGql({ DiscountDetail: detail, DiscountItemsPage: itemsPage });
+    const out: Row[][] = [];
+    const ctx: ExportContext = {
+      gql: m.gql,
+      bulk: () =>
+        (async function* () {
+          yield codeBasicNode;
+        })(),
+      options: { groups: ["codes"] },
+      log: () => {},
+      cache: new Map(),
+      progress: () => {},
+    };
+    await discountsEntity.export!(ctx, async (rows) => {
+      out.push(rows);
+    });
+    expect(out[0][0]["Applies To: Product IDs"].split(", ")).toHaveLength(251);
+
+    // Update: product 251 is already there, so nothing is added or removed.
+    const m2 = mockGql({
+      DiscountDetail: detail,
+      DiscountItemsPage: itemsPage,
+      ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "x" } } }),
+    });
+    const ids = Array.from({ length: 251 }, (_, i) => String(i + 1)).join(", ");
+    await importDiscount(importCtx(m2.gql), [{ ID: "100", Method: "Code", "Applies To": "products", "Applies To: Product IDs": ids }], "MERGE");
+    const products = m2.calls.find((c) => c.op === "ImportDiscountCodeBasicUpdate")!.vars.input.customerGets.items.products;
+    expect(products).toEqual({ productsToAdd: [], productVariantsToAdd: [], productsToRemove: [], productVariantsToRemove: [] });
   });
 });

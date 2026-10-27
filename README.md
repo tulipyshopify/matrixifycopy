@@ -119,5 +119,13 @@ Code map:
 
 * Smart collection rules use the `ruleSet` API, which 2026-10 deprecates in favour of collection `sources`.
 * Changing a product's option names requires `REPLACE`; image reordering by `Image Position` is not applied on merge.
-* Editing line items of existing orders is not supported (Shopify order editing is a separate flow).
+* Editing line items of existing orders is not supported (Shopify order editing is a separate flow). Orders created
+  by import keep one discount code; Fulfillment Statuses like `on_hold` can't be set on create (order is created
+  unfulfilled, with a note).
+* Draft orders: when a sheet's lines differ from the draft, all lines are re-sent (Shopify replaces the line list).
+* Menus: when item columns are present, the item rows are the menu's complete new item tree.
+* Discounts: Buy X Get Y and app discounts are export-only; codes are added, never removed. Extra codes go in the
+  `Additional Code` column on continuation rows.
+* REPLACE always validates the whole row before deleting anything. Products are re-created before the old one is
+  deleted (so images on Shopify's CDN can be copied); Files refuse REPLACE from the file's own CDN URL.
 * Not tested against a live store yet: tests use a mocked Admin API plus schema validation.

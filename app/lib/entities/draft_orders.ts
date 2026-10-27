@@ -26,7 +26,9 @@ import {
   bagAmount,
   enumCell,
   enumToCell,
+  findByExactName,
   LINE_COLUMNS,
+  type LineSpec,
   lineToRow,
   moneyInput,
   parseLines,
@@ -41,7 +43,17 @@ import {
  *
  * Import creates/updates with draftOrderCreate/draftOrderUpdate. When line
  * rows are present on update, they REPLACE the draft's line items (that is
- * how draftOrderUpdate works). Line: Price only applies to custom lines;
+ * how draftOrderUpdate works: `lineItems` replaces the whole list and every
+ * line is rebuilt). To keep MERGE of an exported sheet lossless:
+ * - export writes every line field draftOrderUpdate would otherwise drop
+ *   (custom attributes, price override, weight, discount title/description),
+ *   and import re-sends them;
+ * - a line row whose Line: ID matches a current line takes absent columns
+ *   from that line, so partial sheets keep the rest;
+ * - lineItems are only sent when the sheet's lines differ from the draft's
+ *   current lines (both normalized to DraftOrderLineItemInput), so an
+ *   unchanged round-trip does not rebuild (and re-price) the lines.
+ * Line: Price only applies to custom lines;
  * variant lines use the variant's current price unless an applied discount
  * is given. Completing drafts and sending invoices are out of scope.
  */
@@ -87,7 +99,30 @@ const DRAFT_COLUMNS = [
   "Top Row",
 ];
 
-const DRAFT_LINE_COLUMNS = [...LINE_COLUMNS, "Line: Custom", "Line: Applied Discount: Value Type", "Line: Applied Discount: Value"];
+const DRAFT_LINE_COLUMNS = [
+  ...LINE_COLUMNS,
+  "Line: Custom",
+  "Line: Applied Discount: Value Type",
+  "Line: Applied Discount: Value",
+  "Line: Applied Discount: Title",
+  "Line: Applied Discount: Description",
+  "Line: Price Override",
+  "Line: Weight",
+  "Line: Weight Unit",
+  "Line: Custom Attributes",
+];
+
+const WEIGHT_UNITS: Record<string, string> = {
+  GRAMS: "GRAMS",
+  G: "GRAMS",
+  KILOGRAMS: "KILOGRAMS",
+  KG: "KILOGRAMS",
+  OUNCES: "OUNCES",
+  OZ: "OUNCES",
+  POUNDS: "POUNDS",
+  LB: "POUNDS",
+  LBS: "POUNDS",
+};
 
 const DISCOUNT_TYPES: Record<string, string> = {
   PERCENTAGE: "PERCENTAGE",
@@ -107,7 +142,10 @@ export function draftOrdersBulkQuery(search: string, groups: Set<string>): strin
       id title variantTitle sku quantity vendor requiresShipping taxable custom
       originalUnitPriceSet ${MONEY}
       totalDiscountSet ${MONEY}
-      appliedDiscount { value valueType }
+      appliedDiscount { title description value valueType }
+      customAttributes { key value }
+      priceOverride { amount }
+      weight { unit value }
       variant { id }
       product { id }
   } } }`;
@@ -184,6 +222,12 @@ export function draftOrderToRows(d: any, groups: Set<string>): Row[] {
       row["Line: Custom"] = boolCell(li.custom);
       row["Line: Applied Discount: Value Type"] = enumToCell(li.appliedDiscount?.valueType);
       row["Line: Applied Discount: Value"] = str(li.appliedDiscount?.value);
+      row["Line: Applied Discount: Title"] = li.appliedDiscount?.title ?? "";
+      row["Line: Applied Discount: Description"] = li.appliedDiscount?.description ?? "";
+      row["Line: Price Override"] = li.priceOverride?.amount ?? "";
+      row["Line: Weight"] = str(li.weight?.value);
+      row["Line: Weight Unit"] = enumToCell(li.weight?.unit);
+      row["Line: Custom Attributes"] = attributesToCell(li.customAttributes);
     }
     rows.push(row);
   }
@@ -208,8 +252,30 @@ const DRAFT_BY_ID = `#graphql
 `;
 
 const DRAFT_BY_NAME = `#graphql
-  query ImportDraftOrderByName($query: String!) {
-    draftOrders(first: 5, query: $query) { nodes { id name status } }
+  query ImportDraftOrderByName($query: String!, $after: String) {
+    draftOrders(first: 250, after: $after, query: $query) { nodes { id name status } pageInfo { hasNextPage endCursor } }
+  }
+`;
+
+/** Current applied discount and lines, to default absent columns and diff lines on update. */
+const DRAFT_DETAIL = `#graphql
+  query ImportDraftOrderDetail($id: ID!, $after: String) {
+    draftOrder(id: $id) {
+      id
+      appliedDiscount { title description value valueType }
+      lineItems(first: 250, after: $after) {
+        nodes {
+          id title sku quantity requiresShipping taxable custom
+          originalUnitPriceWithCurrency { amount }
+          appliedDiscount { title description value valueType }
+          customAttributes { key value }
+          priceOverride { amount }
+          weight { unit value }
+          variant { id }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
   }
 `;
 
@@ -230,12 +296,27 @@ async function fetchDraft(gql: Gql, by: { id?: string; name?: string }): Promise
     const d = (await gql(DRAFT_BY_ID, { id: by.id })).draftOrder;
     if (d) return d;
   }
-  if (by.name) {
-    const data = await gql(DRAFT_BY_NAME, { query: `name:${JSON.stringify(by.name)}` });
-    const want = by.name.toLowerCase();
-    return (data.draftOrders.nodes as ExistingDraft[]).find((d) => d.name.toLowerCase() === want) ?? null;
-  }
+  if (by.name) return findByExactName<ExistingDraft>(gql, DRAFT_BY_NAME, (d) => d.draftOrders, by.name, "draft order");
   return null;
+}
+
+interface DraftDetail {
+  appliedDiscount: any;
+  lineItems: any[];
+}
+
+async function fetchDraftDetail(gql: Gql, id: string): Promise<DraftDetail> {
+  const lineItems: any[] = [];
+  let appliedDiscount: any = null;
+  let after: string | null = null;
+  do {
+    const d: any = (await gql(DRAFT_DETAIL, { id, after })).draftOrder;
+    if (!d) throw new ImportError("Draft order not found");
+    appliedDiscount = d.appliedDiscount ?? null;
+    lineItems.push(...(d.lineItems?.nodes ?? []));
+    after = d.lineItems?.pageInfo?.hasNextPage ? d.lineItems.pageInfo.endCursor : null;
+  } while (after);
+  return { appliedDiscount, lineItems };
 }
 
 // --- Import: mutations ----------------------------------------------------------------
@@ -267,31 +348,165 @@ const DRAFT_DELETE = `#graphql
   }
 `;
 
-function appliedDiscountFromRow(row: Row, prefix: string, currency: string): Record<string, any> | null | undefined {
-  const valueCell = cell(row, `${prefix}: Value`);
-  if (valueCell === undefined) return undefined;
-  if (valueCell === "") return null; // blank removes the discount
-  const value = Math.abs(parseNumber(valueCell)!);
-  const typeCell = cell(row, `${prefix}: Value Type`) || "fixed_amount";
-  const valueType = DISCOUNT_TYPES[enumCell(typeCell)];
-  if (!valueType) throw new ImportError(`${prefix}: Value Type must be percentage or fixed_amount`);
-  const out: Record<string, any> = { value, valueType };
-  if (valueType === "FIXED_AMOUNT") out.amountWithCurrency = moneyInput(String(value), currency);
-  const title = cell(row, `${prefix}: Title`);
-  if (title) out.title = title;
-  const desc = cell(row, `${prefix}: Description`);
-  if (desc) out.description = desc;
+/** Current applied discount (draft or line) -> DraftOrderAppliedDiscountInput. */
+function discountToInput(ad: any, currency: string): Record<string, any> | null {
+  if (!ad) return null;
+  const value = Number(ad.value);
+  const out: Record<string, any> = { value, valueType: ad.valueType };
+  if (ad.valueType === "FIXED_AMOUNT") out.amountWithCurrency = moneyInput(String(value), currency);
+  if (ad.title) out.title = ad.title;
+  if (ad.description) out.description = ad.description;
   return out;
 }
 
 /**
+ * Applied discount from the `${prefix}: ...` columns: undefined when the Value
+ * column is absent (unchanged), null when blank (removed). Absent/blank Value
+ * Type and absent Title/Description default to `prev` (the current discount),
+ * so a partial sheet does not change them.
+ */
+function appliedDiscountFromRow(row: Row, prefix: string, currency: string, prev?: any): Record<string, any> | null | undefined {
+  const valueCell = cell(row, `${prefix}: Value`);
+  if (valueCell === undefined) return undefined;
+  if (valueCell === "") return null; // blank removes the discount
+  const value = Math.abs(parseNumber(valueCell)!);
+  const typeCell = cell(row, `${prefix}: Value Type`);
+  const valueType = typeCell ? DISCOUNT_TYPES[enumCell(typeCell)] : (prev?.valueType ?? "FIXED_AMOUNT");
+  if (!valueType) throw new ImportError(`${prefix}: Value Type must be percentage or fixed_amount`);
+  const out: Record<string, any> = { value, valueType };
+  if (valueType === "FIXED_AMOUNT") out.amountWithCurrency = moneyInput(String(value), currency);
+  const titleCell = cell(row, `${prefix}: Title`);
+  const title = titleCell ?? prev?.title ?? "";
+  if (title) out.title = title;
+  const descCell = cell(row, `${prefix}: Description`);
+  const desc = descCell ?? prev?.description ?? "";
+  if (desc) out.description = desc;
+  return out;
+}
+
+/** Custom attributes as one `key: value` per line. */
+function attributesToCell(attrs: any[] | null | undefined): string {
+  return (attrs ?? []).map((a) => `${a.key}: ${a.value ?? ""}`).join("\n");
+}
+
+function attributesFromCell(v: string): Array<{ key: string; value: string }> {
+  return v
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line) => {
+      const i = line.indexOf(": ");
+      if (i > 0) return { key: line.slice(0, i).trim(), value: line.slice(i + 2) };
+      const t = line.trim();
+      if (t.endsWith(":") && t.length > 1) return { key: t.slice(0, -1).trim(), value: "" };
+      throw new ImportError(`Line: Custom Attributes "${t}" must be "key: value" (one per line)`);
+    });
+}
+
+/**
+ * DraftOrderLineItemInput for one line row. `prev` is the draft's current line
+ * with the same Line: ID (update only): columns absent from the sheet take its
+ * values, since draftOrderUpdate rebuilds every line. With an empty row this
+ * turns a current line into the input that would recreate it.
+ */
+async function lineInput(
+  ctx: ImportContext,
+  l: LineSpec,
+  row: Row,
+  currency: string,
+  prev?: any,
+): Promise<Record<string, any>> {
+  const absent = (col: string) => cell(row, col) === undefined;
+  const li: Record<string, any> = { quantity: l.quantity };
+  const custom = parseBool(cell(row, "Line: Custom")) ?? (prev ? Boolean(prev.custom) : undefined);
+  let variantId = l.variantId;
+  if (!variantId && l.sku && custom !== true) variantId = (await variantIdBySku(ctx.gql, ctx.cache, l.sku)) ?? undefined;
+  if (!variantId && prev && !prev.custom && custom !== true && absent("Line: Variant ID")) variantId = prev.variant?.id ?? undefined;
+  if (variantId && custom !== true) li.variantId = variantId;
+  else {
+    const title = l.title ?? (absent("Line: Title") ? prev?.title || undefined : undefined);
+    const prevPrice = prev?.originalUnitPriceWithCurrency?.amount ?? prev?.originalUnitPriceSet?.shopMoney?.amount;
+    const price = l.price ?? (absent("Line: Price") && prevPrice != null ? String(Number(prevPrice)) : undefined);
+    if (!title) throw new ImportError(`Line on row ${l.rowIndex + 1}: variant not found; Line: Title and Line: Price are needed for a custom line`);
+    if (price === undefined) throw new ImportError(`Line on row ${l.rowIndex + 1}: Line: Price is required for a custom line`);
+    li.title = title;
+    li.originalUnitPriceWithCurrency = moneyInput(price, currency);
+    const sku = l.sku ?? (absent("Line: SKU") ? prev?.sku || undefined : undefined);
+    if (sku) li.sku = sku;
+    const requiresShipping = l.requiresShipping ?? (absent("Line: Requires Shipping") ? prev?.requiresShipping : undefined);
+    if (requiresShipping !== undefined && requiresShipping !== null) li.requiresShipping = requiresShipping;
+    const taxable = l.taxable ?? (absent("Line: Taxable") ? prev?.taxable : undefined);
+    if (taxable !== undefined && taxable !== null) li.taxable = taxable;
+    // Weight only applies to custom lines (variant lines use the variant's weight).
+    const weight = weightFromRow(row, prev?.weight);
+    if (weight) li.weight = weight;
+  }
+  const ad = appliedDiscountFromRow(row, "Line: Applied Discount", currency, prev?.appliedDiscount);
+  const discount = ad === undefined ? discountToInput(prev?.appliedDiscount, currency) : ad;
+  if (discount) li.appliedDiscount = discount;
+  const attrsCell = cell(row, "Line: Custom Attributes");
+  const attrs =
+    attrsCell === undefined
+      ? (prev?.customAttributes ?? []).map((a: any) => ({ key: a.key, value: a.value ?? "" }))
+      : attributesFromCell(attrsCell);
+  if (attrs.length) li.customAttributes = attrs;
+  const overrideCell = cell(row, "Line: Price Override");
+  const override =
+    overrideCell === undefined
+      ? prev?.priceOverride?.amount != null
+        ? String(Number(prev.priceOverride.amount))
+        : undefined
+      : parseMoney(overrideCell, "Line: Price Override");
+  if (override !== undefined) li.priceOverride = moneyInput(override, currency);
+  return li;
+}
+
+function weightFromRow(row: Row, prev: any): Record<string, any> | undefined {
+  const valueCell = cell(row, "Line: Weight");
+  const unitCell = cell(row, "Line: Weight Unit");
+  if (valueCell === undefined) return prev ? { unit: prev.unit, value: Number(prev.value) } : undefined;
+  const value = parseNumber(valueCell);
+  if (value === undefined) return undefined;
+  if (value < 0) throw new ImportError("Line: Weight cannot be negative");
+  const unit = unitCell ? WEIGHT_UNITS[enumCell(unitCell)] : prev?.unit;
+  if (!unit) throw new ImportError("Line: Weight Unit must be grams, kilograms, ounces or pounds");
+  return { unit, value };
+}
+
+/** Canonical form of a DraftOrderLineItemInput, to tell whether lines changed. */
+function lineKey(li: Record<string, any>): string {
+  const num = (v: unknown) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const ad = li.appliedDiscount
+    ? [num(li.appliedDiscount.value), li.appliedDiscount.valueType, li.appliedDiscount.title ?? "", li.appliedDiscount.description ?? ""]
+    : null;
+  const base = {
+    quantity: li.quantity,
+    ad,
+    attrs: (li.customAttributes ?? []).map((a: any) => [a.key, a.value ?? ""]),
+    priceOverride: num(li.priceOverride?.amount),
+  };
+  if (li.variantId) return JSON.stringify({ ...base, variantId: li.variantId });
+  return JSON.stringify({
+    ...base,
+    title: li.title ?? "",
+    price: num(li.originalUnitPriceWithCurrency?.amount),
+    sku: li.sku ?? "",
+    requiresShipping: li.requiresShipping ?? true,
+    taxable: li.taxable ?? true,
+    weight: li.weight ? [li.weight.unit, num(li.weight.value)] : null,
+  });
+}
+
+/**
  * DraftOrderInput from the item's rows. Only columns present in the sheet are
- * sent, so partial sheets update partially.
+ * sent, so partial sheets update partially. `current` (update only) is the
+ * draft's current state: absent columns default to it and lineItems are left
+ * out when the sheet's lines equal the current lines.
  */
 export async function draftOrderInput(
   ctx: ImportContext,
   rows: Row[],
   creating: boolean,
+  current?: DraftDetail,
 ): Promise<{ input: Record<string, any>; lineRows: number[]; notes: string[] }> {
   const top = rows[0];
   const notes: string[] = [];
@@ -301,26 +516,18 @@ export async function draftOrderInput(
   const lines = parseLines(rows);
   if (creating && !lines.length) throw new ImportError("At least one line item is required to create a draft order");
   if (lines.length) {
+    const byId = new Map((current?.lineItems ?? []).map((li) => [gidToId(li.id), li]));
     input.lineItems = [];
     for (const l of lines) {
       const row = rows[l.rowIndex];
-      const li: Record<string, any> = { quantity: l.quantity };
-      let variantId = l.variantId;
-      const custom = parseBool(cell(row, "Line: Custom"));
-      if (!variantId && l.sku && custom !== true) variantId = (await variantIdBySku(ctx.gql, ctx.cache, l.sku)) ?? undefined;
-      if (variantId && custom !== true) li.variantId = variantId;
-      else {
-        if (!l.title) throw new ImportError(`Line on row ${l.rowIndex + 1}: variant not found; Line: Title and Line: Price are needed for a custom line`);
-        if (l.price === undefined) throw new ImportError(`Line on row ${l.rowIndex + 1}: Line: Price is required for a custom line`);
-        li.title = l.title;
-        li.originalUnitPriceWithCurrency = moneyInput(l.price, currency);
-        if (l.sku) li.sku = l.sku;
-        if (l.requiresShipping !== undefined) li.requiresShipping = l.requiresShipping;
-        if (l.taxable !== undefined) li.taxable = l.taxable;
-      }
-      const ad = appliedDiscountFromRow(row, "Line: Applied Discount", currency);
-      if (ad) li.appliedDiscount = ad;
-      input.lineItems.push(li);
+      const lineId = cell(row, "Line: ID");
+      input.lineItems.push(await lineInput(ctx, l, row, currency, lineId ? byId.get(lineId) : undefined));
+    }
+    if (current) {
+      const now: Record<string, any>[] = [];
+      for (const li of current.lineItems) now.push(await lineInput(ctx, { rowIndex: -1, quantity: li.quantity }, {}, currency, li));
+      const same = now.length === input.lineItems.length && now.every((li, i) => lineKey(li) === lineKey(input.lineItems[i]));
+      if (same) delete input.lineItems;
     }
   }
 
@@ -362,7 +569,7 @@ export async function draftOrderInput(
     input.shippingLine = { title: shipTitle, priceWithCurrency: moneyInput(price, currency) };
   }
 
-  const ad = appliedDiscountFromRow(top, "Applied Discount", currency);
+  const ad = appliedDiscountFromRow(top, "Applied Discount", currency, current?.appliedDiscount);
   if (ad !== undefined && (ad || !creating)) input.appliedDiscount = ad;
 
   if (creating) {
@@ -371,7 +578,7 @@ export async function draftOrderInput(
     const mf = metafieldsFromRow(top).set;
     if (mf.length) input.metafields = mf;
   }
-  return { input, lineRows: lines.map((l) => l.rowIndex), notes };
+  return { input, lineRows: input.lineItems ? lines.map((l) => l.rowIndex) : [], notes };
 }
 
 function patches(rows: Row[], draft: any, lineRows: number[]): Array<Row | undefined> {
@@ -384,8 +591,10 @@ function patches(rows: Row[], draft: any, lineRows: number[]): Array<Row | undef
   return out;
 }
 
-async function createDraft(ctx: ImportContext, rows: Row[]) {
-  const { input, lineRows, notes } = await draftOrderInput(ctx, rows, true);
+type DraftInputBuilt = Awaited<ReturnType<typeof draftOrderInput>>;
+
+async function createDraft(ctx: ImportContext, rows: Row[], built?: DraftInputBuilt) {
+  const { input, lineRows, notes } = built ?? (await draftOrderInput(ctx, rows, true));
   const d = await ctx.gql(DRAFT_CREATE, { input });
   assertNoUserErrors(d.draftOrderCreate, "Create draft order");
   const draft = d.draftOrderCreate.draftOrder;
@@ -395,7 +604,10 @@ async function createDraft(ctx: ImportContext, rows: Row[]) {
 async function updateDraft(ctx: ImportContext, existing: ExistingDraft, rows: Row[]) {
   if (existing.status === "COMPLETED") throw new ImportError(`Draft order ${existing.name} is completed and cannot be changed`);
   const top = rows[0];
-  const { input, lineRows, notes } = await draftOrderInput(ctx, rows, false);
+  // The current state is only needed to diff lines / default the discount.
+  const needsCurrent = parseLines(rows).length > 0 || Boolean(cell(top, "Applied Discount: Value"));
+  const current = needsCurrent ? await fetchDraftDetail(ctx.gql, existing.id) : undefined;
+  const { input, lineRows, notes } = await draftOrderInput(ctx, rows, false, current);
   const tagsCell = cell(top, "Tags");
   const tagsCommand = parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE");
   if (tagsCell !== undefined && tagsCommand === "REPLACE") input.tags = splitTags(tagsCell);
@@ -404,7 +616,7 @@ async function updateDraft(ctx: ImportContext, existing: ExistingDraft, rows: Ro
   if (Object.keys(input).length) {
     const d = await ctx.gql(DRAFT_UPDATE, { id: existing.id, input });
     assertNoUserErrors(d.draftOrderUpdate, "Update draft order");
-    rowPatches = patches(rows, d.draftOrderUpdate.draftOrder, input.lineItems ? lineRows : []);
+    rowPatches = patches(rows, d.draftOrderUpdate.draftOrder, lineRows);
   }
   if (tagsCell && tagsCommand === "MERGE") await addTags(ctx.gql, existing.id, splitTags(tagsCell));
   if (tagsCell && tagsCommand === "DELETE") await removeTags(ctx.gql, existing.id, splitTags(tagsCell));
@@ -424,8 +636,8 @@ export async function importDraftOrder(ctx: ImportContext, rows: Row[], command:
   const name = cell(top, "Name");
   const existing = id || name ? await fetchDraft(ctx.gql, { id, name }) : null;
 
-  const created = async (message: string): Promise<ItemResult> => {
-    const r = await createDraft(ctx, rows);
+  const created = async (message: string, built?: DraftInputBuilt): Promise<ItemResult> => {
+    const r = await createDraft(ctx, rows, built);
     return { status: "OK", command, id: r.id, message: [message, ...r.notes].join("; "), rowPatches: r.rowPatches };
   };
 
@@ -440,8 +652,11 @@ export async function importDraftOrder(ctx: ImportContext, rows: Row[], command:
       return created("Created");
     }
     case "REPLACE": {
+      // Build and validate the full create input (lines, SKU and customer
+      // lookups...) before deleting, so a bad sheet never loses the draft.
+      const built = await draftOrderInput(ctx, rows, true);
       if (existing) await deleteDraft(ctx.gql, existing.id);
-      return created(existing ? "Replaced" : "Created");
+      return created(existing ? "Replaced" : "Created", built);
     }
     case "UPDATE":
     case "MERGE": {

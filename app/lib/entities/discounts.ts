@@ -19,9 +19,10 @@ import {
 import { writeMetafields } from "../core/lookups";
 
 /**
- * Discounts of every kind via `discountNodes` (code and automatic). One code
- * per row in the "Code" column, the first code on the top row; discount
- * fields on the top row and the ID on every row.
+ * Discounts of every kind via `discountNodes` (code and automatic). The
+ * first code is in "Code" on the top row, each further code on its own
+ * continuation row in "Additional Code" (Code left blank, so the row never
+ * starts a new item); discount fields on the top row and the ID on every row.
  *
  * Import supports Basic (amount off order/products) and Free Shipping
  * discounts with both Code and Automatic methods. Buy X Get Y and App
@@ -40,6 +41,7 @@ const DISCOUNT_COLUMNS = [
   "Method",
   "Status",
   "Code",
+  "Additional Code",
   "Starts At",
   "Ends At",
   "Created At",
@@ -160,8 +162,48 @@ const ITEMS_FRAGMENT = `#graphql
   fragment DiscountItemIds on DiscountItems {
     __typename
     ... on AllDiscountItems { allItems }
-    ... on DiscountProducts { products(first: 250) { nodes { id } } productVariants(first: 250) { nodes { id } } }
-    ... on DiscountCollections { collections(first: 250) { nodes { id } } }
+    ... on DiscountProducts {
+      products(first: 250) { nodes { id } pageInfo { hasNextPage endCursor } }
+      productVariants(first: 250) { nodes { id } pageInfo { hasNextPage endCursor } }
+    }
+    ... on DiscountCollections { collections(first: 250) { nodes { id } pageInfo { hasNextPage endCursor } } }
+  }
+`;
+
+const ITEMS_PAGE_FRAGMENT = `#graphql
+  fragment DiscountItemIdsPage on DiscountItems {
+    ... on DiscountProducts {
+      products(first: 250, after: $after) @include(if: $products) { nodes { id } pageInfo { hasNextPage endCursor } }
+      productVariants(first: 250, after: $after) @include(if: $variants) { nodes { id } pageInfo { hasNextPage endCursor } }
+    }
+    ... on DiscountCollections {
+      collections(first: 250, after: $after) @include(if: $collections) { nodes { id } pageInfo { hasNextPage endCursor } }
+    }
+  }
+`;
+
+/** Next page of one customerGets.items list (selected by the boolean variables). */
+const DISCOUNT_ITEMS_PAGE = `#graphql
+  query DiscountItemsPage($id: ID!, $after: String, $products: Boolean!, $variants: Boolean!, $collections: Boolean!) {
+    discountNode(id: $id) {
+      id
+      discount {
+        __typename
+        ... on DiscountCodeBasic { customerGets { items { ...DiscountItemIdsPage } } }
+        ... on DiscountAutomaticBasic { customerGets { items { ...DiscountItemIdsPage } } }
+        ... on DiscountCodeBxgy { customerGets { items { ...DiscountItemIdsPage } } }
+        ... on DiscountAutomaticBxgy { customerGets { items { ...DiscountItemIdsPage } } }
+      }
+    }
+  }
+  ${ITEMS_PAGE_FRAGMENT}
+`;
+
+const VALUE_FRAGMENT = `#graphql
+  fragment DiscountValueFields on DiscountCustomerGetsValue {
+    __typename
+    ... on DiscountPercentage { percentage }
+    ... on DiscountAmount { amount { amount } appliesOnEachItem }
   }
 `;
 
@@ -183,13 +225,13 @@ const DISCOUNT_DETAIL = `#graphql
         __typename
         ... on DiscountCodeBasic {
           title
-          customerGets { items { ...DiscountItemIds } }
+          customerGets { value { ...DiscountValueFields } items { ...DiscountItemIds } }
           context { ...DiscountContextIds }
           codes(first: 250) { nodes { code } }
         }
         ... on DiscountAutomaticBasic {
           title
-          customerGets { items { ...DiscountItemIds } }
+          customerGets { value { ...DiscountValueFields } items { ...DiscountItemIds } }
           context { ...DiscountContextIds }
         }
         ... on DiscountCodeFreeShipping {
@@ -212,7 +254,44 @@ const DISCOUNT_DETAIL = `#graphql
   }
   ${ITEMS_FRAGMENT}
   ${CONTEXT_FRAGMENT}
+  ${VALUE_FRAGMENT}
 `;
+
+/**
+ * Loads the remaining pages of the product / variant / collection lists of
+ * customerGets.items (in place), so lists over 250 are complete for export,
+ * diffs and REPLACE.
+ */
+async function completeItems(gql: Gql, id: string, items: any): Promise<any> {
+  const lists: Array<["products" | "productVariants" | "collections", string]> =
+    items?.__typename === "DiscountProducts"
+      ? [
+          ["products", "products"],
+          ["productVariants", "variants"],
+        ]
+      : items?.__typename === "DiscountCollections"
+        ? [["collections", "collections"]]
+        : [];
+  for (const [field, flag] of lists) {
+    const conn = items[field];
+    if (!conn) continue;
+    let pageInfo = conn.pageInfo;
+    while (pageInfo?.hasNextPage) {
+      const d = await gql(DISCOUNT_ITEMS_PAGE, {
+        id,
+        after: pageInfo.endCursor,
+        products: flag === "products",
+        variants: flag === "variants",
+        collections: flag === "collections",
+      });
+      const next = d.discountNode?.discount?.customerGets?.items?.[field];
+      if (!next) break;
+      conn.nodes = [...(conn.nodes ?? []), ...(next.nodes ?? [])];
+      pageInfo = next.pageInfo;
+    }
+  }
+  return items;
+}
 
 function valueCells(value: any): { type: string; value: string; eachItem: string } {
   if (!value) return { type: "", value: "", eachItem: "" };
@@ -309,7 +388,9 @@ export function discountToRows(node: any, groups: Set<string>, items?: any): Row
       }
       if (groups.has("metafields")) metafieldsToRow(row, node.metafields);
     }
-    if (codes[i]) row.Code = codes[i].code ?? "";
+    // Extra codes go in "Additional Code" so that, without the ID column, they
+    // still continue this item instead of starting new ones (Code is a key).
+    if (codes[i]) row[i === 0 ? "Code" : "Additional Code"] = codes[i].code ?? "";
     rows.push(row);
   }
   return rows;
@@ -325,7 +406,7 @@ async function exportDiscounts(ctx: ExportContext, emit: (rows: Row[]) => Promis
     if (t === "DiscountProducts" || t === "DiscountCollections") {
       // Product/collection lists cannot be in the bulk query (connection limit).
       const detail = (await ctx.gql(DISCOUNT_DETAIL, { id: node.id })).discountNode;
-      items = detail?.discount?.customerGets?.items;
+      items = await completeItems(ctx.gql, node.id, detail?.discount?.customerGets?.items);
     }
     await emit(discountToRows(node, groups, items));
     ctx.progress(++n);
@@ -340,8 +421,9 @@ const DISCOUNT_BY_CODE = `#graphql
 `;
 
 const DISCOUNTS_BY_TITLE = `#graphql
-  query ImportDiscountsByTitle($query: String!) {
-    discountNodes(first: 25, query: $query) {
+  query ImportDiscountsByTitle($query: String!, $after: String) {
+    discountNodes(first: 250, after: $after, query: $query) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         id
         discount {
@@ -370,6 +452,7 @@ async function fetchDetail(gql: Gql, id: string): Promise<ExistingDiscount | nul
   if (!node?.discount) return null;
   const kind = TYPENAMES[node.discount.__typename];
   if (!kind) return null;
+  if (node.discount.customerGets?.items) await completeItems(gql, node.id, node.discount.customerGets.items);
   return {
     id: node.id,
     typename: node.discount.__typename,
@@ -403,12 +486,19 @@ async function findDiscount(gql: Gql, idCell: string | undefined, method: Method
     if (node) return fetchDetail(gql, node.id);
   }
   if (title && method !== "Code" && !code) {
-    const data = await gql(DISCOUNTS_BY_TITLE, { query: `title:${JSON.stringify(title)}` });
-    const hits = (data.discountNodes.nodes as any[]).filter(
-      (n) => TYPENAMES[n.discount?.__typename]?.method === "Automatic" && n.discount.title === title,
-    );
-    if (hits.length > 1) throw new ImportError(`Several automatic discounts are titled "${title}"; use the ID column`);
-    if (hits.length) return fetchDetail(gql, hits[0].id);
+    // The title search also matches other titles (words / prefixes): page
+    // until a page holds the exact title or results run out.
+    let after: string | null = null;
+    do {
+      const data: any = await gql(DISCOUNTS_BY_TITLE, { query: `title:${JSON.stringify(title)}`, after });
+      const conn = data.discountNodes;
+      const hits = (conn.nodes as any[]).filter(
+        (n) => TYPENAMES[n.discount?.__typename]?.method === "Automatic" && n.discount.title === title,
+      );
+      if (hits.length > 1) throw new ImportError(`Several automatic discounts are titled "${title}"; use the ID column`);
+      if (hits.length) return fetchDetail(gql, hits[0].id);
+      after = conn.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+    } while (after);
   }
   return null;
 }
@@ -569,16 +659,37 @@ function minimumInput(top: Row, creating: boolean): Record<string, any> | undefi
 
 function customerGetsInput(top: Row, existing: ExistingDiscount | null, creating: boolean): Record<string, any> | undefined {
   const out: Record<string, any> = {};
+  // Absent/blank Value Type and Applies On Each Item default to the existing
+  // discount's value on update (only to percentage / false on create), so a
+  // sheet with just ID + Value keeps "$10 off" a fixed amount.
+  const prev = existing?.discount?.customerGets?.value;
+  const prevType =
+    prev?.__typename === "DiscountPercentage" ? "percentage" : prev?.__typename === "DiscountAmount" ? "fixed_amount" : undefined;
+  const prevEach = prev?.__typename === "DiscountAmount" ? Boolean(prev.appliesOnEachItem) : undefined;
   const valueCell = cell(top, "Value");
-  if (valueCell) {
-    const n = Math.abs(parseNumber(valueCell)!);
-    const vt = (cell(top, "Value Type") || "percentage").toLowerCase().replace(/[\s-]+/g, "_");
+  const vtCell = (cell(top, "Value Type") ?? "").toLowerCase().replace(/[\s-]+/g, "_");
+  const sheetType = vtCell === "amount" ? "fixed_amount" : vtCell || undefined;
+  if (sheetType && sheetType !== "percentage" && sheetType !== "fixed_amount") {
+    throw new ImportError(`Value Type "${vtCell}" must be percentage or fixed_amount`);
+  }
+  const each = parseBool(cell(top, "Applies On Each Item"));
+  const typeChanged = !creating && sheetType !== undefined && sheetType !== prevType;
+  const eachChanged = !creating && each !== undefined && each !== prevEach;
+  if (valueCell || typeChanged || eachChanged) {
+    if (!valueCell && typeChanged) throw new ImportError("Value is required when changing Value Type");
+    const n = valueCell
+      ? Math.abs(parseNumber(valueCell)!)
+      : prevType === "fixed_amount"
+        ? Number(prev.amount?.amount)
+        : Math.round(Number(prev?.percentage) * 100 * 1e6) / 1e6;
+    const vt = sheetType ?? prevType ?? "percentage";
     if (vt === "percentage") {
       if (n > 100) throw new ImportError("Value must be between 0 and 100 for a percentage");
-      out.value = { percentage: n / 100 };
-    } else if (vt === "fixed_amount" || vt === "amount") {
-      out.value = { discountAmount: { amount: String(n), appliesOnEachItem: parseBool(cell(top, "Applies On Each Item")) ?? false } };
-    } else throw new ImportError(`Value Type "${vt}" must be percentage or fixed_amount`);
+      // A changed Applies On Each Item alone does not apply to a percentage.
+      if (valueCell || typeChanged) out.value = { percentage: n / 100 };
+    } else {
+      out.value = { discountAmount: { amount: String(n), appliesOnEachItem: each ?? prevEach ?? false } };
+    }
   } else if (creating) throw new ImportError("Value is required for a Basic discount");
 
   const applies = cell(top, "Applies To");
@@ -701,11 +812,12 @@ async function saveDiscount(
   method: Method,
   existing: ExistingDiscount | null,
   codes: string[],
+  built?: Record<string, any>,
 ): Promise<{ id: string; notes: string[] }> {
   const top = rows[0];
   const notes: string[] = [];
   const m = MUTATIONS[`${type}/${method}`];
-  const input = discountInput(top, type, method, existing, codes[0]);
+  const input = built ?? discountInput(top, type, method, existing, codes[0]);
   let id: string;
   if (existing) {
     const d = await ctx.gql(m.update, { id: existing.id, input });
@@ -730,9 +842,36 @@ async function saveDiscount(
   return { id, notes };
 }
 
+/**
+ * Discount-level columns that only belong on the top row. A continuation row
+ * (extra code) carrying a different value means two discounts were grouped
+ * together (e.g. new discounts without ID/Code), which must not be merged.
+ */
+const TOP_ONLY_COLUMNS = DISCOUNT_COLUMNS.filter(
+  (c) => !["ID", "Command", "Code", "Additional Code", "Row #", "Top Row"].includes(c),
+);
+
+function checkContinuationRows(rows: Row[]) {
+  const top = rows[0];
+  rows.slice(1).forEach((row, i) => {
+    for (const col of TOP_ONLY_COLUMNS) {
+      const v = cell(row, col);
+      if (v && v.toLowerCase() !== (cell(top, col) ?? "").toLowerCase()) {
+        throw new ImportError(
+          `Row ${i + 2} of this discount has its own ${col} "${v}" (top row: "${cell(top, col) ?? ""}"); ` +
+            "put each discount's fields on its top row only, or give each discount its own ID/Code",
+        );
+      }
+    }
+  });
+}
+
 export async function importDiscount(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const top = rows[0];
-  const codes = rows.map((r) => cell(r, "Code") ?? "").filter(Boolean);
+  checkContinuationRows(rows);
+  // First code from the top row; extra codes from "Additional Code" (and from
+  // "Code" on rows grouped by ID, as in older exports).
+  const codes = rows.flatMap((r) => [cell(r, "Code") ?? "", cell(r, "Additional Code") ?? ""]).filter(Boolean);
   const method = parseMethod(cell(top, "Method"));
   const sheetType = parseType(cell(top, "Type"));
   const existing = await findDiscount(ctx.gql, cell(top, "ID"), method, codes[0], cell(top, "Title"));
@@ -762,7 +901,12 @@ export async function importDiscount(ctx: ImportContext, rows: Row[], command: C
   if (command === "UPDATE" && !existing) return { status: "Failed", command, message: "Discount not found" };
 
   let target = existing;
+  let built: Record<string, any> | undefined;
   if (command === "REPLACE" && existing) {
+    // Build and validate the full create input before deleting, so a bad
+    // sheet never loses the discount.
+    built = discountInput(top, type, effMethod, null, codes[0]);
+    metafieldsFromRow(top);
     await deleteDiscount(ctx.gql, existing);
     target = null;
   }
@@ -774,18 +918,20 @@ export async function importDiscount(ctx: ImportContext, rows: Row[], command: C
       message: `Existing discount is ${target.type} (${target.method}); use REPLACE to change it to ${type} (${effMethod})`,
     };
   }
-  const r = await saveDiscount(ctx, rows, type, effMethod, target, codes);
+  const r = await saveDiscount(ctx, rows, type, effMethod, target, codes, built);
   const verb = target ? "Updated" : command === "REPLACE" && existing ? "Replaced" : "Created";
   return { status: "OK", command, id: r.id, message: [verb, ...r.notes].join("; "), rowPatches: patches(r.id) };
 }
 
 /**
- * Key columns: Matrixify identifies discounts by ID, then Code. Here Code
- * cannot group rows because every row of a discount carries a different
- * code, so rows are grouped by ID (exported on every row), then by Title (on
- * the top row of new discounts; code-only continuation rows have both blank).
- * Matching an existing discount still follows Matrixify: ID, then first
- * Code, then Title for automatic discounts.
+ * Key columns: ID (exported on every row), then Code (the first code, top
+ * row only), then Title (for new automatic discounts, which have no code).
+ * Extra codes sit on continuation rows in "Additional Code" with ID, Code and
+ * Title blank, so they continue the item above. Grouping by Title before
+ * Code would merge distinct new code discounts sharing a title; rows grouped
+ * together that disagree on discount fields fail (checkContinuationRows).
+ * Matching an existing discount follows Matrixify: ID, then first Code, then
+ * Title for automatic discounts.
  */
 export const discountsEntity: Entity = {
   key: "discounts",
@@ -799,5 +945,5 @@ export const discountsEntity: Entity = {
     { key: "metafields", label: "Discount metafields", default: true },
   ],
   export: exportDiscounts,
-  import: { keyColumns: ["ID", "Title"], apply: importDiscount },
+  import: { keyColumns: ["ID", "Code", "Title"], apply: importDiscount },
 };

@@ -64,9 +64,26 @@ const sampleDraft = {
       id: "gid://shopify/DraftOrderLineItem/2", title: "Setup fee", variantTitle: null, sku: null, quantity: 1, vendor: null,
       requiresShipping: false, taxable: false, custom: true,
       originalUnitPriceSet: { shopMoney: { amount: "15.0" } }, totalDiscountSet: { shopMoney: { amount: "1.5" } },
-      appliedDiscount: { value: 1.5, valueType: "FIXED_AMOUNT" }, variant: null, product: null,
+      appliedDiscount: { title: "Setup promo", description: "first order", value: 1.5, valueType: "FIXED_AMOUNT" }, variant: null, product: null,
+      customAttributes: [{ key: "engraving", value: "A & B" }, { key: "gift", value: "" }],
+      priceOverride: null,
+      weight: { unit: "KILOGRAMS", value: 0.5 },
     },
   ],
+};
+
+// sampleDraft's lines as ImportDraftOrderDetail returns them (current state on update).
+const currentLines = sampleDraft.lineItems.map((li: any) => ({
+  ...li,
+  originalUnitPriceWithCurrency: { amount: li.originalUnitPriceSet.shopMoney.amount },
+  customAttributes: li.customAttributes ?? [],
+  priceOverride: li.id.endsWith("/1") ? { amount: "9.0" } : null,
+  weight: li.weight ?? null,
+}));
+const currentDraft = {
+  id: sampleDraft.id,
+  appliedDiscount: sampleDraft.appliedDiscount,
+  lineItems: { nodes: currentLines, pageInfo: { hasNextPage: false, endCursor: null } },
 };
 
 describe("draft orders export", () => {
@@ -207,6 +224,7 @@ describe("draft orders import", () => {
   it("updates an existing draft (MERGE): replaces lines, tags and removes the discount", async () => {
     const m = mockGql({
       ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      ImportDraftOrderDetail: () => ({ draftOrder: currentDraft }),
       OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
       ImportDraftOrderUpdate: () => ({
         draftOrderUpdate: { ...ok, draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", invoiceUrl: null, lineItems: { nodes: [{ id: "x/1" }] } } },
@@ -227,8 +245,8 @@ describe("draft orders import", () => {
     ];
     const r = await importDraftOrder(importCtx(m.gql), rows, "MERGE");
     expect(r.status).toBe("OK");
-    expect(m.ops()).toEqual(["ImportDraftOrderById", "OrderCommonShopCurrency", "ImportDraftOrderUpdate", "MetafieldsSet"]);
-    expect(m.calls[2].vars).toEqual({
+    expect(m.ops()).toEqual(["ImportDraftOrderById", "ImportDraftOrderDetail", "OrderCommonShopCurrency", "ImportDraftOrderUpdate", "MetafieldsSet"]);
+    expect(m.calls[3].vars).toEqual({
       id: "gid://shopify/DraftOrder/500",
       input: {
         lineItems: [{ quantity: 4, variantId: "gid://shopify/ProductVariant/9" }],
@@ -258,5 +276,144 @@ describe("draft orders import", () => {
     const m = mockGql({ ImportDraftOrderByName: () => ({ draftOrders: { nodes: [{ id: "x", name: "#D50", status: "OPEN" }] } }) });
     const r = await importDraftOrder(importCtx(m.gql), [{ Name: "#D5" }], "DELETE");
     expect(r.status).toBe("Failed");
+  });
+
+  // --- Regression tests ---------------------------------------------------------
+
+  it("REPLACE without line columns fails before deleting the draft", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
+      ImportDraftOrderDelete: () => ({ draftOrderDelete: { ...ok, deletedId: "x" } }),
+    });
+    await expect(importDraftOrder(importCtx(m.gql), [{ ID: "500", Note: "x" }], "REPLACE")).rejects.toThrow(/line item is required/);
+    expect(m.ops()).not.toContain("ImportDraftOrderDelete");
+  });
+
+  it("REPLACE with an unknown SKU fails before deleting the draft", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
+      OrderCommonVariantBySku: () => ({ productVariants: { nodes: [] } }),
+      ImportDraftOrderDelete: () => ({ draftOrderDelete: { ...ok, deletedId: "x" } }),
+    });
+    await expect(importDraftOrder(importCtx(m.gql), [{ ID: "500", "Line: SKU": "NOPE" }], "REPLACE")).rejects.toThrow(/Line: Title/);
+    expect(m.ops()).not.toContain("ImportDraftOrderDelete");
+  });
+
+  it("REPLACE builds the input, then deletes and creates", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
+      ImportDraftOrderDelete: () => ({ draftOrderDelete: { ...ok, deletedId: "x" } }),
+      ImportDraftOrderCreate: () => ({ draftOrderCreate: { ...ok, draftOrder: { id: "gid://shopify/DraftOrder/9", name: "#D9", lineItems: { nodes: [] } } } }),
+    });
+    const r = await importDraftOrder(importCtx(m.gql), [{ ID: "500", "Line: Variant ID": "9" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", message: "Replaced" });
+    expect(m.ops()).toEqual(["ImportDraftOrderById", "OrderCommonShopCurrency", "ImportDraftOrderDelete", "ImportDraftOrderCreate"]);
+  });
+
+  it("exports custom attributes, price override, weight and line discount title/description", () => {
+    const rows = draftOrderToRows({ ...sampleDraft, lineItems: currentLines }, new Set(["line_items"]));
+    expect(rows[0]["Line: Price Override"]).toBe("9.0");
+    expect(rows[1]).toMatchObject({
+      "Line: Applied Discount: Title": "Setup promo",
+      "Line: Applied Discount: Description": "first order",
+      "Line: Weight": "0.5",
+      "Line: Weight Unit": "kilograms",
+      "Line: Custom Attributes": "engraving: A & B\ngift: ",
+    });
+  });
+
+  it("MERGE of an unchanged exported draft does not send lineItems", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      ImportDraftOrderDetail: () => ({ draftOrder: currentDraft }),
+      ImportDraftOrderUpdate: () => ({ draftOrderUpdate: { ...ok, draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", lineItems: { nodes: [] } } } }),
+      MetafieldsSet: () => ({ metafieldsSet: ok }),
+    });
+    const rows = draftOrderToRows({ ...sampleDraft, lineItems: currentLines }, new Set(["line_items"]));
+    const r = await importDraftOrder(importCtx(m.gql), rows, "MERGE");
+    expect(r.status).toBe("OK");
+    const input = m.calls.find((c) => c.op === "ImportDraftOrderUpdate")!.vars.input;
+    expect(input.lineItems).toBeUndefined();
+    expect(input.appliedDiscount).toEqual({ value: 10, valueType: "PERCENTAGE", title: "Loyalty" });
+  });
+
+  it("MERGE with a changed line re-sends every line losslessly", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      ImportDraftOrderDetail: () => ({ draftOrder: currentDraft }),
+      ImportDraftOrderUpdate: () => ({
+        draftOrderUpdate: { ...ok, draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", lineItems: { nodes: [{ id: "gid://shopify/DraftOrderLineItem/71" }, { id: "gid://shopify/DraftOrderLineItem/72" }] } } },
+      }),
+    });
+    // Partial sheet: Line: ID + Quantity only; everything else comes from the current lines.
+    const rows: Row[] = [
+      { ID: "500", Currency: "USD", "Line: ID": "1", "Line: Quantity": "5" },
+      { ID: "500", "Line: ID": "2", "Line: Quantity": "1" },
+    ];
+    const r = await importDraftOrder(importCtx(m.gql), rows, "MERGE");
+    expect(r.status).toBe("OK");
+    const input = m.calls.find((c) => c.op === "ImportDraftOrderUpdate")!.vars.input;
+    expect(input.lineItems).toEqual([
+      { quantity: 5, variantId: "gid://shopify/ProductVariant/9", priceOverride: { amount: "9", currencyCode: "USD" } },
+      {
+        quantity: 1,
+        title: "Setup fee",
+        originalUnitPriceWithCurrency: { amount: "15", currencyCode: "USD" },
+        requiresShipping: false,
+        taxable: false,
+        weight: { unit: "KILOGRAMS", value: 0.5 },
+        appliedDiscount: {
+          value: 1.5,
+          valueType: "FIXED_AMOUNT",
+          amountWithCurrency: { amount: "1.5", currencyCode: "USD" },
+          title: "Setup promo",
+          description: "first order",
+        },
+        customAttributes: [{ key: "engraving", value: "A & B" }, { key: "gift", value: "" }],
+      },
+    ]);
+    expect(r.rowPatches?.[1]).toMatchObject({ "Line: ID": "72" });
+  });
+
+  it("applied discount Value without Value Type keeps the current type and title", async () => {
+    const m = mockGql({
+      ImportDraftOrderById: () => ({ draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5", status: "OPEN" } }),
+      ImportDraftOrderDetail: () => ({ draftOrder: currentDraft }),
+      OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
+      ImportDraftOrderUpdate: () => ({ draftOrderUpdate: { ...ok, draftOrder: { id: "gid://shopify/DraftOrder/500", name: "#D5" } } }),
+    });
+    await importDraftOrder(importCtx(m.gql), [{ ID: "500", "Applied Discount: Value": "20" }], "MERGE");
+    const input = m.calls.find((c) => c.op === "ImportDraftOrderUpdate")!.vars.input;
+    expect(input.appliedDiscount).toEqual({ value: 20, valueType: "PERCENTAGE", title: "Loyalty" });
+  });
+
+  it("finds a draft by exact Name past prefix matches on later pages", async () => {
+    const m = mockGql({
+      ImportDraftOrderByName: (v) =>
+        v.after
+          ? { draftOrders: { nodes: [{ id: "gid://shopify/DraftOrder/1", name: "#D1", status: "OPEN" }], pageInfo: { hasNextPage: false, endCursor: null } } }
+          : {
+              draftOrders: {
+                nodes: Array.from({ length: 250 }, (_, i) => ({ id: `gid://shopify/DraftOrder/${i + 10}`, name: `#D1${i}`, status: "OPEN" })),
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+              },
+            },
+      ImportDraftOrderDelete: () => ({ draftOrderDelete: { ...ok, deletedId: "x" } }),
+    });
+    const r = await importDraftOrder(importCtx(m.gql), [{ Name: "#D1" }], "DELETE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/DraftOrder/1" });
+    expect(m.calls[1].vars).toMatchObject({ query: 'name:"#D1"', after: "c1" });
+  });
+
+  it("fails when several drafts have the exact Name", async () => {
+    const m = mockGql({
+      ImportDraftOrderByName: () => ({
+        draftOrders: { nodes: [{ id: "a", name: "#D1", status: "OPEN" }, { id: "b", name: "#d1", status: "OPEN" }], pageInfo: { hasNextPage: false } },
+      }),
+    });
+    await expect(importDraftOrder(importCtx(m.gql), [{ Name: "#D1" }], "DELETE")).rejects.toThrow(/Several draft orders/);
   });
 });

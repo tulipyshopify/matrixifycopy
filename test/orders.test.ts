@@ -333,4 +333,69 @@ describe("orders import", () => {
     expect(r).toMatchObject({ status: "OK", message: "Deleted" });
     expect(m.calls[1].vars).toEqual({ orderId: "gid://shopify/Order/1" });
   });
+
+  // --- Regression tests ---------------------------------------------------------
+
+  const existingOrder = () => ({
+    ImportOrderById: () => ({ order: { id: "gid://shopify/Order/1", name: "#1001" } }),
+    OrderCommonShopCurrency: () => ({ shop: { currencyCode: "USD" } }),
+    ImportOrderDelete: () => ({ orderDelete: { ...ok, deletedId: "gid://shopify/Order/1" } }),
+    ImportOrderCreate: () => ({ orderCreate: { ...ok, order: { id: "gid://shopify/Order/2", name: "#1001", lineItems: { nodes: [] } } } }),
+  });
+
+  it.each(["in_progress", "on_hold", "scheduled", "fulfillment_not_required", "request_declined", "pending_fulfillment", "open"])(
+    "REPLACE accepts exported Fulfillment Status %s (created unfulfilled)",
+    async (status) => {
+      const m = mockGql(existingOrder());
+      const r = await importOrder(importCtx(m.gql), [{ ID: "1", "Fulfillment Status": status, "Line: Title": "x", "Line: Price": "1" }], "REPLACE");
+      expect(r.status).toBe("OK");
+      expect(m.ops()).toEqual(["ImportOrderById", "OrderCommonShopCurrency", "ImportOrderDelete", "ImportOrderCreate"]);
+      expect(m.calls[3].vars.order.fulfillmentStatus).toBeUndefined();
+    },
+  );
+
+  it("maps partially_fulfilled to PARTIAL", async () => {
+    const m = mockGql(existingOrder());
+    await importOrder(importCtx(m.gql), [{ "Fulfillment Status": "partially_fulfilled", "Line: Title": "x", "Line: Price": "1" }], "NEW");
+    expect(m.calls.find((c) => c.op === "ImportOrderCreate")!.vars.order.fulfillmentStatus).toBe("PARTIAL");
+  });
+
+  it("REPLACE with an invalid sheet fails before deleting the order", async () => {
+    const bad: Row[][] = [
+      [{ ID: "1", "Fulfillment Status": "bogus", "Line: Title": "x", "Line: Price": "1" }],
+      [{ ID: "1", "Line: SKU": "NOPE" }],
+      [{ ID: "1", "Financial Status": "nope", "Line: Title": "x", "Line: Price": "1" }],
+      [{ ID: "1", Note: "no lines" }],
+    ];
+    for (const rows of bad) {
+      const m = mockGql({ ...existingOrder(), OrderCommonVariantBySku: () => ({ productVariants: { nodes: [] } }) });
+      await expect(importOrder(importCtx(m.gql), rows, "REPLACE")).rejects.toThrow();
+      expect(m.ops()).not.toContain("ImportOrderDelete");
+    }
+  });
+
+  it("finds an order by exact Name past prefix matches on later pages", async () => {
+    const m = mockGql({
+      ImportOrderByName: (v) =>
+        v.after
+          ? { orders: { nodes: [{ id: "gid://shopify/Order/1", name: "#1" }], pageInfo: { hasNextPage: false, endCursor: null } } }
+          : {
+              orders: {
+                nodes: Array.from({ length: 250 }, (_, i) => ({ id: `gid://shopify/Order/${i + 10}`, name: `#1${i}` })),
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+              },
+            },
+      ImportOrderDelete: () => ({ orderDelete: { ...ok, deletedId: "gid://shopify/Order/1" } }),
+    });
+    const r = await importOrder(importCtx(m.gql), [{ Name: "#1" }], "DELETE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Order/1" });
+    expect(m.calls[1].vars).toMatchObject({ query: 'name:"#1"', after: "c1" });
+  });
+
+  it("fails when several orders have the exact Name", async () => {
+    const m = mockGql({
+      ImportOrderByName: () => ({ orders: { nodes: [{ id: "a", name: "#1" }, { id: "b", name: "#1" }], pageInfo: { hasNextPage: false } } }),
+    });
+    await expect(importOrder(importCtx(m.gql), [{ Name: "#1" }], "DELETE")).rejects.toThrow(/Several orders/);
+  });
 });

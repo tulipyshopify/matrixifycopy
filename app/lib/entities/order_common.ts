@@ -221,6 +221,36 @@ export async function variantIdBySku(gql: Gql, cache: Map<string, unknown>, sku:
   return cache.get(key) as Promise<string | null>;
 }
 
+// --- Name lookups -----------------------------------------------------------------------
+
+/**
+ * Finds the single node whose `name` equals `name` (case-insensitive) by paging
+ * through a `name:"..."` search. The search is a prefix match (`#D1` also
+ * returns #D10, #D100...), so one short page can miss the exact match: pages
+ * are read until a page contains an exact match or results are exhausted.
+ * More than one exact match on that page is an error (ambiguous name).
+ * `query` must take `$query: String!` and `$after: String` and return a
+ * connection with `nodes { name ... }` and `pageInfo`.
+ */
+export async function findByExactName<T extends { name: string }>(
+  gql: Gql,
+  query: string,
+  pick: (data: any) => { nodes: T[]; pageInfo?: { hasNextPage: boolean; endCursor: string | null } },
+  name: string,
+  what: string,
+): Promise<T | null> {
+  const want = name.toLowerCase();
+  let after: string | null = null;
+  do {
+    const conn = pick(await gql(query, { query: `name:${JSON.stringify(name)}`, after }));
+    const hits = (conn.nodes ?? []).filter((n) => (n.name ?? "").toLowerCase() === want);
+    if (hits.length > 1) throw new ImportError(`Several ${what}s are named "${name}"; use the ID column`);
+    if (hits.length) return hits[0];
+    after = conn.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+  } while (after);
+  return null;
+}
+
 /** "partially_paid", "Partially Paid" -> "PARTIALLY_PAID". */
 export function enumCell(v: string): string {
   return v.trim().toUpperCase().replace(/[\s-]+/g, "_");

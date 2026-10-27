@@ -26,6 +26,7 @@ import {
   bagAmount,
   enumCell,
   enumToCell,
+  findByExactName,
   LINE_COLUMNS,
   lineToRow,
   moneyBagInput,
@@ -104,15 +105,32 @@ const TRANSACTION_STATUSES = ["AWAITING_RESPONSE", "ERROR", "FAILURE", "PENDING"
 const FINANCIAL_STATUSES = ["AUTHORIZED", "EXPIRED", "PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED", "PENDING", "REFUNDED", "VOIDED"];
 const INVENTORY_BEHAVIOURS = ["BYPASS", "DECREMENT_IGNORING_POLICY", "DECREMENT_OBEYING_POLICY"];
 
-/** Export display fulfillment status -> OrderCreateFulfillmentStatus (null = unfulfilled). */
-const FULFILLMENT_STATUS_IN: Record<string, string | null> = {
-  FULFILLED: "FULFILLED",
-  PARTIAL: "PARTIAL",
-  PARTIALLY_FULFILLED: "PARTIAL",
-  RESTOCKED: "RESTOCKED",
-  UNFULFILLED: null,
-  OPEN: null,
-  "": null,
+/**
+ * Fulfillment Status cell -> OrderCreateFulfillmentStatus. Export writes
+ * OrderDisplayFulfillmentStatus, which has more states than orderCreate
+ * accepts (FULFILLED, PARTIAL, RESTOCKED). Every exported value is accepted:
+ * - fulfilled / partial(ly_fulfilled) / restocked map directly;
+ * - unfulfilled / open / pending_fulfillment: created unfulfilled (omitted);
+ * - in_progress / on_hold / scheduled / request_declined: states of
+ *   fulfillment orders that orderCreate cannot set; nothing is fulfilled yet,
+ *   so the order is created unfulfilled (omitted) with a note;
+ * - fulfillment_not_required: nothing to fulfil; omitted with a note (the
+ *   status follows from lines with Line: Requires Shipping = FALSE).
+ * `noteIfOmitted` marks values whose state is not reproduced exactly.
+ */
+const FULFILLMENT_STATUS_IN: Record<string, { status: string | null; noteIfOmitted?: boolean }> = {
+  FULFILLED: { status: "FULFILLED" },
+  PARTIAL: { status: "PARTIAL" },
+  PARTIALLY_FULFILLED: { status: "PARTIAL" },
+  RESTOCKED: { status: "RESTOCKED" },
+  UNFULFILLED: { status: null },
+  OPEN: { status: null },
+  PENDING_FULFILLMENT: { status: null },
+  IN_PROGRESS: { status: null, noteIfOmitted: true },
+  ON_HOLD: { status: null, noteIfOmitted: true },
+  SCHEDULED: { status: null, noteIfOmitted: true },
+  REQUEST_DECLINED: { status: null, noteIfOmitted: true },
+  FULFILLMENT_NOT_REQUIRED: { status: null, noteIfOmitted: true },
 };
 
 // --- Export -------------------------------------------------------------------------
@@ -234,8 +252,8 @@ const ORDER_BY_ID = `#graphql
 `;
 
 const ORDER_BY_NAME = `#graphql
-  query ImportOrderByName($query: String!) {
-    orders(first: 5, query: $query) { nodes { id name } }
+  query ImportOrderByName($query: String!, $after: String) {
+    orders(first: 250, after: $after, query: $query) { nodes { id name } pageInfo { hasNextPage endCursor } }
   }
 `;
 
@@ -249,11 +267,7 @@ async function fetchOrder(gql: Gql, by: { id?: string; name?: string }): Promise
     const o = (await gql(ORDER_BY_ID, { id: by.id })).order;
     if (o) return o;
   }
-  if (by.name) {
-    const d = await gql(ORDER_BY_NAME, { query: `name:${JSON.stringify(by.name)}` });
-    const want = by.name.toLowerCase();
-    return (d.orders.nodes as ExistingOrder[]).find((o) => o.name.toLowerCase() === want) ?? null;
-  }
+  if (by.name) return findByExactName<ExistingOrder>(gql, ORDER_BY_NAME, (d) => d.orders, by.name, "order");
   return null;
 }
 
@@ -370,9 +384,14 @@ export async function orderCreateInput(
 
   const fs = cell(top, "Fulfillment Status");
   if (fs) {
-    const key = enumCell(fs);
-    if (!(key in FULFILLMENT_STATUS_IN)) throw new ImportError(`Fulfillment Status "${fs}" must be fulfilled, partial, restocked or unfulfilled`);
-    if (FULFILLMENT_STATUS_IN[key]) order.fulfillmentStatus = FULFILLMENT_STATUS_IN[key];
+    const mapped = FULFILLMENT_STATUS_IN[enumCell(fs)];
+    if (!mapped) {
+      throw new ImportError(
+        `Fulfillment Status "${fs}" must be one of ${Object.keys(FULFILLMENT_STATUS_IN).map((k) => k.toLowerCase()).join(", ")}`,
+      );
+    }
+    if (mapped.status) order.fulfillmentStatus = mapped.status;
+    else if (mapped.noteIfOmitted) notes.push(`Fulfillment Status "${fs}" cannot be set on create; order created unfulfilled`);
   }
 
   const billing = addressFromRow(top, "Billing");
@@ -442,8 +461,10 @@ export async function orderCreateInput(
   return { order, options, lineRows: lines.map((l) => l.rowIndex), notes };
 }
 
-async function createOrder(ctx: ImportContext, rows: Row[]) {
-  const { order, options, lineRows, notes } = await orderCreateInput(ctx, rows);
+type OrderCreateBuilt = Awaited<ReturnType<typeof orderCreateInput>>;
+
+async function createOrder(ctx: ImportContext, rows: Row[], built?: OrderCreateBuilt) {
+  const { order, options, lineRows, notes } = built ?? (await orderCreateInput(ctx, rows));
   const d = await ctx.gql(ORDER_CREATE, { order, options });
   assertNoUserErrors(d.orderCreate, "Create order");
   const created = d.orderCreate.order;
@@ -499,8 +520,8 @@ export async function importOrder(ctx: ImportContext, rows: Row[], command: Comm
   const name = cell(top, "Name");
   const existing = id || name ? await fetchOrder(ctx.gql, { id, name }) : null;
 
-  const created = async (message: string): Promise<ItemResult> => {
-    const r = await createOrder(ctx, rows);
+  const created = async (message: string, built?: OrderCreateBuilt): Promise<ItemResult> => {
+    const r = await createOrder(ctx, rows, built);
     return { status: "OK", command, id: r.id, message: [message, ...r.notes].join("; "), rowPatches: r.rowPatches };
   };
 
@@ -515,8 +536,11 @@ export async function importOrder(ctx: ImportContext, rows: Row[], command: Comm
       return created("Created");
     }
     case "REPLACE": {
+      // Build and validate the whole create input (lines, SKU lookups, enums,
+      // money...) before deleting, so a bad sheet never loses the order.
+      const built = await orderCreateInput(ctx, rows);
       if (existing) await deleteOrder(ctx.gql, existing.id);
-      return created(existing ? "Replaced" : "Created");
+      return created(existing ? "Replaced" : "Created", built);
     }
     case "UPDATE":
     case "MERGE": {
