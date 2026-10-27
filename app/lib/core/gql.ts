@@ -7,8 +7,8 @@ export interface RawResponse {
   extensions?: {
     cost?: {
       requestedQueryCost?: number;
-      actualQueryCost?: number;
-      throttleStatus?: { maximumAvailable: number; currentlyAvailable: number; restoreRate: number };
+      actualQueryCost?: number | null;
+      throttleStatus?: { maximumAvailable?: number; currentlyAvailable?: number; restoreRate?: number };
     };
   };
 }
@@ -84,7 +84,7 @@ export function createGql(exec: RawExecutor, log: Logger = () => {}, maxRetries 
 
       const ts = res.extensions?.cost?.throttleStatus;
       if (ts) {
-        available = ts.currentlyAvailable;
+        available = ts.currentlyAvailable ?? Infinity;
         restoreRate = ts.restoreRate || restoreRate;
         maximum = ts.maximumAvailable || maximum;
       }

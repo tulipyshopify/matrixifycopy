@@ -12,6 +12,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (session) {
     await db.session.deleteMany({ where: { shop } });
   }
+  // Stop schedules and queued work; files are removed on shop/redact.
+  await db.schedule.updateMany({ where: { shop }, data: { enabled: false } });
+  await db.job.updateMany({ where: { shop, status: "queued" }, data: { status: "cancelled" } });
 
   return new Response();
 };

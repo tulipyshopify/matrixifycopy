@@ -888,7 +888,6 @@ async function updateProduct(
     }
     if (ex) toUpdate.push({ spec: v, existing: ex });
     else if (v.id) throw new ImportError(`Variant ID ${gidToId(v.id)} not found on this product`);
-    else if (command === "UPDATE") notes.push(`Variant on row ${v.rowIndex + 1} not found (UPDATE does not create variants)`);
     else toCreate.push(v);
   }
 

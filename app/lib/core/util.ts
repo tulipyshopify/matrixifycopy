@@ -3,10 +3,11 @@ import { COMMANDS, ImportError } from "./types";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** gid://shopify/Product/123 -> "123" */
+/** gid://shopify/Product/123 -> "123", gid://shopify/TaxonomyCategory/aa-1 -> "aa-1" */
 export function gidToId(gid: string | null | undefined): string {
   if (!gid) return "";
-  const m = /\/(\d+)(\?.*)?$/.exec(gid);
+  if (!gid.startsWith("gid://")) return gid;
+  const m = /^gid:\/\/shopify\/[^/]+\/([^?]+)/.exec(gid);
   return m ? m[1] : gid;
 }
 

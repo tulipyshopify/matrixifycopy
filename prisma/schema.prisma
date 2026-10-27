@@ -32,3 +32,53 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+/// An import or export run.
+model Job {
+  id          String    @id @default(cuid())
+  shop        String
+  type        String // "export" | "import"
+  status      String    @default("queued") // queued | running | finished | failed | cancelled
+  /// JSON: export -> [{ entity, options }], import -> { options }
+  config      String
+  format      String    @default("xlsx")
+  name        String    @default("")
+  inputFile   String?
+  inputName   String?
+  resultFile  String?
+  progress    Int       @default(0)
+  total       Int       @default(0)
+  /// JSON summary per sheet/entity
+  stats       String    @default("[]")
+  log         String    @default("")
+  error       String?
+  cancelRequested Boolean @default(false)
+  scheduleId  String?
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  @@index([shop, createdAt])
+  @@index([status, createdAt])
+}
+
+/// A recurring export, or an import pulled from a URL/FTP source.
+model Schedule {
+  id              String    @id @default(cuid())
+  shop            String
+  name            String
+  type            String // "export" | "import"
+  config          String
+  format          String    @default("xlsx")
+  /// import: http(s):// or ftp:// URL of the file to import
+  sourceUrl       String?
+  /// export: optional ftp:// URL to upload the result to
+  uploadUrl       String?
+  intervalMinutes Int
+  nextRunAt       DateTime
+  enabled         Boolean   @default(true)
+  lastJobId       String?
+  createdAt       DateTime  @default(now())
+
+  @@index([enabled, nextRunAt])
+}
