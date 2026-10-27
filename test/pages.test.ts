@@ -112,4 +112,44 @@ describe("pages import", () => {
     expect(r).toMatchObject({ status: "OK", message: "Deleted" });
     expect(m.call("ImportPageDelete")!.vars).toEqual({ id: "gid://shopify/Page/12" });
   });
+
+  it("REPLACE without a Title column fails before deleting the page", async () => {
+    const m = mockGql({ ImportPageById: { page: { id: "gid://shopify/Page/12", handle: "about", title: "About" } } });
+    await expect(pagesEntity.import!.apply(importCtx(m.gql), [{ ID: "12", "Body HTML": "<p>new</p>" }], "REPLACE")).rejects.toThrow(
+      /Title is required/,
+    );
+    expect(m.ops()).toEqual(["ImportPageById"]);
+  });
+
+  it("REPLACE deletes then creates once the input is valid", async () => {
+    const m = mockGql({
+      ImportPageById: { page: { id: "gid://shopify/Page/12", handle: "about", title: "About" } },
+      ImportPageDelete: { pageDelete: { ...ok, deletedPageId: "gid://shopify/Page/12" } },
+      ImportPageCreate: { pageCreate: { ...ok, page: { id: "gid://shopify/Page/13", handle: "about" } } },
+    });
+    const r = await pagesEntity.import!.apply(importCtx(m.gql), [{ ID: "12", Handle: "about", Title: "About" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Page/13", message: "Replaced" });
+    expect(m.ops()).toEqual(["ImportPageById", "ImportPageDelete", "ImportPageCreate"]);
+  });
+
+  it("handle lookup pages past prefix matches to the exact handle", async () => {
+    const pageOf = (nodes: any[], next: string | null) => ({ pages: { nodes, pageInfo: { hasNextPage: !!next, endCursor: next } } });
+    const m = mockGql({
+      ImportPageByHandle: (v: any) =>
+        v.after === "c1"
+          ? pageOf([{ id: "gid://shopify/Page/2", handle: "about", title: "About" }], null)
+          : pageOf([{ id: "gid://shopify/Page/1", handle: "about-us", title: "About us" }], "c1"),
+      ImportPageUpdate: { pageUpdate: { ...ok, page: { id: "gid://shopify/Page/2", handle: "about" } } },
+    });
+    const r = await pagesEntity.import!.apply(importCtx(m.gql), [{ Handle: "about", Title: "New" }], "UPDATE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Page/2" });
+    expect(m.calls.filter((c) => c.op === "ImportPageByHandle").map((c) => c.vars.after)).toEqual([undefined, "c1"]);
+  });
+
+  it("handle lookup fails on several exact matches", async () => {
+    const p = { id: "gid://shopify/Page/2", handle: "about", title: "About" };
+    const m = mockGql({ ImportPageByHandle: { pages: { nodes: [p, { ...p, id: "gid://shopify/Page/3" }], pageInfo: { hasNextPage: false, endCursor: null } } } });
+    await expect(pagesEntity.import!.apply(importCtx(m.gql), [{ Handle: "about", Title: "x" }], "MERGE")).rejects.toThrow(/Several pages/);
+    expect(m.ops()).toEqual(["ImportPageByHandle"]);
+  });
 });

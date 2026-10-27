@@ -69,4 +69,24 @@ describe("redirects import", () => {
     const m = mockGql({ ImportRedirectByPath: { urlRedirects: { nodes: [] } } });
     await expect(redirectsEntity.import!.apply(importCtx(m.gql), [{ Path: "/x" }], "NEW")).rejects.toThrow(/Target/);
   });
+
+  it("REPLACE without a Target fails before deleting", async () => {
+    const m = mockGql({ ImportRedirectById: { urlRedirect: R } });
+    await expect(redirectsEntity.import!.apply(importCtx(m.gql), [{ ID: "7", Path: "/old" }], "REPLACE")).rejects.toThrow(/Target/);
+    expect(m.ops()).toEqual(["ImportRedirectById"]);
+  });
+
+  it("path lookup pages past prefix matches to the exact path; several exact matches fail", async () => {
+    const pg = (nodes: any[], next: string | null) => ({ urlRedirects: { nodes, pageInfo: { hasNextPage: !!next, endCursor: next } } });
+    const m = mockGql({
+      ImportRedirectByPath: (v: any) => (v.after === "c1" ? pg([R], null) : pg([{ ...R, id: "gid://shopify/UrlRedirect/1", path: "/old-2" }], "c1")),
+      ImportRedirectUpdate: { urlRedirectUpdate: { ...ok, urlRedirect: R } },
+    });
+    const r = await redirectsEntity.import!.apply(importCtx(m.gql), [{ Path: "/old", Target: "/x" }], "UPDATE");
+    expect(r).toMatchObject({ status: "OK", id: R.id });
+    expect(m.call("ImportRedirectUpdate")!.vars).toEqual({ id: R.id, urlRedirect: { target: "/x" } });
+
+    const m2 = mockGql({ ImportRedirectByPath: pg([R, { ...R, id: "gid://shopify/UrlRedirect/9" }], null) });
+    await expect(redirectsEntity.import!.apply(importCtx(m2.gql), [{ Path: "/old", Target: "/x" }], "MERGE")).rejects.toThrow(/Several redirects/);
+  });
 });

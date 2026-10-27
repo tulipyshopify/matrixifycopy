@@ -2,7 +2,7 @@ import type { Command, Entity, ExportContext, ImportContext, ItemResult, Row } f
 import { ImportError } from "../core/types";
 import { paginate } from "../core/gql";
 import { assertNoUserErrors, buildSearchQuery, cell, gidToId, joinTags, parseInt10, splitTags, toGid } from "../core/util";
-import { runCommand, searchTerm } from "./_content_helpers";
+import { findExact, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -192,11 +192,15 @@ async function fetchMenu(ctx: ImportContext, row: Row): Promise<MenuNode | null>
   }
   const handle = cell(row, "Handle");
   if (!handle) return null;
-  // Search may be fuzzy; only an exact handle counts.
-  for await (const m of paginate<MenuNode>(ctx.gql, MENUS_BY_HANDLE, { query: searchTerm("handle", handle) }, (d) => d.menus)) {
-    if (m.handle === handle) return m;
-  }
-  return null;
+  // Search may be fuzzy; only an exact handle counts, on any page.
+  return findExact<MenuNode>(
+    ctx.gql,
+    MENUS_BY_HANDLE,
+    { query: searchTerm("handle", handle) },
+    (d) => d.menus,
+    (m) => m.handle === handle,
+    `Several menus have handle "${handle}"; use the ID column`,
+  );
 }
 
 interface ItemSpec {
@@ -320,10 +324,14 @@ export async function importMenu(ctx: ImportContext, rows: Row[], command: Comma
   const withItems = hasItemColumns(rows);
   const existing = await fetchMenu(ctx, top);
 
-  const create = async () => {
+  /** Validated menuCreate variables; throws before anything is written. */
+  const prepare = async () => {
     if (!title) throw new ImportError("Title is required to create a menu");
     if (!handle) throw new ImportError("Handle is required to create a menu");
-    const d = await ctx.gql(MENU_CREATE, { title, handle, items: createInputs(specs) });
+    return { title, handle, items: createInputs(specs) };
+  };
+  const create = async (vars: { title: string; handle: string; items: any[] }) => {
+    const d = await ctx.gql(MENU_CREATE, vars);
     assertNoUserErrors(d.menuCreate, "Create menu");
     const menu: MenuNode = d.menuCreate.menu;
     return { id: menu.id, rowPatches: itemPatches(specs, menu.items) };
@@ -350,19 +358,18 @@ export async function importMenu(ctx: ImportContext, rows: Row[], command: Comma
   return runCommand(command, existing, {
     what: "Menu",
     idOf: (m) => m.id,
+    prepare,
     create,
     update,
     remove: async (m) => {
       const d = await ctx.gql(MENU_DELETE, { id: m.id });
       assertNoUserErrors(d.menuDelete, "Delete menu");
     },
-    // Default menus (main menu, footer) cannot be deleted: replace their items instead.
-    replace: async (m) => {
-      if (m.isDefault) return { ...(await update(m)), message: "Replaced items (default menu cannot be deleted)" };
-      const d = await ctx.gql(MENU_DELETE, { id: m.id });
-      assertNoUserErrors(d.menuDelete, "Delete menu");
-      return { ...(await create()), message: "Replaced" };
-    },
+    // Default menus (main menu, footer) cannot be deleted: replace their items
+    // instead. Other menus use the standard prepare, delete, create.
+    replace: existing?.isDefault
+      ? async (m) => ({ ...(await update(m)), message: "Replaced items (default menu cannot be deleted)" })
+      : undefined,
   });
 }
 

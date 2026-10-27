@@ -1,7 +1,7 @@
 import type { Command, Entity, ExportContext, ImportContext, ItemResult, Row } from "../core/types";
 import { ImportError } from "../core/types";
 import { assertNoUserErrors, buildSearchQuery, cell, gidToId, gidType, gqlString, str, toGid } from "../core/util";
-import { fileNameFromUrl, runCommand, searchTerm } from "./_content_helpers";
+import { fileNameFromUrl, findExact, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -135,8 +135,9 @@ const FILE_BY_ID = `#graphql
 `;
 
 const FILES_BY_NAME = `#graphql
-  query ImportFilesByName($query: String!) {
-    files(first: 25, query: $query) {
+  query ImportFilesByName($query: String!, $after: String) {
+    files(first: 50, after: $after, query: $query) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         __typename id alt
         ... on MediaImage { image { url } }
@@ -190,7 +191,11 @@ function candidateIds(idCell: string | undefined, typeCell: string | undefined):
   return types.map((t) => toGid(t.typename, idCell)!);
 }
 
-/** Lookup by ID, then by file name (File Name, or the name in the URL). */
+/**
+ * Lookup by ID, then by the File Name column. The name in the URL is never
+ * used: an unrelated file with the same name (logo.png) is not this row's file.
+ * The name must match exactly one file.
+ */
 async function fetchFile(ctx: ImportContext, row: Row): Promise<ExistingFile | null> {
   const ids = candidateIds(cell(row, "ID"), cell(row, "Type"));
   if (ids.length) {
@@ -198,14 +203,39 @@ async function fetchFile(ctx: ImportContext, row: Row): Promise<ExistingFile | n
     const n = nodes.find((x) => x?.id);
     if (n) return fileInfo(n);
   }
-  const name = cell(row, "File Name") || fileNameFromUrl(cell(row, "URL"));
+  const name = cell(row, "File Name");
   if (!name) return null;
-  const nodes: any[] = (await ctx.gql(FILES_BY_NAME, { query: searchTerm("filename", name) })).files.nodes;
-  const matches = nodes.map(fileInfo).filter((f) => f.name.toLowerCase() === name.toLowerCase());
-  return matches[0] ?? null;
+  // Search is prefix matching; only an exact name counts, on any page.
+  const found = await findExact<any>(
+    ctx.gql,
+    FILES_BY_NAME,
+    { query: searchTerm("filename", name) },
+    (d) => d.files,
+    (f) => fileInfo(f).name === name,
+    `Several files are named "${name}"; use the ID column`,
+  );
+  return found ? fileInfo(found) : null;
 }
 
-async function createFile(ctx: ImportContext, row: Row): Promise<string> {
+/** Shopify-hosted file URLs: cdn.shopify.com or a storefront's /cdn/shop/ path. */
+function isShopifyCdnUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.hostname === "cdn.shopify.com" || u.pathname.startsWith("/cdn/shop/");
+  } catch {
+    return false;
+  }
+}
+
+/** The URL is the existing file's own CDN copy (e.g. a re-imported export row). */
+function isOwnCdnUrl(url: string | undefined, existing: ExistingFile): boolean {
+  if (!url) return false;
+  if (existing.url && url === existing.url) return true;
+  return isShopifyCdnUrl(url) && !!existing.name && fileNameFromUrl(url) === existing.name;
+}
+
+/** Validated FileCreateInput; throws before anything is written. */
+function fileCreateInput(row: Row): Record<string, any> {
   const url = cell(row, "URL");
   if (!url) throw new ImportError("URL is required to create a file");
   const input: Record<string, any> = { originalSource: url };
@@ -215,6 +245,10 @@ async function createFile(ctx: ImportContext, row: Row): Promise<string> {
   if (alt) input.alt = alt;
   const contentType = contentTypeFromCell(cell(row, "Type"));
   if (contentType) input.contentType = contentType;
+  return input;
+}
+
+async function createFile(ctx: ImportContext, input: Record<string, any>): Promise<string> {
   const d = await ctx.gql(FILE_CREATE, { files: [input] });
   assertNoUserErrors(d.fileCreate, "Create file");
   return d.fileCreate.files[0].id;
@@ -241,10 +275,21 @@ async function updateFile(ctx: ImportContext, existing: ExistingFile, row: Row):
 export async function importFile(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const row = rows[0];
   const existing = await fetchFile(ctx, row);
+  // REPLACE deletes first; re-creating from the deleted file's own CDN URL
+  // would lose the file. Refuse rather than risk it.
+  if (command === "REPLACE" && existing && isOwnCdnUrl(cell(row, "URL"), existing)) {
+    return {
+      status: "Failed",
+      command,
+      id: existing.id,
+      message: "REPLACE would delete the file its URL points to (the file's own Shopify CDN URL); use MERGE to update it, or give a URL of new content",
+    };
+  }
   return runCommand(command, existing, {
     what: "File",
     idOf: (f) => f.id,
-    create: async () => ({ id: await createFile(ctx, row) }),
+    prepare: async () => fileCreateInput(row),
+    create: async (input) => ({ id: await createFile(ctx, input) }),
     update: async (f) => ({ id: f.id, notes: await updateFile(ctx, f, row) }),
     remove: async (f) => {
       const d = await ctx.gql(FILE_DELETE, { fileIds: [f.id] });

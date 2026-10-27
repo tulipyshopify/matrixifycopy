@@ -1,4 +1,5 @@
-import type { Command, ItemResult, Row } from "../core/types";
+import type { Command, Gql, ItemResult, Row } from "../core/types";
+import { ImportError } from "../core/types";
 import { cell, parseBool } from "../core/util";
 
 /**
@@ -42,6 +43,36 @@ export function fileNameFromUrl(url: string | null | undefined): string {
   }
 }
 
+interface Page<T> {
+  nodes: T[];
+  pageInfo?: { hasNextPage: boolean; endCursor: string | null } | null;
+}
+
+/**
+ * Pages through a search connection and returns the single node that matches
+ * exactly. Shopify search does prefix / fuzzy matching, so the exact match may
+ * be on a later page; more than one exact match is an error (`ambiguous`).
+ * `after` is only sent from the second page on.
+ */
+export async function findExact<T>(
+  gql: Gql,
+  query: string,
+  variables: Record<string, unknown>,
+  pick: (data: any) => Page<T>,
+  isMatch: (node: T) => boolean,
+  ambiguous: string,
+): Promise<T | null> {
+  const matches: T[] = [];
+  let after: string | null = null;
+  do {
+    const conn = pick(await gql(query, after ? { ...variables, after } : variables));
+    for (const n of conn.nodes) if (isMatch(n)) matches.push(n);
+    after = conn.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+  } while (after);
+  if (matches.length > 1) throw new ImportError(ambiguous);
+  return matches[0] ?? null;
+}
+
 export interface Done {
   id: string;
   /** Extra notes appended to the result message. */
@@ -49,11 +80,18 @@ export interface Done {
   rowPatches?: Array<Row | undefined>;
 }
 
-export interface CommandOps<E> {
+export interface CommandOps<E, I> {
   /** Human name used in messages, e.g. "Page". */
   what: string;
   idOf: (existing: E) => string;
-  create: () => Promise<Done>;
+  /**
+   * Builds and validates everything `create` needs (parsing, required columns,
+   * lookups) without changing anything that would be lost. Runs before the
+   * delete of REPLACE, so a row that cannot be created never deletes the item.
+   */
+  prepare: () => Promise<I>;
+  /** Sends the create mutation(s) for a prepared input. */
+  create: (input: I) => Promise<Done>;
   update: (existing: E) => Promise<Done>;
   remove: (existing: E) => Promise<void>;
   /** Optional override for REPLACE (default: remove then create). */
@@ -67,9 +105,10 @@ function msg(base: string, notes?: string[]) {
 /**
  * Standard Matrixify command semantics, as in products.ts:
  * DELETE needs an existing item; NEW fails if it exists; UPDATE fails if it is
- * missing; MERGE creates or updates; REPLACE deletes then creates.
+ * missing; MERGE creates or updates; REPLACE prepares the new item, then
+ * deletes the old one, then creates.
  */
-export async function runCommand<E>(command: Command, existing: E | null, ops: CommandOps<E>): Promise<ItemResult> {
+export async function runCommand<E, I>(command: Command, existing: E | null, ops: CommandOps<E, I>): Promise<ItemResult> {
   switch (command) {
     case "DELETE": {
       if (!existing) return { status: "Failed", command, message: `${ops.what} not found` };
@@ -78,7 +117,7 @@ export async function runCommand<E>(command: Command, existing: E | null, ops: C
     }
     case "NEW": {
       if (existing) return { status: "Failed", command, id: ops.idOf(existing), message: `${ops.what} already exists` };
-      const r = await ops.create();
+      const r = await ops.create(await ops.prepare());
       return { status: "OK", command, id: r.id, message: msg("Created", r.notes), rowPatches: r.rowPatches };
     }
     case "REPLACE": {
@@ -86,15 +125,16 @@ export async function runCommand<E>(command: Command, existing: E | null, ops: C
         const r = await ops.replace(existing);
         return { status: "OK", command, id: r.id, message: msg(r.message ?? "Replaced", r.notes), rowPatches: r.rowPatches };
       }
+      const input = await ops.prepare();
       if (existing) await ops.remove(existing);
-      const r = await ops.create();
+      const r = await ops.create(input);
       return { status: "OK", command, id: r.id, message: msg(existing ? "Replaced" : "Created", r.notes), rowPatches: r.rowPatches };
     }
     case "UPDATE":
     case "MERGE": {
       if (!existing) {
         if (command === "UPDATE") return { status: "Failed", command, message: `${ops.what} not found` };
-        const r = await ops.create();
+        const r = await ops.create(await ops.prepare());
         return { status: "OK", command, id: r.id, message: msg("Created", r.notes), rowPatches: r.rowPatches };
       }
       const r = await ops.update(existing);

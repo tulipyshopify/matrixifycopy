@@ -1,7 +1,7 @@
 import type { Command, Entity, ExportContext, ImportContext, ItemResult, Row } from "../core/types";
 import { ImportError } from "../core/types";
 import { assertNoUserErrors, buildSearchQuery, cell, gidToId, gqlString, toGid } from "../core/util";
-import { runCommand, searchTerm } from "./_content_helpers";
+import { findExact, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -41,8 +41,11 @@ const REDIRECT_BY_ID = `#graphql
 `;
 
 const REDIRECT_BY_PATH = `#graphql
-  query ImportRedirectByPath($query: String!) {
-    urlRedirects(first: 25, query: $query) { nodes { id path target } }
+  query ImportRedirectByPath($query: String!, $after: String) {
+    urlRedirects(first: 50, after: $after, query: $query) {
+      nodes { id path target }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 `;
 
@@ -95,8 +98,15 @@ async function fetchRedirect(ctx: ImportContext, row: Row): Promise<ExistingRedi
   const path = cell(row, "Path");
   if (!path) return null;
   const wanted = normalizePath(path).toLowerCase();
-  const nodes: ExistingRedirect[] = (await ctx.gql(REDIRECT_BY_PATH, { query: searchTerm("path", normalizePath(path)) })).urlRedirects.nodes;
-  return nodes.find((r) => normalizePath(r.path).toLowerCase() === wanted) ?? null;
+  // Search is prefix matching; only an exact path counts, on any page.
+  return findExact<ExistingRedirect>(
+    ctx.gql,
+    REDIRECT_BY_PATH,
+    { query: searchTerm("path", normalizePath(path)) },
+    (d) => d.urlRedirects,
+    (r) => normalizePath(r.path).toLowerCase() === wanted,
+    `Several redirects have path "${normalizePath(path)}"; use the ID column`,
+  );
 }
 
 function redirectInput(row: Row): { path?: string; target?: string } {
@@ -115,9 +125,12 @@ export async function importRedirect(ctx: ImportContext, rows: Row[], command: C
   return runCommand(command, existing, {
     what: "Redirect",
     idOf: (r) => r.id,
-    create: async () => {
+    prepare: async () => {
       if (!input.path || !input.target) throw new ImportError("Path and Target are required to create a redirect");
-      const d = await ctx.gql(REDIRECT_CREATE, { urlRedirect: input });
+      return { path: input.path, target: input.target };
+    },
+    create: async (urlRedirect) => {
+      const d = await ctx.gql(REDIRECT_CREATE, { urlRedirect });
       assertNoUserErrors(d.urlRedirectCreate, "Create redirect");
       return { id: d.urlRedirectCreate.urlRedirect.id };
     },

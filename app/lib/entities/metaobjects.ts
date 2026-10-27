@@ -9,6 +9,7 @@ import {
   gidToId,
   gqlString,
   metafieldToCell,
+  parseCommand,
   toGid,
 } from "../core/util";
 import { cachedPromise, runCommand } from "./_content_helpers";
@@ -179,7 +180,9 @@ function definitionFor(ctx: ImportContext, type: string): Promise<DefinitionInfo
 /**
  * Field inputs from "Field: <key>" columns. Blank cells clear the field on
  * update and are skipped on create. Values use the definition's field type
- * (list values one per line, as exported).
+ * (list values one per line, as exported). A sheet with several definitions
+ * has every definition's columns on every row: blank cells of fields that are
+ * not on this row's definition are ignored, filled ones are an error.
  */
 function fieldInputs(row: Row, def: DefinitionInfo, creating: boolean): Array<{ key: string; value: string }> {
   const out: Array<{ key: string; value: string }> = [];
@@ -187,8 +190,11 @@ function fieldInputs(row: Row, def: DefinitionInfo, creating: boolean): Array<{ 
     if (!header.startsWith(FIELD_PREFIX)) continue;
     const key = header.slice(FIELD_PREFIX.length).trim();
     const fd = def.fieldDefinitions.find((f) => f.key === key);
-    if (!fd) throw new ImportError(`Field "${key}" is not defined on metaobject type "${def.type}"`);
     const v = (row[header] ?? "").trim();
+    if (!fd) {
+      if (v === "") continue;
+      throw new ImportError(`Field "${key}" is not defined on metaobject type "${def.type}"`);
+    }
     if (v === "") {
       if (!creating) out.push({ key, value: "" });
       continue;
@@ -210,7 +216,7 @@ function capabilities(row: Row, def: DefinitionInfo, notes: string[]): Record<st
   return { publishable: { status: s } };
 }
 
-export async function importMetaobject(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
+async function importOne(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const row = rows[0];
   const id = toGid("Metaobject", cell(row, "ID"));
   const handle = cell(row, "Handle");
@@ -233,12 +239,15 @@ export async function importMetaobject(ctx: ImportContext, rows: Row[], command:
   return runCommand(command, existing, {
     what: "Metaobject",
     idOf: (m) => m.id,
-    create: async () => {
+    prepare: async () => {
       const def = await needsType();
       const notes: string[] = [];
       const metaobject: Record<string, any> = { fields: fieldInputs(row, def, true) };
       const caps = capabilities(row, def, notes);
       if (caps) metaobject.capabilities = caps;
+      return { def, notes, metaobject };
+    },
+    create: async ({ def, notes, metaobject }) => {
       let created: { id: string; handle: string };
       if (handle) {
         // Upsert by type + handle: safe if another row created it meanwhile.
@@ -273,6 +282,63 @@ export async function importMetaobject(ctx: ImportContext, rows: Row[], command:
   });
 }
 
+/**
+ * Splits a core item into one group per metaobject. Core groups rows by the
+ * first non-empty key column (ID, then Handle) only, so the same handle in two
+ * definitions ("red" in `color` and `swatch`) arrives as one item; handles are
+ * only unique per type. Rows without ID and Handle continue the previous group.
+ */
+function splitByType(rows: Row[]): number[][] {
+  const groups = new Map<string, number[]>();
+  let current: number[] | null = null;
+  rows.forEach((row, i) => {
+    if (!cell(row, "ID") && !cell(row, "Handle") && current) {
+      current.push(i);
+      return;
+    }
+    const key = (cell(row, "Definition: Type") ?? "").toLowerCase();
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = []));
+    g.push(i);
+    current = g;
+  });
+  return [...groups.values()];
+}
+
+export async function importMetaobject(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
+  const groups = splitByType(rows);
+  if (groups.length === 1) return importOne(ctx, rows, command);
+
+  // Several metaobjects in one item: run each with its own Command cell and
+  // combine the results; each group's first row gets its own ID back.
+  const fallback = ctx.options.defaultCommand ?? "MERGE";
+  const rowPatches: Array<Row | undefined> = new Array(rows.length).fill(undefined);
+  const messages: string[] = [];
+  const statuses: ItemResult["status"][] = [];
+  let firstId: string | undefined;
+  for (const [gi, idx] of groups.entries()) {
+    const sub = idx.map((i) => rows[i]);
+    const label = `${cell(sub[0], "Definition: Type") || "?"}/${cell(sub[0], "Handle") || cell(sub[0], "ID") || ""}`;
+    let r: ItemResult;
+    try {
+      const cmd = gi === 0 ? command : parseCommand(cell(sub[0], "Command"), fallback);
+      r = cmd === "IGNORE" ? { status: "Skipped", command: cmd, message: "Command IGNORE" } : await importOne(ctx, sub, cmd);
+    } catch (e: any) {
+      r = { status: "Failed", command, message: e instanceof ImportError ? e.message : `Error: ${e?.message ?? e}` };
+    }
+    statuses.push(r.status);
+    messages.push(`${label}: ${r.status}${r.message ? ` (${r.message})` : ""}`);
+    if (gi === 0) firstId = r.id;
+    idx.forEach((ri, j) => {
+      const patch: Row = { ...(r.rowPatches?.[j] ?? {}) };
+      if (j === 0 && gi > 0 && r.id) patch.ID = gidToId(r.id);
+      if (Object.keys(patch).length) rowPatches[ri] = patch;
+    });
+  }
+  const status = statuses.includes("Failed") ? "Failed" : statuses.includes("OK") ? "OK" : "Skipped";
+  return { status, command, id: firstId, message: messages.join("; "), rowPatches };
+}
+
 export const metaobjectsEntity: Entity = {
   key: "metaobjects",
   sheet: "Metaobjects",
@@ -286,4 +352,4 @@ export const metaobjectsEntity: Entity = {
 };
 
 // Exported for tests.
-export const _internal = { fieldInputs };
+export const _internal = { fieldInputs, splitByType };

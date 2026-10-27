@@ -167,4 +167,29 @@ describe("menus import", () => {
     expect(r2.message).toMatch(/default menu cannot be deleted/);
     expect(m.ops().filter((o) => o === "ImportMenuDelete").length).toBe(1);
   });
+
+  it("REPLACE of a menu identified by ID only fails before deleting it", async () => {
+    const custom = { ...MENU, id: "gid://shopify/Menu/2", handle: "footer", isDefault: false };
+    const m = mockGql({ ImportMenuById: { menu: custom } });
+    await expect(menusEntity.import!.apply(importCtx(m.gql), [{ ID: "2", Title: "Footer" }], "REPLACE")).rejects.toThrow(/Handle is required/);
+    await expect(menusEntity.import!.apply(importCtx(m.gql), [{ ID: "2", Handle: "footer" }], "REPLACE")).rejects.toThrow(/Title is required/);
+    expect(m.ops()).toEqual(["ImportMenuById", "ImportMenuById"]);
+  });
+
+  it("REPLACE of a custom menu deletes then creates", async () => {
+    const custom = { ...MENU, id: "gid://shopify/Menu/2", handle: "footer", isDefault: false };
+    const m = mockGql({
+      ImportMenusByHandle: page([custom]),
+      ImportMenuDelete: { menuDelete: { ...ok, deletedMenuId: custom.id } },
+      ImportMenuCreate: { menuCreate: { ...ok, menu: { ...custom, id: "gid://shopify/Menu/3", items: [] } } },
+    });
+    const r = await menusEntity.import!.apply(importCtx(m.gql), [{ Handle: "footer", Title: "Footer" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Menu/3", message: "Replaced" });
+    expect(m.ops()).toEqual(["ImportMenusByHandle", "ImportMenuDelete", "ImportMenuCreate"]);
+  });
+
+  it("handle lookup fails on several exact matches", async () => {
+    const m = mockGql({ ImportMenusByHandle: page([{ ...MENU, handle: "footer" }, { ...MENU, id: "gid://shopify/Menu/9", handle: "footer" }]) });
+    await expect(menusEntity.import!.apply(importCtx(m.gql), [{ Handle: "footer", Title: "F" }], "MERGE")).rejects.toThrow(/Several menus/);
+  });
 });

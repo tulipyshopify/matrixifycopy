@@ -65,9 +65,9 @@ describe("files export", () => {
 });
 
 describe("files import", () => {
-  it("creates from URL when no file has that name", async () => {
+  it("creates from URL without a name lookup when there is no File Name column", async () => {
     const m = mockGql({
-      ImportFilesByName: { files: { nodes: [{ __typename: "MediaImage", ...IMAGE, image: { url: "https://cdn.shopify.com/x/dog-2.png" } }] } },
+      ImportFilesByName: { files: { nodes: [{ __typename: "MediaImage", ...IMAGE, image: { url: "https://cdn.shopify.com/x/dog.png" } }] } },
       ImportFileCreate: { fileCreate: { ...ok, files: [{ id: "gid://shopify/MediaImage/10", alt: "Dog", fileStatus: "UPLOADED" }] } },
     });
     const r = await filesEntity.import!.apply(
@@ -76,7 +76,8 @@ describe("files import", () => {
       "MERGE",
     );
     expect(r).toMatchObject({ status: "OK", id: "gid://shopify/MediaImage/10", message: "Created" });
-    expect(m.call("ImportFilesByName")!.vars).toEqual({ query: 'filename:"dog.png"' });
+    // An unrelated existing dog.png must not be matched by the URL's file name.
+    expect(m.ops()).toEqual(["ImportFileCreate"]);
     expect(m.call("ImportFileCreate")!.vars).toEqual({
       files: [{ originalSource: "https://example.com/img/dog.png", alt: "Dog", contentType: "IMAGE" }],
     });
@@ -124,5 +125,54 @@ describe("files import", () => {
     expect(m.call("ImportFileDelete")!.vars).toEqual({ fileIds: [IMAGE.id] });
     const r2 = await filesEntity.import!.apply(importCtx(m.gql), [{ "File Name": "nope.jpg" }], "DELETE");
     expect(r2.status).toBe("Failed");
+  });
+
+  it("DELETE with only a URL does not delete a same-named file", async () => {
+    const m = mockGql({ ImportFilesByName: { files: { nodes: [{ __typename: "MediaImage", ...IMAGE }] } } });
+    const r = await filesEntity.import!.apply(importCtx(m.gql), [{ URL: "https://example.com/cat.jpg" }], "DELETE");
+    expect(r).toMatchObject({ status: "Failed", message: "File not found" });
+    expect(m.ops()).toEqual([]);
+  });
+
+  it("File Name lookup pages to the exact name and fails on several exact matches", async () => {
+    const pg = (nodes: any[], next: string | null) => ({ files: { nodes, pageInfo: { hasNextPage: !!next, endCursor: next } } });
+    const other = { __typename: "MediaImage", ...IMAGE, id: "gid://shopify/MediaImage/1", image: { url: "https://cdn.shopify.com/s/files/cat.jpg.png" } };
+    const m = mockGql({
+      ImportFilesByName: (v: any) => (v.after === "c1" ? pg([{ __typename: "MediaImage", ...IMAGE }], null) : pg([other], "c1")),
+      ImportFileDelete: { fileDelete: { ...ok, deletedFileIds: [IMAGE.id] } },
+    });
+    const r = await filesEntity.import!.apply(importCtx(m.gql), [{ "File Name": "cat.jpg" }], "DELETE");
+    expect(r).toMatchObject({ status: "OK", id: IMAGE.id });
+
+    const m2 = mockGql({
+      ImportFilesByName: pg([{ __typename: "MediaImage", ...IMAGE }, { __typename: "MediaImage", ...IMAGE, id: "gid://shopify/MediaImage/8" }], null),
+    });
+    await expect(filesEntity.import!.apply(importCtx(m2.gql), [{ "File Name": "cat.jpg" }], "DELETE")).rejects.toThrow(/Several files/);
+    expect(m2.ops()).toEqual(["ImportFilesByName"]);
+  });
+
+  it("REPLACE of an exported row (own CDN URL) is refused without deleting", async () => {
+    const m = mockGql({ ImportFileById: { nodes: [{ __typename: "MediaImage", ...IMAGE }] } });
+    const r = await filesEntity.import!.apply(
+      importCtx(m.gql),
+      [{ ID: "3", Type: "Image", "File Name": "cat.jpg", URL: "https://cdn.shopify.com/s/files/1/0/files/cat.jpg?v=1" }],
+      "REPLACE",
+    );
+    expect(r).toMatchObject({ status: "Failed", id: IMAGE.id });
+    expect(r.message).toMatch(/use MERGE/);
+    expect(m.ops()).toEqual(["ImportFileById"]);
+  });
+
+  it("REPLACE without a URL fails before deleting; with new content deletes then creates", async () => {
+    const m = mockGql({
+      ImportFileById: { nodes: [{ __typename: "MediaImage", ...IMAGE }] },
+      ImportFileDelete: { fileDelete: { ...ok, deletedFileIds: [IMAGE.id] } },
+      ImportFileCreate: { fileCreate: { ...ok, files: [{ id: "gid://shopify/MediaImage/30", alt: "", fileStatus: "UPLOADED" }] } },
+    });
+    await expect(filesEntity.import!.apply(importCtx(m.gql), [{ ID: "3", Type: "Image", URL: "" }], "REPLACE")).rejects.toThrow(/URL is required/);
+    expect(m.ops()).toEqual(["ImportFileById"]);
+    const r = await filesEntity.import!.apply(importCtx(m.gql), [{ ID: "3", Type: "Image", URL: "https://e.com/cat.jpg" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/MediaImage/30", message: "Replaced" });
+    expect(m.ops().slice(1)).toEqual(["ImportFileById", "ImportFileDelete", "ImportFileCreate"]);
   });
 });

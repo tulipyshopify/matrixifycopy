@@ -15,7 +15,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
-import { cachedPromise, publishFields, runCommand, searchTerm } from "./_content_helpers";
+import { cachedPromise, findExact, publishFields, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -103,8 +103,11 @@ const BLOG_BY_ID = `#graphql
 `;
 
 const BLOGS_SEARCH = `#graphql
-  query ImportBlogsSearch($query: String, $first: Int!) {
-    blogs(first: $first, query: $query) { nodes { id handle title } }
+  query ImportBlogsSearch($query: String, $first: Int!, $after: String) {
+    blogs(first: $first, after: $after, query: $query) {
+      nodes { id handle title }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 `;
 
@@ -147,18 +150,31 @@ async function findBlog(ctx: ImportContext, spec: BlogSpec): Promise<BlogRef | n
   }
   if (spec.handle) {
     const handle = spec.handle;
-    const b = await cachedPromise(ctx.cache, `blog:handle:${handle}`, async () => {
-      const nodes: BlogRef[] = (await ctx.gql(BLOGS_SEARCH, { query: searchTerm("handle", handle), first: 10 })).blogs.nodes;
-      return nodes.find((x) => x.handle === handle) ?? null;
-    });
+    const b = await cachedPromise(ctx.cache, `blog:handle:${handle}`, () =>
+      // Search is prefix matching; only an exact handle counts, on any page.
+      findExact<BlogRef>(
+        ctx.gql,
+        BLOGS_SEARCH,
+        { query: searchTerm("handle", handle), first: 50 },
+        (d) => d.blogs,
+        (x) => x.handle === handle,
+        `Several blogs have handle "${handle}"`,
+      ),
+    );
     if (b) return b;
   }
   if (spec.title) {
     const title = spec.title;
-    const b = await cachedPromise(ctx.cache, `blog:title:${title.toLowerCase()}`, async () => {
-      const nodes: BlogRef[] = (await ctx.gql(BLOGS_SEARCH, { query: searchTerm("title", title), first: 10 })).blogs.nodes;
-      return nodes.find((x) => x.title.toLowerCase() === title.toLowerCase()) ?? null;
-    });
+    const b = await cachedPromise(ctx.cache, `blog:title:${title.toLowerCase()}`, () =>
+      findExact<BlogRef>(
+        ctx.gql,
+        BLOGS_SEARCH,
+        { query: searchTerm("title", title), first: 50 },
+        (d) => d.blogs,
+        (x) => x.title.toLowerCase() === title.toLowerCase(),
+        `Several blogs are titled "${title}"; fill in Blog: Handle`,
+      ),
+    );
     if (b) return b;
   }
   return null;
@@ -207,8 +223,11 @@ const ARTICLE_BY_ID = `#graphql
 `;
 
 const ARTICLES_SEARCH = `#graphql
-  query ImportArticlesSearch($query: String!) {
-    articles(first: 50, query: $query) { nodes { ...ImportArticle } }
+  query ImportArticlesSearch($query: String!, $after: String) {
+    articles(first: 50, after: $after, query: $query) {
+      nodes { ...ImportArticle }
+      pageInfo { hasNextPage endCursor }
+    }
   }
   ${ARTICLE_FIELDS}
 `;
@@ -266,12 +285,15 @@ async function fetchArticle(ctx: ImportContext, row: Row): Promise<ExistingArtic
   const blog = spec ? await findBlog(ctx, spec) : null;
   if (spec && !blog) return null; // blog missing, so is the article
   // Blog.articles cannot be searched, so search all posts and filter by blog.
-  const nodes: ExistingArticle[] = (await ctx.gql(ARTICLES_SEARCH, { query: searchTerm("handle", handle) })).articles.nodes;
-  const matches = nodes.filter((a) => a.handle === handle && (!blog || a.blog.id === blog.id));
-  if (matches.length > 1) {
-    throw new ImportError(`Several blogs have a post with handle "${handle}"; fill in Blog: Handle`);
-  }
-  return matches[0] ?? null;
+  // Search is prefix matching; only an exact handle counts, on any page.
+  return findExact<ExistingArticle>(
+    ctx.gql,
+    ARTICLES_SEARCH,
+    { query: searchTerm("handle", handle) },
+    (d) => d.articles,
+    (a) => a.handle === handle && (!blog || a.blog.id === blog.id),
+    `Several blogs have a post with handle "${handle}"; fill in Blog: Handle`,
+  );
 }
 
 function articleFields(row: Row): Record<string, any> {
@@ -311,7 +333,11 @@ async function defaultAuthor(ctx: ImportContext): Promise<string> {
   return cachedPromise(ctx.cache, "shop:name", async () => (await ctx.gql(SHOP_NAME)).shop.name as string);
 }
 
-async function createArticle(ctx: ImportContext, row: Row): Promise<string> {
+/**
+ * Validated ArticleCreateInput, including the blog (found, or created when
+ * missing) and default author. Throws before the article is written.
+ */
+async function articleCreateInput(ctx: ImportContext, row: Row): Promise<Record<string, any>> {
   const article = articleFields(row);
   if (!article.title) throw new ImportError("Title is required to create a blog post");
   if (!article.author) article.author = { name: await defaultAuthor(ctx) };
@@ -323,6 +349,10 @@ async function createArticle(ctx: ImportContext, row: Row): Promise<string> {
   if (image) article.image = image;
   const mf = metafieldsFromRow(row).set;
   if (mf.length) article.metafields = mf;
+  return article;
+}
+
+async function createArticle(ctx: ImportContext, article: Record<string, any>): Promise<string> {
   const d = await ctx.gql(ARTICLE_CREATE, { article });
   assertNoUserErrors(d.articleCreate, "Create blog post");
   return d.articleCreate.article.id;
@@ -370,7 +400,8 @@ export async function importBlogPost(ctx: ImportContext, rows: Row[], command: C
   return runCommand(command, existing, {
     what: "Blog post",
     idOf: (a) => a.id,
-    create: async () => ({ id: await createArticle(ctx, top) }),
+    prepare: () => articleCreateInput(ctx, top),
+    create: async (article) => ({ id: await createArticle(ctx, article) }),
     update: async (a) => {
       await updateArticle(ctx, a, top);
       return { id: a.id };

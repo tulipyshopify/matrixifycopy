@@ -78,7 +78,7 @@ describe("blog posts import", () => {
     );
     expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Article/30", message: "Created" });
     expect(m.ops()).toEqual(["ImportBlogsSearch", "ImportBlogsSearch", "ImportBlogPostShopName", "ImportBlogCreate", "ImportArticleCreate"]);
-    expect(m.calls[0].vars).toEqual({ query: 'handle:"journal"', first: 10 });
+    expect(m.calls[0].vars).toEqual({ query: 'handle:"journal"', first: 50 });
     expect(m.call("ImportBlogCreate")!.vars).toEqual({ blog: { title: "Journal", handle: "journal" } });
     expect(m.call("ImportArticleCreate")!.vars.article).toEqual({
       title: "Hi",
@@ -146,5 +146,36 @@ describe("blog posts import", () => {
       ImportArticlesSearch: { articles: { nodes: [existing, { ...existing, id: "gid://shopify/Article/22", blog: { ...BLOG, id: "x" } }] } },
     });
     await expect(blogPostsEntity.import!.apply(importCtx(m.gql), [{ Handle: "hello" }], "MERGE")).rejects.toThrow(/Blog: Handle/);
+  });
+
+  it("REPLACE fails before deleting when the blog cannot be resolved", async () => {
+    const m = mockGql({
+      ImportArticleById: { article: ARTICLE },
+      ImportBlogById: { blog: null },
+    });
+    await expect(
+      blogPostsEntity.import!.apply(importCtx(m.gql), [{ ID: "21", Title: "Hello", Author: "Me", "Blog: ID": "404" }], "REPLACE"),
+    ).rejects.toThrow(/Blog ID 404 not found/);
+    expect(m.ops()).not.toContain("ImportArticleDelete");
+  });
+
+  it("REPLACE without a Title column fails before deleting", async () => {
+    const m = mockGql({ ImportArticleById: { article: ARTICLE } });
+    await expect(blogPostsEntity.import!.apply(importCtx(m.gql), [{ ID: "21", "Body HTML": "x" }], "REPLACE")).rejects.toThrow(/Title/);
+    expect(m.ops()).toEqual(["ImportArticleById"]);
+  });
+
+  it("article lookup pages past prefix matches to the exact handle", async () => {
+    const m = mockGql({
+      ImportArticlesSearch: (v: any) => ({
+        articles:
+          v.after === "c1"
+            ? { nodes: [ARTICLE], pageInfo: { hasNextPage: false, endCursor: null } }
+            : { nodes: [{ ...ARTICLE, id: "gid://shopify/Article/1", handle: ARTICLE.handle + "-2" }], pageInfo: { hasNextPage: true, endCursor: "c1" } },
+      }),
+      ImportArticleDelete: { articleDelete: { ...ok, deletedArticleId: ARTICLE.id } },
+    });
+    const r = await blogPostsEntity.import!.apply(importCtx(m.gql), [{ Handle: ARTICLE.handle }], "DELETE");
+    expect(r).toMatchObject({ status: "OK", id: ARTICLE.id });
   });
 });

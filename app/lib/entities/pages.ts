@@ -12,7 +12,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
-import { publishFields, runCommand, searchTerm } from "./_content_helpers";
+import { findExact, publishFields, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -80,8 +80,11 @@ const PAGE_BY_ID = `#graphql
 `;
 
 const PAGE_BY_HANDLE = `#graphql
-  query ImportPageByHandle($query: String!) {
-    pages(first: 10, query: $query) { nodes { id handle title } }
+  query ImportPageByHandle($query: String!, $after: String) {
+    pages(first: 50, after: $after, query: $query) {
+      nodes { id handle title }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 `;
 
@@ -124,9 +127,16 @@ async function fetchPage(gql: Gql, by: { id?: string; handle?: string }): Promis
     if (p) return p;
   }
   if (by.handle) {
-    const nodes: ExistingPage[] = (await gql(PAGE_BY_HANDLE, { query: searchTerm("handle", by.handle) })).pages.nodes;
-    // Search is fuzzy; only an exact handle counts.
-    return nodes.find((p) => p.handle === by.handle) ?? null;
+    const handle = by.handle;
+    // Search is prefix / fuzzy; only an exact handle counts, on any page.
+    return findExact<ExistingPage>(
+      gql,
+      PAGE_BY_HANDLE,
+      { query: searchTerm("handle", handle) },
+      (d) => d.pages,
+      (p) => p.handle === handle,
+      `Several pages have handle "${handle}"; use the ID column`,
+    );
   }
   return null;
 }
@@ -145,11 +155,16 @@ function pageFields(row: Row): Record<string, any> {
   return f;
 }
 
-async function createPage(ctx: ImportContext, row: Row): Promise<string> {
+/** Validated PageCreateInput; throws before anything is written. */
+function pageCreateInput(row: Row): Record<string, any> {
   const page = pageFields(row);
   if (!page.title) throw new ImportError("Title is required to create a page");
   const mf = metafieldsFromRow(row).set;
   if (mf.length) page.metafields = mf;
+  return page;
+}
+
+async function createPage(ctx: ImportContext, page: Record<string, any>): Promise<string> {
   const d = await ctx.gql(PAGE_CREATE, { page });
   assertNoUserErrors(d.pageCreate, "Create page");
   return d.pageCreate.page.id;
@@ -175,7 +190,8 @@ export async function importPage(ctx: ImportContext, rows: Row[], command: Comma
   return runCommand(command, existing, {
     what: "Page",
     idOf: (p) => p.id,
-    create: async () => ({ id: await createPage(ctx, top) }),
+    prepare: async () => pageCreateInput(top),
+    create: async (page) => ({ id: await createPage(ctx, page) }),
     update: async (p) => {
       await updatePage(ctx, p, top);
       return { id: p.id };
