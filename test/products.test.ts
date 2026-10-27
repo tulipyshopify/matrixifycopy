@@ -323,18 +323,41 @@ describe("product import", () => {
     ).rejects.toThrow(/Option names/);
   });
 
-  it("deletes and replaces", async () => {
+  it("deletes and replaces (new product first, then delete, then take the handle)", async () => {
     const m = mockGql({
       ImportProductByHandle: () => ({ productByIdentifier: existingProduct }),
       ImportProductVariants: () => ({ product: { variants: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } }),
       ImportProductDelete: () => ({ productDelete: ok({ deletedProductId: existingProduct.id }) }),
-      ImportProductSet: () => ({ productSet: ok({ product: { id: "gid://shopify/Product/2", handle: "tee", variants: { nodes: [] } } }) }),
+      ImportProductSet: () => ({ productSet: ok({ product: { id: "gid://shopify/Product/2", handle: "tee-1", variants: { nodes: [] } } }) }),
+      ImportProductUpdate: () => ({ productUpdate: ok({ product: { id: "gid://shopify/Product/2", handle: "tee" } }) }),
     });
     expect(await importProduct(ctxFor(m.gql), [{ Handle: "tee" }], "DELETE")).toMatchObject({ status: "OK", message: "Deleted" });
+    m.calls.length = 0;
     const r = await importProduct(ctxFor(m.gql), [{ Handle: "tee", Title: "Tee" }], "REPLACE");
     expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Product/2", message: "Replaced" });
-    const input = m.calls.filter((c) => c.op === "ImportProductSet")[0].vars.input;
+    expect(m.ops().filter((o) => !o.startsWith("ImportProductBy") && o !== "ImportProductVariants")).toEqual([
+      "ImportProductSet",
+      "ImportProductDelete",
+      "ImportProductUpdate",
+    ]);
+    const input = m.calls.find((c) => c.op === "ImportProductSet")!.vars.input;
+    expect(input.handle).toBeUndefined();
     expect(input.variants).toEqual([{ optionValues: [{ optionName: "Title", name: "Default Title" }] }]);
     expect(input.productOptions).toEqual([{ name: "Title", position: 1, values: [{ name: "Default Title" }] }]);
+    expect(m.calls.find((c) => c.op === "ImportProductUpdate")!.vars.product).toEqual({ id: "gid://shopify/Product/2", handle: "tee" });
+  });
+
+  it("REPLACE with an invalid row never deletes the existing product", async () => {
+    const m = mockGql({
+      ImportProductByHandle: () => ({ productByIdentifier: existingProduct }),
+      ImportProductVariants: () => ({ product: { variants: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } }),
+      ...LOCATIONS,
+    });
+    // No Title, then an unknown location: both must fail before any write.
+    await expect(importProduct(ctxFor(m.gql), [{ Handle: "tee" }], "REPLACE")).rejects.toThrow(/Title is required/);
+    await expect(
+      importProduct(ctxFor(m.gql), [{ Handle: "tee", Title: "T", "Inventory Available: Nowhere": "1" }], "REPLACE"),
+    ).rejects.toThrow(/Location "Nowhere" not found/);
+    expect(m.ops()).not.toContain("ImportProductDelete");
   });
 });

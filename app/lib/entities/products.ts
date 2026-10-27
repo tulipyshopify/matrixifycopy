@@ -1,4 +1,12 @@
-import type { Command, Entity, ExportContext, Gql, ImportContext, ItemResult, Row } from "../core/types";
+import type {
+  Command,
+  Entity,
+  ExportContext,
+  Gql,
+  ImportContext,
+  ItemResult,
+  Row,
+} from "../core/types";
 import { ImportError } from "../core/types";
 import {
   assertNoUserErrors,
@@ -23,6 +31,7 @@ import {
   addTags,
   getLocations,
   locationByName,
+  onlineStorePublicationId,
   removeTags,
   setOnlineStorePublished,
   writeMetafields,
@@ -57,9 +66,24 @@ const PRODUCT_COLUMNS = [
   "Top Row",
 ];
 
-const OPTION_COLUMNS = ["Option1 Name", "Option1 Value", "Option2 Name", "Option2 Value", "Option3 Name", "Option3 Value"];
+const OPTION_COLUMNS = [
+  "Option1 Name",
+  "Option1 Value",
+  "Option2 Name",
+  "Option2 Value",
+  "Option3 Name",
+  "Option3 Value",
+];
 
-const IMAGE_COLUMNS = ["Image Type", "Image Src", "Image Command", "Image Position", "Image Width", "Image Height", "Image Alt Text"];
+const IMAGE_COLUMNS = [
+  "Image Type",
+  "Image Src",
+  "Image Command",
+  "Image Position",
+  "Image Width",
+  "Image Height",
+  "Image Alt Text",
+];
 
 const VARIANT_COLUMNS = [
   "Variant Inventory Item ID",
@@ -89,7 +113,13 @@ const VARIANT_COLUMNS = [
 
 /** Columns that, when non-blank, make a row describe a variant. */
 const VARIANT_SIGNAL_COLUMNS = VARIANT_COLUMNS.filter(
-  (c) => !["Variant Command", "Option1 Name", "Option2 Name", "Option3 Name"].includes(c),
+  (c) =>
+    ![
+      "Variant Command",
+      "Option1 Name",
+      "Option2 Name",
+      "Option3 Name",
+    ].includes(c),
 );
 
 const INVENTORY_PREFIX = "Inventory Available: ";
@@ -106,7 +136,12 @@ const WEIGHT_UNITS: Record<string, string> = {
   lbs: "POUNDS",
   pounds: "POUNDS",
 };
-const WEIGHT_UNIT_CELL: Record<string, string> = { GRAMS: "g", KILOGRAMS: "kg", OUNCES: "oz", POUNDS: "lb" };
+const WEIGHT_UNIT_CELL: Record<string, string> = {
+  GRAMS: "g",
+  KILOGRAMS: "kg",
+  OUNCES: "oz",
+  POUNDS: "lb",
+};
 
 const STATUSES = ["ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"];
 
@@ -148,12 +183,19 @@ export function productsBulkQuery(search: string, groups: Set<string>): string {
 }
 
 export function productToRows(p: any, groups: Set<string>): Row[] {
-  const variants: any[] = (p.variants ?? []).sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+  const variants: any[] = (p.variants ?? []).sort(
+    (a: any, b: any) => (a.position ?? 0) - (b.position ?? 0),
+  );
   const media: any[] = p.media ?? [];
   const count = Math.max(1, variants.length, media.length);
   const rows: Row[] = [];
   for (let i = 0; i < count; i++) {
-    const row: Row = { ID: gidToId(p.id), Handle: p.handle, "Row #": String(i + 1), "Top Row": boolCell(i === 0) };
+    const row: Row = {
+      ID: gidToId(p.id),
+      Handle: p.handle,
+      "Row #": String(i + 1),
+      "Top Row": boolCell(i === 0),
+    };
     if (i === 0) {
       Object.assign(row, {
         Command: "MERGE",
@@ -206,7 +248,8 @@ export function productToRows(p: any, groups: Set<string>): Row[] {
         "Variant Barcode": v.barcode ?? "",
         "Variant Image": v.image?.url ?? "",
         "Variant Weight": str(inv.measurement?.weight?.value),
-        "Variant Weight Unit": WEIGHT_UNIT_CELL[inv.measurement?.weight?.unit] ?? "",
+        "Variant Weight Unit":
+          WEIGHT_UNIT_CELL[inv.measurement?.weight?.unit] ?? "",
         "Variant Price": v.price ?? "",
         "Variant Compare At Price": v.compareAtPrice ?? "",
         "Variant Taxable": boolCell(v.taxable),
@@ -226,18 +269,27 @@ export function productToRows(p: any, groups: Set<string>): Row[] {
         row[`Option${j + 1} Value`] = o.value;
       });
       for (const lvl of inv.inventoryLevels ?? []) {
-        const q = (lvl.quantities ?? []).find((x: any) => x.name === "available");
+        const q = (lvl.quantities ?? []).find(
+          (x: any) => x.name === "available",
+        );
         row[INVENTORY_PREFIX + lvl.location.name] = str(q?.quantity ?? "");
       }
-      if (groups.has("variant_metafields")) metafieldsToRow(row, v.metafields, "Variant Metafield");
+      if (groups.has("variant_metafields"))
+        metafieldsToRow(row, v.metafields, "Variant Metafield");
     }
     rows.push(row);
   }
   return rows;
 }
 
-async function exportProducts(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
-  const groups = new Set(ctx.options.groups ?? productsEntity.groups!.filter((g) => g.default).map((g) => g.key));
+async function exportProducts(
+  ctx: ExportContext,
+  emit: (rows: Row[]) => Promise<void>,
+) {
+  const groups = new Set(
+    ctx.options.groups ??
+      productsEntity.groups!.filter((g) => g.default).map((g) => g.key),
+  );
   const search = buildSearchQuery(ctx.options);
   let n = 0;
   for await (const p of ctx.bulk(productsBulkQuery(search, groups))) {
@@ -289,7 +341,11 @@ interface ExistingVariant {
   sku: string | null;
   position: number;
   selectedOptions: Array<{ name: string; value: string }>;
-  inventoryItem: { id: string; tracked: boolean; inventoryLevels: { nodes: Array<{ location: { id: string } }> } };
+  inventoryItem: {
+    id: string;
+    tracked: boolean;
+    inventoryLevels: { nodes: Array<{ location: { id: string } }> };
+  };
 }
 
 interface ExistingProduct {
@@ -297,22 +353,41 @@ interface ExistingProduct {
   handle: string;
   title: string;
   hasOnlyDefaultVariant: boolean;
-  options: Array<{ id: string; name: string; position: number; optionValues: Array<{ id: string; name: string }> }>;
-  media: { nodes: Array<{ id: string; alt: string; mediaContentType: string; image?: { url: string } }> };
+  options: Array<{
+    id: string;
+    name: string;
+    position: number;
+    optionValues: Array<{ id: string; name: string }>;
+  }>;
+  media: {
+    nodes: Array<{
+      id: string;
+      alt: string;
+      mediaContentType: string;
+      image?: { url: string };
+    }>;
+  };
   variants: ExistingVariant[];
 }
 
-async function fetchProduct(gql: Gql, by: { id?: string; handle?: string }): Promise<ExistingProduct | null> {
+async function fetchProduct(
+  gql: Gql,
+  by: { id?: string; handle?: string },
+): Promise<ExistingProduct | null> {
   let p: any = null;
   if (by.id) p = (await gql(PRODUCT_BY_ID, { id: by.id })).product;
-  if (!p && by.handle) p = (await gql(PRODUCT_BY_HANDLE, { handle: by.handle })).productByIdentifier;
+  if (!p && by.handle)
+    p = (await gql(PRODUCT_BY_HANDLE, { handle: by.handle }))
+      .productByIdentifier;
   if (!p) return null;
   const variants: ExistingVariant[] = [];
   let after: string | null = null;
   do {
     const d: any = await gql(PRODUCT_VARIANTS, { id: p.id, after });
     variants.push(...d.product.variants.nodes);
-    after = d.product.variants.pageInfo.hasNextPage ? d.product.variants.pageInfo.endCursor : null;
+    after = d.product.variants.pageInfo.hasNextPage
+      ? d.product.variants.pageInfo.endCursor
+      : null;
   } while (after);
   return { ...p, variants };
 }
@@ -341,8 +416,13 @@ interface ImageSpec {
 }
 
 function isVariantRow(row: Row): boolean {
-  if (VARIANT_SIGNAL_COLUMNS.some((c) => (cell(row, c) ?? "") !== "")) return true;
-  return Object.keys(row).some((k) => (k.startsWith(INVENTORY_PREFIX) || k.startsWith("Variant Metafield:")) && (row[k] ?? "").trim() !== "");
+  if (VARIANT_SIGNAL_COLUMNS.some((c) => (cell(row, c) ?? "") !== ""))
+    return true;
+  return Object.keys(row).some(
+    (k) =>
+      (k.startsWith(INVENTORY_PREFIX) || k.startsWith("Variant Metafield:")) &&
+      (row[k] ?? "").trim() !== "",
+  );
 }
 
 function money(v: string | undefined, col: string): string | null | undefined {
@@ -360,13 +440,17 @@ export function variantInputFromRow(row: Row): Record<string, any> {
 
   const price = money(cell(row, "Variant Price"), "Variant Price");
   if (price) input.price = price; // blank price = unchanged
-  const cap = money(cell(row, "Variant Compare At Price"), "Variant Compare At Price");
+  const cap = money(
+    cell(row, "Variant Compare At Price"),
+    "Variant Compare At Price",
+  );
   if (cap !== undefined) input.compareAtPrice = cap;
 
   const sku = cell(row, "Variant SKU");
   if (sku !== undefined) inventoryItem.sku = sku;
   const barcode = cell(row, "Variant Barcode");
-  if (barcode !== undefined) input.barcodes = barcode ? [{ value: barcode }] : [];
+  if (barcode !== undefined)
+    input.barcodes = barcode ? [{ value: barcode }] : [];
 
   const taxable = parseBool(cell(row, "Variant Taxable"));
   if (taxable !== undefined) input.taxable = taxable;
@@ -376,12 +460,17 @@ export function variantInputFromRow(row: Row): Record<string, any> {
   const policy = cell(row, "Variant Inventory Policy");
   if (policy) {
     const p = policy.toUpperCase();
-    if (p !== "DENY" && p !== "CONTINUE") throw new ImportError(`Variant Inventory Policy must be deny or continue`);
+    if (p !== "DENY" && p !== "CONTINUE")
+      throw new ImportError(
+        `Variant Inventory Policy must be deny or continue`,
+      );
     input.inventoryPolicy = p;
   }
 
   const tracker = cell(row, "Variant Inventory Tracker");
-  if (tracker !== undefined) inventoryItem.tracked = tracker.toLowerCase() === "shopify" || parseBool(tracker) === true;
+  if (tracker !== undefined)
+    inventoryItem.tracked =
+      tracker.toLowerCase() === "shopify" || parseBool(tracker) === true;
 
   const ship = parseBool(cell(row, "Variant Requires Shipping"));
   if (ship !== undefined) inventoryItem.requiresShipping = ship;
@@ -392,7 +481,8 @@ export function variantInputFromRow(row: Row): Record<string, any> {
   const hs = cell(row, "Variant HS Code");
   if (hs !== undefined) inventoryItem.harmonizedSystemCode = hs || null;
   const coo = cell(row, "Variant Country of Origin");
-  if (coo !== undefined) inventoryItem.countryCodeOfOrigin = coo ? coo.toUpperCase() : null;
+  if (coo !== undefined)
+    inventoryItem.countryCodeOfOrigin = coo ? coo.toUpperCase() : null;
   const poo = cell(row, "Variant Province of Origin");
   if (poo !== undefined) inventoryItem.provinceCodeOfOrigin = poo || null;
 
@@ -400,7 +490,10 @@ export function variantInputFromRow(row: Row): Record<string, any> {
   if (weight !== undefined) {
     const unitCell = (cell(row, "Variant Weight Unit") || "kg").toLowerCase();
     const unit = WEIGHT_UNITS[unitCell];
-    if (!unit) throw new ImportError(`Unknown Variant Weight Unit "${unitCell}" (use g, kg, oz or lb)`);
+    if (!unit)
+      throw new ImportError(
+        `Unknown Variant Weight Unit "${unitCell}" (use g, kg, oz or lb)`,
+      );
     inventoryItem.measurement = { weight: { value: weight, unit } };
   }
 
@@ -408,7 +501,10 @@ export function variantInputFromRow(row: Row): Record<string, any> {
   return input;
 }
 
-function parseVariants(rows: Row[]): { names: string[]; variants: VariantSpec[] } {
+function parseVariants(rows: Row[]): {
+  names: string[];
+  variants: VariantSpec[];
+} {
   const names: string[] = [];
   for (let n = 1; n <= 3; n++) {
     const r = rows.find((row) => cell(row, `Option${n} Name`));
@@ -426,12 +522,23 @@ function parseVariants(rows: Row[]): { names: string[]; variants: VariantSpec[] 
     for (const k of Object.keys(row)) {
       if (!k.startsWith(INVENTORY_PREFIX)) continue;
       const q = parseInt10(row[k]);
-      if (q !== undefined) inventory.push({ locationName: k.slice(INVENTORY_PREFIX.length).trim(), quantity: q });
+      if (q !== undefined)
+        inventory.push({
+          locationName: k.slice(INVENTORY_PREFIX.length).trim(),
+          quantity: q,
+        });
     }
     variants.push({
       rowIndex,
       id: toGid("ProductVariant", cell(row, "Variant ID")),
-      command: parseSubCommand(cell(row, "Variant Command"), ["MERGE", "DELETE", "UPDATE"] as const, "MERGE") === "DELETE" ? "DELETE" : "MERGE",
+      command:
+        parseSubCommand(
+          cell(row, "Variant Command"),
+          ["MERGE", "DELETE", "UPDATE"] as const,
+          "MERGE",
+        ) === "DELETE"
+          ? "DELETE"
+          : "MERGE",
       optionValues,
       input: variantInputFromRow(row),
       imageSrc: cell(row, "Variant Image") || undefined,
@@ -454,10 +561,17 @@ function parseImages(rows: Row[]): ImageSpec[] {
       src,
       alt: cell(row, "Image Alt Text"),
       position: parseInt10(cell(row, "Image Position")),
-      command: parseSubCommand(cell(row, "Image Command"), ["MERGE", "DELETE", "REPLACE"] as const, "MERGE"),
+      command: parseSubCommand(
+        cell(row, "Image Command"),
+        ["MERGE", "DELETE", "REPLACE"] as const,
+        "MERGE",
+      ),
     });
   });
-  images.sort((a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || a.rowIndex - b.rowIndex);
+  images.sort(
+    (a, b) =>
+      (a.position ?? 1e9) - (b.position ?? 1e9) || a.rowIndex - b.rowIndex,
+  );
   return images;
 }
 
@@ -474,7 +588,10 @@ export function imageKey(url: string): string {
   let base = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
   // Shopify appends a UUID on duplicates and size suffixes on resized URLs.
-  base = base.replace(/_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "");
+  base = base.replace(
+    /_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    "",
+  );
   base = base.replace(/_\d+x\d*$|_x\d+$/, "");
   return base + ext.replace(/\.jpeg$/, ".jpg");
 }
@@ -494,13 +611,19 @@ function productFields(row: Row): Record<string, any> {
   const status = cell(row, "Status");
   if (status) {
     const s = status.toUpperCase();
-    if (!STATUSES.includes(s)) throw new ImportError(`Status must be one of Active, Draft, Archived, Unlisted`);
+    if (!STATUSES.includes(s))
+      throw new ImportError(
+        `Status must be one of Active, Draft, Archived, Unlisted`,
+      );
     f.status = s;
   }
   const tpl = cell(row, "Template Suffix");
   if (tpl !== undefined) f.templateSuffix = tpl || null;
   const cat = cell(row, "Category: ID");
-  if (cat) f.category = cat.startsWith("gid://") ? cat : `gid://shopify/TaxonomyCategory/${cat}`;
+  if (cat)
+    f.category = cat.startsWith("gid://")
+      ? cat
+      : `gid://shopify/TaxonomyCategory/${cat}`;
   const seoTitle = cell(row, "SEO Title");
   const seoDesc = cell(row, "SEO Description");
   if (seoTitle !== undefined || seoDesc !== undefined) {
@@ -633,7 +756,9 @@ interface InventoryWork {
  * location of a multi-location store would corrupt stock levels.
  */
 async function singleLocationId(ctx: ImportContext): Promise<string | null> {
-  const active = (await getLocations(ctx.gql, ctx.cache)).filter((l) => l.isActive);
+  const active = (await getLocations(ctx.gql, ctx.cache)).filter(
+    (l) => l.isActive,
+  );
   if (active.length === 1) return active[0].id;
   if (!ctx.cache.has("warnedQty")) {
     ctx.cache.set("warnedQty", true);
@@ -647,8 +772,18 @@ async function singleLocationId(ctx: ImportContext): Promise<string | null> {
 }
 
 async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
-  const quantities: Array<{ inventoryItemId: string; locationId: string; quantity: number; changeFromQuantity: null }> = [];
-  const changes: Array<{ inventoryItemId: string; locationId: string; delta: number; changeFromQuantity: null }> = [];
+  const quantities: Array<{
+    inventoryItemId: string;
+    locationId: string;
+    quantity: number;
+    changeFromQuantity: null;
+  }> = [];
+  const changes: Array<{
+    inventoryItemId: string;
+    locationId: string;
+    delta: number;
+    changeFromQuantity: null;
+  }> = [];
   for (const w of work) {
     const targets: Array<{ locationId: string; quantity: number }> = [];
     for (const inv of w.spec.inventory) {
@@ -663,38 +798,66 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
     if (w.spec.adjust) {
       const locationId = locs[0] ?? (await singleLocationId(ctx));
       if (locationId) {
-        changes.push({ inventoryItemId: w.inventoryItemId, locationId, delta: w.spec.adjust, changeFromQuantity: null });
+        changes.push({
+          inventoryItemId: w.inventoryItemId,
+          locationId,
+          delta: w.spec.adjust,
+          changeFromQuantity: null,
+        });
         locs.push(locationId);
       }
     }
     for (const locationId of new Set(locs)) {
       if (w.activeLocations.has(locationId)) continue;
-      const d = await ctx.gql(INVENTORY_ACTIVATE, { inventoryItemId: w.inventoryItemId, locationId });
+      const d = await ctx.gql(INVENTORY_ACTIVATE, {
+        inventoryItemId: w.inventoryItemId,
+        locationId,
+      });
       const err = d.inventoryActivate.userErrors?.[0];
-      if (err && !/already/i.test(err.message)) throw new ImportError(`Inventory: ${err.message}`);
+      if (err && !/already/i.test(err.message))
+        throw new ImportError(`Inventory: ${err.message}`);
       w.activeLocations.add(locationId);
     }
-    for (const t of targets) quantities.push({ inventoryItemId: w.inventoryItemId, ...t, changeFromQuantity: null });
+    for (const t of targets)
+      quantities.push({
+        inventoryItemId: w.inventoryItemId,
+        ...t,
+        changeFromQuantity: null,
+      });
   }
   for (let i = 0; i < quantities.length; i += 250) {
     const d = await ctx.gql(INVENTORY_SET, {
-      input: { name: "available", reason: "correction", quantities: quantities.slice(i, i + 250) },
+      input: {
+        name: "available",
+        reason: "correction",
+        quantities: quantities.slice(i, i + 250),
+      },
     });
     assertNoUserErrors(d.inventorySetQuantities, "Inventory");
   }
   if (changes.length) {
-    const d = await ctx.gql(INVENTORY_ADJUST, { input: { name: "available", reason: "correction", changes } });
+    const d = await ctx.gql(INVENTORY_ADJUST, {
+      input: { name: "available", reason: "correction", changes },
+    });
     assertNoUserErrors(d.inventoryAdjustQuantities, "Inventory adjust");
   }
 }
 
-function setVariantInput(spec: VariantSpec, names: string[], images: Set<string>): Record<string, any> {
+function setVariantInput(
+  spec: VariantSpec,
+  names: string[],
+  images: Set<string>,
+): Record<string, any> {
   const input: Record<string, any> = { ...spec.input };
-  if (input.inventoryItem?.sku !== undefined) input.sku = input.inventoryItem.sku;
+  if (input.inventoryItem?.sku !== undefined)
+    input.sku = input.inventoryItem.sku;
   input.optionValues = names.length
     ? names.map((name, i) => {
         const value = spec.optionValues[i];
-        if (!value) throw new ImportError(`Variant on row ${spec.rowIndex + 1} is missing Option${i + 1} Value`);
+        if (!value)
+          throw new ImportError(
+            `Variant on row ${spec.rowIndex + 1} is missing Option${i + 1} Value`,
+          );
         return { optionName: name, name: value };
       })
     : [{ optionName: "Title", name: "Default Title" }];
@@ -705,17 +868,35 @@ function setVariantInput(spec: VariantSpec, names: string[], images: Set<string>
   return input;
 }
 
-async function createProduct(
+/**
+ * Builds and validates everything needed to create a product (including
+ * location and publication lookups) without writing anything, and returns a
+ * function that performs the create. REPLACE relies on this so a bad row can't
+ * delete the existing product. `omitHandle` lets Shopify pick a free handle.
+ */
+async function prepareCreate(
   ctx: ImportContext,
   rows: Row[],
   top: Row,
-): Promise<{ id: string; rowPatches: Array<Row | undefined> }> {
+  omitHandle = false,
+): Promise<() => Promise<{ id: string; rowPatches: Array<Row | undefined> }>> {
   const fields = productFields(top);
-  if (!fields.title) throw new ImportError("Title is required to create a product");
+  if (omitHandle) delete fields.handle;
+  if (!fields.title)
+    throw new ImportError("Title is required to create a product");
   const { names, variants } = parseVariants(rows);
   const live = variants.filter((v) => v.command !== "DELETE");
-  if (!live.length) live.push({ rowIndex: 0, command: "MERGE", optionValues: [], input: {}, inventory: [], metafields: { set: [], blank: [] } });
-  if (names.length === 0 && live.length > 1) throw new ImportError("Several variants given but no Option1 Name");
+  if (!live.length)
+    live.push({
+      rowIndex: 0,
+      command: "MERGE",
+      optionValues: [],
+      input: {},
+      inventory: [],
+      metafields: { set: [], blank: [] },
+    });
+  if (names.length === 0 && live.length > 1)
+    throw new ImportError("Several variants given but no Option1 Name");
 
   const input: Record<string, any> = { ...fields };
   const giftCard = parseBool(cell(top, "Gift Card"));
@@ -729,22 +910,35 @@ async function createProduct(
   const optionNames = names.length ? names : ["Title"];
   input.variants = live.map((v) => setVariantInput(v, names, variantImages));
   // Inventory for new products: set at create time.
-  const locationQty = new Map<VariantSpec, Array<{ locationId: string; name: string; quantity: number }>>();
+  const locationQty = new Map<
+    VariantSpec,
+    Array<{ locationId: string; name: string; quantity: number }>
+  >();
   for (const [i, v] of live.entries()) {
     const q: Array<{ locationId: string; name: string; quantity: number }> = [];
     for (const inv of v.inventory) {
-      q.push({ locationId: (await locationByName(ctx.gql, ctx.cache, inv.locationName)).id, name: "available", quantity: inv.quantity });
+      q.push({
+        locationId: (await locationByName(ctx.gql, ctx.cache, inv.locationName))
+          .id,
+        name: "available",
+        quantity: inv.quantity,
+      });
     }
     if (!v.inventory.length && v.totalQty !== undefined) {
       const locationId = await singleLocationId(ctx);
-      if (locationId) q.push({ locationId, name: "available", quantity: v.totalQty });
+      if (locationId)
+        q.push({ locationId, name: "available", quantity: v.totalQty });
     }
     if (q.length) {
       input.variants[i].inventoryQuantities = q;
-      input.variants[i].inventoryItem = { tracked: true, ...input.variants[i].inventoryItem };
+      input.variants[i].inventoryItem = {
+        tracked: true,
+        ...input.variants[i].inventoryItem,
+      };
       locationQty.set(v, q);
     }
-    if (v.metafields.set.length) input.variants[i].metafields = v.metafields.set;
+    if (v.metafields.set.length)
+      input.variants[i].metafields = v.metafields.set;
   }
   input.productOptions = optionNames.map((name, i) => {
     const values: string[] = [];
@@ -756,33 +950,62 @@ async function createProduct(
   });
 
   const images = parseImages(rows).filter((im) => im.command !== "DELETE");
-  const files = images.map((im) => ({ originalSource: im.src, alt: im.alt || undefined, contentType: "IMAGE" }));
+  const files = images.map((im) => ({
+    originalSource: im.src,
+    alt: im.alt || undefined,
+    contentType: "IMAGE",
+  }));
   for (const src of variantImages) {
-    if (!images.some((im) => im.src === src)) files.push({ originalSource: src, alt: undefined, contentType: "IMAGE" });
+    if (!images.some((im) => im.src === src))
+      files.push({ originalSource: src, alt: undefined, contentType: "IMAGE" });
   }
   if (files.length) input.files = files;
 
-  const d = await ctx.gql(PRODUCT_SET, { input });
-  assertNoUserErrors(d.productSet, "Create product");
-  const product = d.productSet.product;
-
   const published = parseBool(cell(top, "Published"));
-  if (published) await setOnlineStorePublished(ctx.gql, ctx.cache, product.id, true, cell(top, "Published At") || undefined);
-
-  // Variant IDs back into the result file.
-  const rowPatches: Array<Row | undefined> = [];
-  const created: any[] = product.variants.nodes;
-  live.forEach((v) => {
-    const match = created.find((c) =>
-      (names.length ? names : ["Title"]).every(
-        (n, i) => c.selectedOptions.find((o: any) => o.name === n)?.value === (names.length ? v.optionValues[i] : "Default Title"),
-      ),
+  if (published && !(await onlineStorePublicationId(ctx.gql, ctx.cache))) {
+    throw new ImportError(
+      "Online Store sales channel not found; cannot set Published",
     );
-    if (match) {
-      rowPatches[v.rowIndex] = { "Variant ID": gidToId(match.id), "Variant Inventory Item ID": gidToId(match.inventoryItem.id) };
-    }
-  });
-  return { id: product.id, rowPatches };
+  }
+
+  return async () => {
+    const d = await ctx.gql(PRODUCT_SET, { input });
+    assertNoUserErrors(d.productSet, "Create product");
+    const product = d.productSet.product;
+
+    if (published)
+      await setOnlineStorePublished(
+        ctx.gql,
+        ctx.cache,
+        product.id,
+        true,
+        cell(top, "Published At") || undefined,
+      );
+
+    // Variant IDs back into the result file.
+    const rowPatches: Array<Row | undefined> = [];
+    const created: any[] = product.variants.nodes;
+    live.forEach((v) => {
+      const match = created.find((c) =>
+        (names.length ? names : ["Title"]).every(
+          (n, i) =>
+            c.selectedOptions.find((o: any) => o.name === n)?.value ===
+            (names.length ? v.optionValues[i] : "Default Title"),
+        ),
+      );
+      if (match) {
+        rowPatches[v.rowIndex] = {
+          "Variant ID": gidToId(match.id),
+          "Variant Inventory Item ID": gidToId(match.inventoryItem.id),
+        };
+      }
+    });
+    return { id: product.id, rowPatches };
+  };
+}
+
+async function createProduct(ctx: ImportContext, rows: Row[], top: Row) {
+  return (await prepareCreate(ctx, rows, top))();
 }
 
 async function updateProduct(
@@ -799,27 +1022,44 @@ async function updateProduct(
   const fields = productFields(top);
   if (fields.handle === existing.handle) delete fields.handle;
   const tagsCell = cell(top, "Tags");
-  const tagsCommand = parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE");
-  if (tagsCell !== undefined && tagsCommand === "REPLACE") fields.tags = splitTags(tagsCell);
+  const tagsCommand = parseSubCommand(
+    cell(top, "Tags Command"),
+    ["REPLACE", "MERGE", "DELETE"] as const,
+    "REPLACE",
+  );
+  if (tagsCell !== undefined && tagsCommand === "REPLACE")
+    fields.tags = splitTags(tagsCell);
   if (Object.keys(fields).length) {
-    const d = await ctx.gql(PRODUCT_UPDATE, { product: { id: productId, ...fields } });
+    const d = await ctx.gql(PRODUCT_UPDATE, {
+      product: { id: productId, ...fields },
+    });
     assertNoUserErrors(d.productUpdate, "Update product");
   }
-  if (tagsCell && tagsCommand === "MERGE") await addTags(ctx.gql, productId, splitTags(tagsCell));
-  if (tagsCell && tagsCommand === "DELETE") await removeTags(ctx.gql, productId, splitTags(tagsCell));
+  if (tagsCell && tagsCommand === "MERGE")
+    await addTags(ctx.gql, productId, splitTags(tagsCell));
+  if (tagsCell && tagsCommand === "DELETE")
+    await removeTags(ctx.gql, productId, splitTags(tagsCell));
 
   const mf = metafieldsFromRow(top);
   await writeMetafields(ctx.gql, productId, mf.set, mf.blank);
 
   const published = parseBool(cell(top, "Published"));
   if (published !== undefined) {
-    await setOnlineStorePublished(ctx.gql, ctx.cache, productId, published, cell(top, "Published At") || undefined);
+    await setOnlineStorePublished(
+      ctx.gql,
+      ctx.cache,
+      productId,
+      published,
+      cell(top, "Published At") || undefined,
+    );
   }
 
   // 2. Images.
   const images = parseImages(rows);
   const existingMedia = existing.media.nodes.filter((m) => m.image?.url);
-  const mediaByKey = new Map(existingMedia.map((m) => [imageKey(m.image!.url), m]));
+  const mediaByKey = new Map(
+    existingMedia.map((m) => [imageKey(m.image!.url), m]),
+  );
   if (images.length) {
     const replace = images.some((im) => im.command === "REPLACE");
     const wanted = images.filter((im) => im.command !== "DELETE");
@@ -830,26 +1070,44 @@ async function updateProduct(
     }
     if (replace) {
       const keep = new Set(wanted.map((im) => imageKey(im.src)));
-      for (const m of existingMedia) if (!keep.has(imageKey(m.image!.url))) toDelete.add(m.id);
+      for (const m of existingMedia)
+        if (!keep.has(imageKey(m.image!.url))) toDelete.add(m.id);
     }
     if (toDelete.size) {
-      const d = await ctx.gql(MEDIA_DELETE, { productId, mediaIds: [...toDelete] });
+      const d = await ctx.gql(MEDIA_DELETE, {
+        productId,
+        mediaIds: [...toDelete],
+      });
       if (d.productDeleteMedia.mediaUserErrors?.length) {
-        throw new ImportError(`Images: ${d.productDeleteMedia.mediaUserErrors[0].message}`);
+        throw new ImportError(
+          `Images: ${d.productDeleteMedia.mediaUserErrors[0].message}`,
+        );
       }
-      for (const [k, m] of mediaByKey) if (toDelete.has(m.id)) mediaByKey.delete(k);
+      for (const [k, m] of mediaByKey)
+        if (toDelete.has(m.id)) mediaByKey.delete(k);
     }
     const toAdd = wanted.filter((im) => !mediaByKey.has(imageKey(im.src)));
     if (toAdd.length) {
       const d = await ctx.gql(MEDIA_CREATE, {
         productId,
-        media: toAdd.map((im) => ({ originalSource: im.src, alt: im.alt ?? "", mediaContentType: "IMAGE" })),
+        media: toAdd.map((im) => ({
+          originalSource: im.src,
+          alt: im.alt ?? "",
+          mediaContentType: "IMAGE",
+        })),
       });
       if (d.productCreateMedia.mediaUserErrors?.length) {
-        throw new ImportError(`Images: ${d.productCreateMedia.mediaUserErrors[0].message}`);
+        throw new ImportError(
+          `Images: ${d.productCreateMedia.mediaUserErrors[0].message}`,
+        );
       }
       d.productCreateMedia.media.forEach((m: any, i: number) => {
-        mediaByKey.set(imageKey(toAdd[i].src), { id: m.id, alt: m.alt, mediaContentType: "IMAGE", image: { url: toAdd[i].src } });
+        mediaByKey.set(imageKey(toAdd[i].src), {
+          id: m.id,
+          alt: m.alt,
+          mediaContentType: "IMAGE",
+          image: { url: toAdd[i].src },
+        });
       });
     }
   }
@@ -860,11 +1118,20 @@ async function updateProduct(
   if (!variants.length) return { rowPatches, notes };
 
   let options = existing.options;
-  const isDefault = existing.hasOnlyDefaultVariant && options.length === 1 && options[0].name === "Title";
-  let names = sheetNames.length ? sheetNames : isDefault ? [] : options.map((o) => o.name);
+  const isDefault =
+    existing.hasOnlyDefaultVariant &&
+    options.length === 1 &&
+    options[0].name === "Title";
+  let names = sheetNames.length
+    ? sheetNames
+    : isDefault
+      ? []
+      : options.map((o) => o.name);
   if (sheetNames.length && !isDefault) {
     const existingNames = options.map((o) => o.name.toLowerCase());
-    const mismatch = sheetNames.some((n, i) => existingNames[i] !== n.toLowerCase());
+    const mismatch = sheetNames.some(
+      (n, i) => existingNames[i] !== n.toLowerCase(),
+    );
     if (mismatch) {
       throw new ImportError(
         `Option names (${sheetNames.join(", ")}) differ from the product's (${options.map((o) => o.name).join(", ")}). Use command REPLACE to restructure options.`,
@@ -879,14 +1146,18 @@ async function updateProduct(
       return existing.variants.find((e) =>
         names.every(
           (n, i) =>
-            (e.selectedOptions.find((o) => o.name.toLowerCase() === n.toLowerCase())?.value ?? "").toLowerCase() ===
-            (v.optionValues[i] ?? "").toLowerCase(),
+            (
+              e.selectedOptions.find(
+                (o) => o.name.toLowerCase() === n.toLowerCase(),
+              )?.value ?? ""
+            ).toLowerCase() === (v.optionValues[i] ?? "").toLowerCase(),
         ),
       );
     }
     const sku = v.input.inventoryItem?.sku;
     if (sku) return existing.variants.find((e) => e.sku === sku);
-    if (!names.length && existing.variants.length === 1) return existing.variants[0];
+    if (!names.length && existing.variants.length === 1)
+      return existing.variants[0];
     return undefined;
   };
 
@@ -901,17 +1172,24 @@ async function updateProduct(
       continue;
     }
     if (ex) toUpdate.push({ spec: v, existing: ex });
-    else if (v.id) throw new ImportError(`Variant ID ${gidToId(v.id)} not found on this product`);
+    else if (v.id)
+      throw new ImportError(
+        `Variant ID ${gidToId(v.id)} not found on this product`,
+      );
     else toCreate.push(v);
   }
 
-  const newMedia: Array<{ originalSource: string; mediaContentType: string }> = [];
+  const newMedia: Array<{ originalSource: string; mediaContentType: string }> =
+    [];
   const mediaFor = (spec: VariantSpec): Record<string, any> => {
     if (!spec.imageSrc) return {};
     const m = mediaByKey.get(imageKey(spec.imageSrc));
     if (m) return { mediaId: m.id };
     if (!newMedia.some((x) => x.originalSource === spec.imageSrc)) {
-      newMedia.push({ originalSource: spec.imageSrc, mediaContentType: "IMAGE" });
+      newMedia.push({
+        originalSource: spec.imageSrc,
+        mediaContentType: "IMAGE",
+      });
     }
     return { mediaSrc: [spec.imageSrc] };
   };
@@ -924,19 +1202,38 @@ async function updateProduct(
       id: ex.id,
       ...spec.input,
       ...mediaFor(spec),
-      ...(spec.metafields.set.length ? { metafields: spec.metafields.set } : {}),
+      ...(spec.metafields.set.length
+        ? { metafields: spec.metafields.set }
+        : {}),
       ...(names.length && spec.optionValues.length
-        ? { optionValues: names.map((name, i) => ({ optionName: name, name: spec.optionValues[i] })).filter((o) => o.name) }
+        ? {
+            optionValues: names
+              .map((name, i) => ({
+                optionName: name,
+                name: spec.optionValues[i],
+              }))
+              .filter((o) => o.name),
+          }
         : {}),
     }));
-    const d = await ctx.gql(VARIANTS_UPDATE, { productId, variants: inputs, media: newMedia.length ? [...newMedia] : null });
+    const d = await ctx.gql(VARIANTS_UPDATE, {
+      productId,
+      variants: inputs,
+      media: newMedia.length ? [...newMedia] : null,
+    });
     assertNoUserErrors(d.productVariantsBulkUpdate, "Update variants");
     for (const { spec, existing: ex } of toUpdate) {
-      rowPatches[spec.rowIndex] = { "Variant ID": gidToId(ex.id), "Variant Inventory Item ID": gidToId(ex.inventoryItem.id) };
-      if (spec.metafields.blank.length) await writeMetafields(ctx.gql, ex.id, [], spec.metafields.blank);
+      rowPatches[spec.rowIndex] = {
+        "Variant ID": gidToId(ex.id),
+        "Variant Inventory Item ID": gidToId(ex.inventoryItem.id),
+      };
+      if (spec.metafields.blank.length)
+        await writeMetafields(ctx.gql, ex.id, [], spec.metafields.blank);
       inventoryWork.push({
         inventoryItemId: ex.inventoryItem.id,
-        activeLocations: new Set(ex.inventoryItem.inventoryLevels.nodes.map((n) => n.location.id)),
+        activeLocations: new Set(
+          ex.inventoryItem.inventoryLevels.nodes.map((n) => n.location.id),
+        ),
         spec,
       });
     }
@@ -949,7 +1246,9 @@ async function updateProduct(
         productId,
         options: names.map((name, i) => ({
           name,
-          values: [...new Set(toCreate.map((v) => v.optionValues[i]).filter(Boolean))].map((n) => ({ name: n })),
+          values: [
+            ...new Set(toCreate.map((v) => v.optionValues[i]).filter(Boolean)),
+          ].map((n) => ({ name: n })),
         })),
       });
       assertNoUserErrors(d.productOptionsCreate, "Create options");
@@ -959,28 +1258,50 @@ async function updateProduct(
     const inputs = [];
     for (const spec of toCreate) {
       if (names.length && names.some((_, i) => !spec.optionValues[i])) {
-        throw new ImportError(`New variant on row ${spec.rowIndex + 1} needs a value for every option (${names.join(", ")})`);
+        throw new ImportError(
+          `New variant on row ${spec.rowIndex + 1} needs a value for every option (${names.join(", ")})`,
+        );
       }
-      if (!names.length) throw new ImportError(`New variant on row ${spec.rowIndex + 1} needs Option1 Name/Value`);
-      const inventoryQuantities: Array<{ locationId: string; availableQuantity: number }> = [];
+      if (!names.length)
+        throw new ImportError(
+          `New variant on row ${spec.rowIndex + 1} needs Option1 Name/Value`,
+        );
+      const inventoryQuantities: Array<{
+        locationId: string;
+        availableQuantity: number;
+      }> = [];
       for (const inv of spec.inventory) {
         inventoryQuantities.push({
-          locationId: (await locationByName(ctx.gql, ctx.cache, inv.locationName)).id,
+          locationId: (
+            await locationByName(ctx.gql, ctx.cache, inv.locationName)
+          ).id,
           availableQuantity: inv.quantity,
         });
       }
       if (!spec.inventory.length && spec.totalQty !== undefined) {
         const locationId = await singleLocationId(ctx);
-        if (locationId) inventoryQuantities.push({ locationId, availableQuantity: spec.totalQty });
+        if (locationId)
+          inventoryQuantities.push({
+            locationId,
+            availableQuantity: spec.totalQty,
+          });
       }
       inputs.push({
         ...spec.input,
         ...mediaFor(spec),
-        ...(spec.metafields.set.length ? { metafields: spec.metafields.set } : {}),
-        ...(inventoryQuantities.length
-          ? { inventoryQuantities, inventoryItem: { tracked: true, ...spec.input.inventoryItem } }
+        ...(spec.metafields.set.length
+          ? { metafields: spec.metafields.set }
           : {}),
-        optionValues: names.map((name, i) => ({ optionName: name, name: spec.optionValues[i] })),
+        ...(inventoryQuantities.length
+          ? {
+              inventoryQuantities,
+              inventoryItem: { tracked: true, ...spec.input.inventoryItem },
+            }
+          : {}),
+        optionValues: names.map((name, i) => ({
+          optionName: name,
+          name: spec.optionValues[i],
+        })),
       });
     }
     const d = await ctx.gql(VARIANTS_CREATE, {
@@ -994,20 +1315,33 @@ async function updateProduct(
     toCreate.forEach((spec, i) => {
       const c = created[i];
       if (!c) return;
-      rowPatches[spec.rowIndex] = { "Variant ID": gidToId(c.id), "Variant Inventory Item ID": gidToId(c.inventoryItem.id) };
+      rowPatches[spec.rowIndex] = {
+        "Variant ID": gidToId(c.id),
+        "Variant Inventory Item ID": gidToId(c.inventoryItem.id),
+      };
       // Quantities were set on create; only adjustments remain.
       if (spec.adjust) {
-        inventoryWork.push({ inventoryItemId: c.inventoryItem.id, activeLocations: new Set(), spec: { ...spec, inventory: [], totalQty: undefined } });
+        inventoryWork.push({
+          inventoryItemId: c.inventoryItem.id,
+          activeLocations: new Set(),
+          spec: { ...spec, inventory: [], totalQty: undefined },
+        });
       }
     });
   }
 
   if (toDelete.length) {
-    const d = await ctx.gql(VARIANTS_DELETE, { productId, variantsIds: toDelete });
+    const d = await ctx.gql(VARIANTS_DELETE, {
+      productId,
+      variantsIds: toDelete,
+    });
     assertNoUserErrors(d.productVariantsBulkDelete, "Delete variants");
   }
 
-  const needsInventory = inventoryWork.filter((w) => w.spec.inventory.length || w.spec.totalQty !== undefined || w.spec.adjust);
+  const needsInventory = inventoryWork.filter(
+    (w) =>
+      w.spec.inventory.length || w.spec.totalQty !== undefined || w.spec.adjust,
+  );
   if (needsInventory.length) await applyInventory(ctx, needsInventory);
 
   return { rowPatches, notes };
@@ -1018,34 +1352,86 @@ async function deleteProduct(gql: Gql, id: string) {
   assertNoUserErrors(d.productDelete, "Delete product");
 }
 
-export async function importProduct(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
+export async function importProduct(
+  ctx: ImportContext,
+  rows: Row[],
+  command: Command,
+): Promise<ItemResult> {
   const top = rows[0];
   const id = toGid("Product", cell(top, "ID"));
   const handle = cell(top, "Handle");
-  let existing = id || handle ? await fetchProduct(ctx.gql, { id, handle }) : null;
+  let existing =
+    id || handle ? await fetchProduct(ctx.gql, { id, handle }) : null;
 
   switch (command) {
     case "DELETE": {
-      if (!existing) return { status: "Failed", command, message: "Product not found" };
+      if (!existing)
+        return { status: "Failed", command, message: "Product not found" };
       await deleteProduct(ctx.gql, existing.id);
       return { status: "OK", command, id: existing.id, message: "Deleted" };
     }
     case "NEW": {
-      if (existing) return { status: "Failed", command, id: existing.id, message: `Product with handle "${existing.handle}" already exists` };
+      if (existing)
+        return {
+          status: "Failed",
+          command,
+          id: existing.id,
+          message: `Product with handle "${existing.handle}" already exists`,
+        };
       const r = await createProduct(ctx, rows, top);
-      return { status: "OK", command, id: r.id, message: "Created", rowPatches: r.rowPatches };
+      return {
+        status: "OK",
+        command,
+        id: r.id,
+        message: "Created",
+        rowPatches: r.rowPatches,
+      };
     }
     case "REPLACE": {
-      if (existing) await deleteProduct(ctx.gql, existing.id);
-      const r = await createProduct(ctx, rows, top);
-      return { status: "OK", command, id: r.id, message: existing ? "Replaced" : "Created", rowPatches: r.rowPatches };
+      if (!existing) {
+        const r = await createProduct(ctx, rows, top);
+        return {
+          status: "OK",
+          command,
+          id: r.id,
+          message: "Created",
+          rowPatches: r.rowPatches,
+        };
+      }
+      // Create the new product first (under a temporary handle) so a failure
+      // leaves the old one intact, and so images can still be fetched from the
+      // old product's CDN URLs. Then delete the old one and take its handle.
+      const create = await prepareCreate(ctx, rows, top, true);
+      const r = await create();
+      await deleteProduct(ctx.gql, existing.id);
+      const handle = cell(top, "Handle") || existing.handle;
+      const d = await ctx.gql(PRODUCT_UPDATE, {
+        product: { id: r.id, handle },
+      });
+      const renamed = !d.productUpdate.userErrors?.length;
+      return {
+        status: "OK",
+        command,
+        id: r.id,
+        message: renamed
+          ? "Replaced"
+          : `Replaced, but could not set handle "${handle}": ${d.productUpdate.userErrors[0].message}`,
+        rowPatches: r.rowPatches,
+      };
     }
     case "UPDATE":
     case "MERGE": {
       if (!existing) {
-        if (command === "UPDATE") return { status: "Failed", command, message: "Product not found" };
+        if (command === "UPDATE")
+          return { status: "Failed", command, message: "Product not found" };
         const r = await createProduct(ctx, rows, top);
-        return { status: "OK", command, id: r.id, message: "Created", rowPatches: r.rowPatches };
+        return {
+          status: "OK",
+          command,
+          id: r.id,
+          message: "Created",
+          rowPatches: r.rowPatches,
+        };
       }
       const r = await updateProduct(ctx, existing, rows, top, command);
       return {
@@ -1065,7 +1451,8 @@ export const productsEntity: Entity = {
   key: "products",
   sheet: "Products",
   aliases: ["product"],
-  description: "Products with variants, options, images, metafields and inventory per location.",
+  description:
+    "Products with variants, options, images, metafields and inventory per location.",
   columns: [...PRODUCT_COLUMNS, ...IMAGE_COLUMNS, ...VARIANT_COLUMNS],
   supportsQuery: true,
   groups: [
