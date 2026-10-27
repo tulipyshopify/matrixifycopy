@@ -14,6 +14,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
+import { paginate } from "../core/gql";
 
 /*
  * B2B companies. Import scope: create/update/delete the company, create/update/
@@ -150,8 +151,16 @@ async function exportCompanies(ctx: ExportContext, emit: (rows: Row[]) => Promis
 const COMPANY_FIELDS = `#graphql
   fragment ImportCompany on Company {
     id name externalId
-    locations(first: 250) { nodes { id name externalId } }
+    locations(first: 250) { nodes { id name externalId } pageInfo { hasNextPage endCursor } }
     contacts(first: 250) { nodes { id isMainContact customer { id } } }
+  }
+`;
+
+const COMPANY_LOCATIONS = `#graphql
+  query ImportCompanyLocations($id: ID!, $after: String) {
+    company(id: $id) {
+      locations(first: 250, after: $after) { nodes { id name externalId } pageInfo { hasNextPage endCursor } }
+    }
   }
 `;
 
@@ -160,11 +169,17 @@ const COMPANY_BY_ID = `#graphql
   ${COMPANY_FIELDS}
 `;
 
+/**
+ * Search is fuzzy (prefix / token matching), so callers page through every
+ * hit and compare exactly. Only identity fields here; details come by ID.
+ */
 const COMPANY_SEARCH = `#graphql
-  query ImportCompanySearch($query: String!) {
-    companies(first: 10, query: $query) { nodes { ...ImportCompany } }
+  query ImportCompanySearch($query: String!, $after: String) {
+    companies(first: 100, after: $after, query: $query) {
+      nodes { id name externalId }
+      pageInfo { hasNextPage endCursor }
+    }
   }
-  ${COMPANY_FIELDS}
 `;
 
 const CONTACT_CUSTOMER = `#graphql
@@ -189,25 +204,70 @@ interface ExistingCompany {
   id: string;
   name: string;
   externalId: string | null;
-  locations: { nodes: ExistingLocation[] };
+  locations: { nodes: ExistingLocation[]; pageInfo?: { hasNextPage: boolean; endCursor: string | null } };
   contacts: { nodes: ExistingContact[] };
+}
+
+const sameName = (a: string | null | undefined, b: string | null | undefined) =>
+  (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+
+async function companyById(gql: Gql, id: string): Promise<ExistingCompany | null> {
+  const c: ExistingCompany | null = (await gql(COMPANY_BY_ID, { id })).company ?? null;
+  if (c?.locations.pageInfo?.hasNextPage) {
+    // More than one page of locations: load them all so name lookups are complete.
+    const all: ExistingLocation[] = [];
+    for await (const l of paginate<ExistingLocation>(gql, COMPANY_LOCATIONS, { id }, (d) => d.company.locations)) all.push(l);
+    c.locations = { nodes: all };
+  }
+  return c;
+}
+
+/**
+ * Pages through every search hit and returns the ID of the one exact match.
+ * Throws `ambiguous` when more than one hit matches exactly.
+ */
+async function searchExact(
+  gql: Gql,
+  query: string,
+  matches: (n: { id: string; name: string; externalId: string | null }) => boolean,
+  ambiguous: string,
+): Promise<string | null> {
+  let found: string | null = null;
+  for await (const n of paginate<{ id: string; name: string; externalId: string | null }>(
+    gql,
+    COMPANY_SEARCH,
+    { query },
+    (d) => d.companies,
+  )) {
+    if (!matches(n)) continue;
+    if (found && found !== n.id) throw new ImportError(ambiguous);
+    found = n.id;
+  }
+  return found;
 }
 
 async function fetchCompany(gql: Gql, by: { id?: string; externalId?: string; name?: string }): Promise<ExistingCompany | null> {
   if (by.id) {
-    const c = (await gql(COMPANY_BY_ID, { id: by.id })).company;
+    const c = await companyById(gql, by.id);
     if (c) return c;
   }
   if (by.externalId) {
-    const nodes: ExistingCompany[] = (await gql(COMPANY_SEARCH, { query: `external_id:${searchValue(by.externalId)}` })).companies.nodes;
-    const c = nodes.find((n) => n.externalId === by.externalId);
-    if (c) return c;
+    const id = await searchExact(
+      gql,
+      `external_id:${searchValue(by.externalId)}`,
+      (n) => n.externalId === by.externalId,
+      `Several companies have External ID "${by.externalId}"; use ID`,
+    );
+    if (id) return companyById(gql, id);
   }
   if (by.name) {
-    const nodes: ExistingCompany[] = (await gql(COMPANY_SEARCH, { query: `name:${searchValue(by.name)}` })).companies.nodes;
-    const exact = nodes.filter((n) => n.name.trim().toLowerCase() === by.name!.trim().toLowerCase());
-    if (exact.length > 1) throw new ImportError(`Several companies are named "${by.name}"; use ID or External ID`);
-    if (exact[0]) return exact[0];
+    const id = await searchExact(
+      gql,
+      `name:${searchValue(by.name)}`,
+      (n) => sameName(n.name, by.name),
+      `Several companies are named "${by.name}"; use ID or External ID`,
+    );
+    if (id) return companyById(gql, id);
   }
   return null;
 }
@@ -424,7 +484,15 @@ function findLocation(existing: ExistingLocation[], spec: LocationSpec): Existin
     const l = existing.find((x) => x.externalId === spec.fields.externalId);
     if (l) return l;
   }
-  if (spec.fields.name) return existing.find((l) => l.name.toLowerCase() === String(spec.fields.name).toLowerCase());
+  if (spec.fields.name) {
+    const named = existing.filter((l) => sameName(l.name, spec.fields.name));
+    if (named.length > 1) {
+      throw new ImportError(
+        `Several locations are named "${spec.fields.name}" (row ${spec.rowIndex + 1}); use Location: ID or Location: External ID`,
+      );
+    }
+    return named[0];
+  }
   return undefined;
 }
 
@@ -512,26 +580,52 @@ async function applyContacts(ctx: ImportContext, companyId: string, specs: Conta
   }
 }
 
-async function createCompany(ctx: ImportContext, rows: Row[], top: Row, command: Command): Promise<{ id: string } & SubResult> {
+interface PreparedCompany {
+  input: Record<string, any>;
+  name: string;
+  first?: LocationSpec;
+  locations: LocationSpec[];
+  contacts: ContactSpec[];
+  metafields: ReturnType<typeof metafieldsFromRow>["set"];
+}
+
+/**
+ * Builds and validates everything needed to create the company, including
+ * contact customer lookups, without writing. REPLACE runs this before deleting.
+ */
+async function prepareCreate(ctx: ImportContext, rows: Row[], top: Row): Promise<PreparedCompany> {
   const company = companyFields(top);
   if (!company.name) throw new ImportError("Name is required to create a company");
   if (company.externalId === null) delete company.externalId;
-  const locations = parseLocations(rows).filter((l) => l.command !== "DELETE");
+  // A new company has no locations yet: Location IDs (e.g. from an export being
+  // REPLACEd) refer to the old record, so every location row is created.
+  const locations = parseLocations(rows)
+    .filter((l) => l.command !== "DELETE")
+    .map((l) => ({ ...l, id: undefined }));
   const input: Record<string, any> = { company };
   const first = locations.shift();
   if (first) input.companyLocation = locationCreateInput(first, company.name);
+  const contacts = parseContacts(rows);
+  // Resolve contacts now (cached), so lookup failures happen before any write.
+  for (const c of contacts) await customerIdByEmail(ctx, c.email);
+  return { input, name: company.name, first, locations, contacts, metafields: metafieldsFromRow(top).set };
+}
 
-  const d = await ctx.gql(COMPANY_CREATE, { input });
+async function sendCreate(ctx: ImportContext, p: PreparedCompany, command: Command): Promise<{ id: string } & SubResult> {
+  const d = await ctx.gql(COMPANY_CREATE, { input: p.input });
   assertNoUserErrors(d.companyCreate, "Create company");
   const created = d.companyCreate.company;
   const out: SubResult = { rowPatches: [], notes: [] };
-  if (first && created.locations.nodes[0]) out.rowPatches[first.rowIndex] = { "Location: ID": gidToId(created.locations.nodes[0].id) };
+  if (p.first && created.locations.nodes[0]) out.rowPatches[p.first.rowIndex] = { "Location: ID": gidToId(created.locations.nodes[0].id) };
 
-  const mf = metafieldsFromRow(top).set;
-  if (mf.length) await writeMetafields(ctx.gql, created.id, mf);
-  await applyLocations(ctx, created.id, company.name, locations, [...created.locations.nodes], command, out);
-  await applyContacts(ctx, created.id, parseContacts(rows), [...created.contacts.nodes], out);
+  if (p.metafields.length) await writeMetafields(ctx.gql, created.id, p.metafields);
+  await applyLocations(ctx, created.id, p.name, p.locations, [...created.locations.nodes], command, out);
+  await applyContacts(ctx, created.id, p.contacts, [...created.contacts.nodes], out);
   return { id: created.id, ...out };
+}
+
+async function createCompany(ctx: ImportContext, rows: Row[], top: Row, command: Command): Promise<{ id: string } & SubResult> {
+  return sendCreate(ctx, await prepareCreate(ctx, rows, top), command);
 }
 
 async function updateCompany(ctx: ImportContext, existing: ExistingCompany, rows: Row[], top: Row, command: Command): Promise<SubResult> {
@@ -576,8 +670,10 @@ export async function importCompany(ctx: ImportContext, rows: Row[], command: Co
       return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }
     case "REPLACE": {
+      // Validate everything (incl. contact lookups) before deleting anything.
+      const prepared = await prepareCreate(ctx, rows, top);
       if (existing) await deleteCompany(ctx.gql, existing.id);
-      const r = await createCompany(ctx, rows, top, command);
+      const r = await sendCreate(ctx, prepared, command);
       return { status: "OK", command, id: r.id, message: [existing ? "Replaced" : "Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }
     case "UPDATE":

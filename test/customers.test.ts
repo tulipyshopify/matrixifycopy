@@ -250,6 +250,101 @@ describe("customers import", () => {
   });
 });
 
+describe("customers REPLACE validates before deleting", () => {
+  it("REPLACE with an invalid enum / boolean fails without deleting the customer", async () => {
+    const m = mockGql({
+      ImportCustomerById: () => ({ customer: existing }),
+      ImportCustomerDelete: () => ({ customerDelete: { deletedCustomerId: existing.id, ...ok } }),
+      ImportCustomerCreate: () => ({ customerCreate: { customer: { id: "gid://shopify/Customer/99" }, ...ok } }),
+    });
+    await expect(
+      customersEntity.import!.apply(m.ctx, [{ ID: "7", Email: "ann@example.com", "Email Marketing: Level": "bogus", "Accepts Email Marketing": "TRUE" }], "REPLACE"),
+    ).rejects.toThrow(/Level/);
+    await expect(
+      customersEntity.import!.apply(m.ctx, [{ ID: "7", Email: "ann@example.com", "Address Line 1": "1 Road", "Address Command": "WAT" }], "REPLACE"),
+    ).rejects.toThrow(/Unknown command/);
+    expect(m.of("ImportCustomerDelete")).toHaveLength(0);
+    expect(m.of("ImportCustomerCreate")).toHaveLength(0);
+  });
+
+  it("REPLACE of an exported customer deletes, then recreates with its addresses", async () => {
+    const m = mockGql({
+      ImportCustomerById: () => ({ customer: existing }),
+      ImportCustomerDelete: () => ({ customerDelete: { deletedCustomerId: existing.id, ...ok } }),
+      ImportCustomerCreate: () => ({ customerCreate: { customer: { id: "gid://shopify/Customer/99" }, ...ok } }),
+      ImportCustomerAddressCreate: () => ({ customerAddressCreate: { address: { id: "gid://shopify/MailingAddress/900" }, ...ok } }),
+    });
+    const r = await customersEntity.import!.apply(
+      m.ctx,
+      [{ ID: "7", Email: "ann@example.com", "First Name": "Ann", "Address ID": "501", "Address Line 1": "1 High St", "Address City": "London" }],
+      "REPLACE",
+    );
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Customer/99", message: "Replaced" });
+    expect(m.calls.map((c) => c.op)).toEqual(["ImportCustomerById", "ImportCustomerDelete", "ImportCustomerCreate", "ImportCustomerAddressCreate"]);
+    expect(r.rowPatches?.[0]).toEqual({ "Address ID": "900" });
+  });
+});
+
+describe("customers marketing consent round-trip", () => {
+  const exportedRow = (email: string, sms: string, acceptsEmail = "FALSE") => ({
+    ID: "7",
+    Email: "ann@example.com",
+    "Accepts Email Marketing": acceptsEmail,
+    "Email Marketing: Status": email,
+    "Accepts SMS Marketing": "FALSE",
+    "SMS Marketing: Status": sms,
+  });
+
+  it("re-importing exported invalid / redacted states skips consent instead of failing", async () => {
+    const cur = {
+      ...existing,
+      defaultEmailAddress: { emailAddress: "ann@example.com", marketingState: "INVALID", marketingOptInLevel: null },
+      defaultPhoneNumber: { phoneNumber: "+447700900000", smsMarketingConsent: { state: "REDACTED", optInLevel: null } },
+    };
+    const m = mockGql({ ImportCustomerById: () => ({ customer: cur }) });
+    const r = await customersEntity.import!.apply(m.ctx, [exportedRow("invalid", "redacted")], "MERGE");
+    expect(r).toMatchObject({ status: "OK", message: "Updated" });
+    expect(m.of("ImportCustomerEmailConsent")).toHaveLength(0);
+    expect(m.of("ImportCustomerSmsConsent")).toHaveLength(0);
+
+    const r2 = await customersEntity.import!.apply(m.ctx, [exportedRow("redacted", "redacted")], "MERGE");
+    expect(r2.status).toBe("OK");
+  });
+
+  it("creating from an exported row with a read-only state omits that consent", async () => {
+    const m = mockGql({
+      ImportCustomerByIdentifier: () => ({ customerByIdentifier: null }),
+      ImportCustomerById: () => ({ customer: null }),
+      ImportCustomerCreate: () => ({ customerCreate: { customer: { id: "gid://shopify/Customer/99" }, ...ok } }),
+    });
+    const r = await customersEntity.import!.apply(m.ctx, [{ ...exportedRow("invalid", "never-subscribed"), ID: "" }], "MERGE");
+    expect(r.status).toBe("OK");
+    const input = m.of("ImportCustomerCreate")[0].vars.input;
+    expect(input.emailMarketingConsent).toBeUndefined();
+    expect(input.smsMarketingConsent).toEqual({ marketingState: "NOT_SUBSCRIBED" });
+  });
+
+  it("does not send consent when it matches the current state", async () => {
+    const cur = {
+      ...existing,
+      defaultEmailAddress: { emailAddress: "ann@example.com", marketingState: "NOT_SUBSCRIBED", marketingOptInLevel: null },
+      defaultPhoneNumber: { phoneNumber: "+447700900000", smsMarketingConsent: { state: "NEVER_SUBSCRIBED", optInLevel: null } },
+    };
+    const m = mockGql({ ImportCustomerById: () => ({ customer: cur }) });
+    const r = await customersEntity.import!.apply(m.ctx, [exportedRow("not_subscribed", "not_subscribed")], "MERGE");
+    expect(r.status).toBe("OK");
+    // "Accepts" FALSE alone is already satisfied by a never-subscribed customer.
+    await customersEntity.import!.apply(m.ctx, [{ ID: "7", "Accepts Email Marketing": "FALSE", "Accepts SMS Marketing": "FALSE" }], "MERGE");
+    expect(m.of("ImportCustomerEmailConsent")).toHaveLength(0);
+    expect(m.of("ImportCustomerSmsConsent")).toHaveLength(0);
+  });
+
+  it("still rejects an unknown marketing status", async () => {
+    const m = mockGql({ ImportCustomerById: () => ({ customer: existing }) });
+    await expect(customersEntity.import!.apply(m.ctx, [exportedRow("subscribd", "")], "MERGE")).rejects.toThrow(/not valid/);
+  });
+});
+
 // --- Schema validation of the bulk export query --------------------------------------------
 
 const SCHEMA_FILE = path.resolve(".cache/schema/admin_2026-10.json.gz");

@@ -462,8 +462,18 @@ const COLLECTION_REORDER = `#graphql
   }
 `;
 
-async function createCollection(ctx: ImportContext, kind: Kind, rows: Row[], top: Row): Promise<{ id: string; notes: string[] }> {
-  const notes: string[] = [];
+interface PreparedCreate {
+  input: Record<string, any>;
+  published: boolean | undefined;
+  publishedAt: string | undefined;
+}
+
+/**
+ * Builds and validates the full collectionCreate input, including product
+ * handle lookups, without writing anything. REPLACE relies on this running
+ * before the existing collection is deleted.
+ */
+async function prepareCreate(ctx: ImportContext, kind: Kind, rows: Row[], top: Row): Promise<PreparedCreate> {
   const input: Record<string, any> = collectionFields(top);
   if (!input.title) throw new ImportError("Title is required to create a collection");
   const src = cell(top, "Image Src");
@@ -484,13 +494,19 @@ async function createCollection(ctx: ImportContext, kind: Kind, rows: Row[], top
     if (ids.length) input.products = ids;
   }
 
-  const d = await ctx.gql(COLLECTION_CREATE, { input });
+  return { input, published: parseBool(cell(top, "Published")), publishedAt: cell(top, "Published At") || undefined };
+}
+
+async function sendCreate(ctx: ImportContext, p: PreparedCreate): Promise<{ id: string; notes: string[] }> {
+  const d = await ctx.gql(COLLECTION_CREATE, { input: p.input });
   assertNoUserErrors(d.collectionCreate, "Create collection");
   const id: string = d.collectionCreate.collection.id;
+  if (p.published) await setOnlineStorePublished(ctx.gql, ctx.cache, id, true, p.publishedAt);
+  return { id, notes: [] };
+}
 
-  const published = parseBool(cell(top, "Published"));
-  if (published) await setOnlineStorePublished(ctx.gql, ctx.cache, id, true, cell(top, "Published At") || undefined);
-  return { id, notes };
+async function createCollection(ctx: ImportContext, kind: Kind, rows: Row[], top: Row): Promise<{ id: string; notes: string[] }> {
+  return sendCreate(ctx, await prepareCreate(ctx, kind, rows, top));
 }
 
 async function updateCollection(
@@ -620,8 +636,10 @@ function importer(kind: Kind) {
         return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; ") };
       }
       case "REPLACE": {
+        // Validate everything (incl. product lookups) before deleting anything.
+        const prepared = await prepareCreate(ctx, kind, rows, top);
         if (existing) await deleteCollection(ctx.gql, existing.id);
-        const r = await createCollection(ctx, kind, rows, top);
+        const r = await sendCreate(ctx, prepared);
         return { status: "OK", command, id: r.id, message: [existing ? "Replaced" : "Created", ...r.notes].join("; ") };
       }
       case "UPDATE":

@@ -25,6 +25,7 @@ function mockGql(handlers: Record<string, Handler>) {
 }
 
 const ok = { userErrors: [] };
+const lastPage = { hasNextPage: false, endCursor: null };
 
 const existing = {
   id: "gid://shopify/Company/3",
@@ -100,7 +101,7 @@ describe("companies export", () => {
 describe("companies import", () => {
   it("MERGE creates a company with its first location, extra locations and contacts", async () => {
     const m = mockGql({
-      ImportCompanySearch: () => ({ companies: { nodes: [] } }),
+      ImportCompanySearch: () => ({ companies: { nodes: [], pageInfo: lastPage } }),
       ImportCompanyCreate: () => ({
         companyCreate: {
           company: {
@@ -210,8 +211,144 @@ describe("companies import", () => {
   });
 
   it("refuses an ambiguous name lookup", async () => {
-    const m = mockGql({ ImportCompanySearch: () => ({ companies: { nodes: [existing, { ...existing, id: "gid://shopify/Company/4" }] } }) });
+    const m = mockGql({ ImportCompanySearch: () => ({ companies: { nodes: [existing, { ...existing, id: "gid://shopify/Company/4" }], pageInfo: lastPage } }) });
     await expect(companiesEntity.import!.apply(m.ctx, [{ Name: "acme" }], "MERGE")).rejects.toThrow(/Several companies/);
+  });
+});
+
+describe("companies lookups are exact and complete", () => {
+  const hit = (id: number, name: string, externalId: string | null = null) => ({ id: `gid://shopify/Company/${id}`, name, externalId });
+
+  it("pages through prefix search hits to find the exact name match", async () => {
+    const m = mockGql({
+      ImportCompanySearch: (v) =>
+        v.after
+          ? { companies: { nodes: [hit(3, "Acme")], pageInfo: lastPage } }
+          : {
+              companies: {
+                nodes: Array.from({ length: 100 }, (_, i) => hit(100 + i, `Acme ${i}`)),
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+              },
+            },
+      ImportCompanyById: (v) => ({ company: v.id === existing.id ? existing : null }),
+      ImportCompanyUpdate: () => ({ companyUpdate: { company: { id: existing.id }, ...ok } }),
+    });
+    const r = await companiesEntity.import!.apply(m.ctx, [{ Name: "Acme", Note: "x" }], "MERGE");
+    expect(r).toMatchObject({ status: "OK", id: existing.id, message: "Updated" });
+    expect(m.of("ImportCompanySearch").map((c) => c.vars.after)).toEqual([null, "c1"]);
+    expect(m.of("ImportCompanyCreate")).toHaveLength(0);
+  });
+
+  it("fails when an exact name match is duplicated on a later page", async () => {
+    const m = mockGql({
+      ImportCompanySearch: (v) =>
+        v.after
+          ? { companies: { nodes: [hit(4, "acme ")], pageInfo: lastPage } }
+          : { companies: { nodes: [hit(3, "Acme"), hit(5, "Acme Ltd")], pageInfo: { hasNextPage: true, endCursor: "c1" } } },
+      ImportCompanyById: () => ({ company: existing }),
+    });
+    await expect(companiesEntity.import!.apply(m.ctx, [{ Name: "Acme" }], "MERGE")).rejects.toThrow(/Several companies/);
+  });
+
+  it("fails instead of deleting the first of several locations with the same name", async () => {
+    const twoHq = {
+      ...existing,
+      locations: {
+        nodes: [
+          { id: "gid://shopify/CompanyLocation/31", name: "HQ", externalId: null },
+          { id: "gid://shopify/CompanyLocation/32", name: "hq", externalId: null },
+        ],
+        pageInfo: lastPage,
+      },
+    };
+    const m = mockGql({
+      ImportCompanyById: () => ({ company: twoHq }),
+      ImportCompanyLocationDelete: () => ({ companyLocationDelete: { deletedCompanyLocationId: "x", ...ok } }),
+    });
+    await expect(
+      companiesEntity.import!.apply(m.ctx, [{ ID: "3", "Location: Name": "HQ", "Location: Command": "DELETE" }], "UPDATE"),
+    ).rejects.toThrow(/Several locations/);
+    expect(m.of("ImportCompanyLocationDelete")).toHaveLength(0);
+  });
+
+  it("loads every page of locations before matching by name", async () => {
+    const many = {
+      ...existing,
+      locations: { nodes: [{ id: "gid://shopify/CompanyLocation/31", name: "HQ", externalId: null }], pageInfo: { hasNextPage: true, endCursor: "l1" } },
+    };
+    const m = mockGql({
+      ImportCompanyById: () => ({ company: many }),
+      ImportCompanyLocations: (v) =>
+        v.after
+          ? { company: { locations: { nodes: [{ id: "gid://shopify/CompanyLocation/77", name: "Depot", externalId: null }], pageInfo: lastPage } } }
+          : { company: { locations: { nodes: many.locations.nodes, pageInfo: many.locations.pageInfo } } },
+      ImportCompanyLocationDelete: () => ({ companyLocationDelete: { deletedCompanyLocationId: "x", ...ok } }),
+    });
+    const r = await companiesEntity.import!.apply(m.ctx, [{ ID: "3", "Location: Name": "Depot", "Location: Command": "DELETE" }], "UPDATE");
+    expect(r.status).toBe("OK");
+    expect(m.of("ImportCompanyLocationDelete")[0].vars).toEqual({ companyLocationId: "gid://shopify/CompanyLocation/77" });
+  });
+});
+
+describe("companies REPLACE validates before deleting", () => {
+  it("a failing contact lookup or bad sub-command leaves the company in place", async () => {
+    const m = mockGql({
+      ImportCompanyById: () => ({ company: existing }),
+      ImportCompanyContactCustomer: () => {
+        throw new Error("Throttled");
+      },
+      ImportCompanyDelete: () => ({ companyDelete: { deletedCompanyId: existing.id, ...ok } }),
+      ImportCompanyCreate: () => {
+        throw new Error("should not create");
+      },
+    });
+    await expect(
+      companiesEntity.import!.apply(m.ctx, [{ ID: "3", Name: "Acme", "Contact: Customer Email": "a@x.com" }], "REPLACE"),
+    ).rejects.toThrow(/Throttled/);
+    await expect(
+      companiesEntity.import!.apply(m.ctx, [{ ID: "3", Name: "Acme", "Location: Name": "HQ", "Location: Command": "NOPE" }], "REPLACE"),
+    ).rejects.toThrow(/Unknown command/);
+    expect(m.of("ImportCompanyDelete")).toHaveLength(0);
+  });
+
+  it("REPLACE of an exported company resolves contacts, deletes, then recreates", async () => {
+    const m = mockGql({
+      ImportCompanyById: () => ({ company: existing }),
+      ImportCompanyContactCustomer: () => ({ customerByIdentifier: { id: "gid://shopify/Customer/1" } }),
+      ImportCompanyDelete: () => ({ companyDelete: { deletedCompanyId: existing.id, ...ok } }),
+      ImportCompanyCreate: () => ({
+        companyCreate: {
+          company: {
+            id: "gid://shopify/Company/9",
+            name: "Acme",
+            externalId: null,
+            locations: { nodes: [{ id: "gid://shopify/CompanyLocation/91", name: "HQ", externalId: null }] },
+            contacts: { nodes: [] },
+          },
+          ...ok,
+        },
+      }),
+      ImportCompanyLocationCreate: () => ({ companyLocationCreate: { companyLocation: { id: "gid://shopify/CompanyLocation/92", name: "Depot", externalId: null }, ...ok } }),
+      ImportCompanyAssignContact: () => ({ companyAssignCustomerAsContact: { companyContact: { id: "gid://shopify/CompanyContact/55" }, ...ok } }),
+    });
+    const r = await companiesEntity.import!.apply(
+      m.ctx,
+      [
+        { ID: "3", Name: "Acme", "Location: ID": "31", "Location: Name": "HQ", "Contact: Customer Email": "a@x.com" },
+        { ID: "3", Name: "Acme", "Location: ID": "32", "Location: Name": "Depot" },
+      ],
+      "REPLACE",
+    );
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Company/9", message: "Replaced" });
+    expect(m.calls.map((c) => c.op)).toEqual([
+      "ImportCompanyById",
+      "ImportCompanyContactCustomer",
+      "ImportCompanyDelete",
+      "ImportCompanyCreate",
+      "ImportCompanyLocationCreate",
+      "ImportCompanyAssignContact",
+    ]);
+    expect(r.rowPatches).toEqual([{ "Location: ID": "91" }, { "Location: ID": "92" }]);
   });
 });
 

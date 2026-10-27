@@ -65,8 +65,15 @@ const ADDRESS_FIELDS: Record<string, string> = {
 
 const ADDRESS_COLUMNS = ["Address ID", "Address Command", ...Object.keys(ADDRESS_FIELDS), "Address Is Default"];
 
+/** Marketing states a merchant can write. */
 const EMAIL_STATES = ["SUBSCRIBED", "UNSUBSCRIBED", "NOT_SUBSCRIBED", "PENDING"];
 const SMS_STATES = ["SUBSCRIBED", "UNSUBSCRIBED", "NOT_SUBSCRIBED", "PENDING"];
+/**
+ * States the API reports (and export writes) but which cannot be set:
+ * CustomerEmailAddressMarketingState has INVALID, the consent enums have
+ * REDACTED. Rows carrying them leave consent untouched.
+ */
+const READ_ONLY_STATES = ["INVALID", "REDACTED"];
 const OPT_IN_LEVELS = ["SINGLE_OPT_IN", "CONFIRMED_OPT_IN", "UNKNOWN"];
 
 function lower(v: string | null | undefined): string {
@@ -276,16 +283,26 @@ interface ConsentSpec {
   consentUpdatedAt?: string;
 }
 
+/** Normalises a status cell; NEVER_SUBSCRIBED (SMS read value) is written as NOT_SUBSCRIBED. */
+function normState(v: string): string {
+  return smsState(v.trim().toUpperCase().replace(/[-\s]+/g, "_"));
+}
+
 /**
  * Consent from "<Prefix>: Status" (wins) or "Accepts <X> Marketing". A FALSE
  * "Accepts" means UNSUBSCRIBED for existing customers, NOT_SUBSCRIBED for new.
+ * Returns undefined when the row sets no consent, or when the status is a
+ * read-only state (invalid / redacted) that cannot be written back.
  */
 function consentFromRow(row: Row, kind: "Email" | "SMS", isNew: boolean): ConsentSpec | undefined {
   const status = cell(row, `${kind} Marketing: Status`);
   const accepts = parseBool(cell(row, `Accepts ${kind} Marketing`));
   let state: string | undefined;
-  if (status) state = parseEnum(status, kind === "Email" ? EMAIL_STATES : SMS_STATES, `${kind} Marketing: Status`);
-  else if (accepts !== undefined) state = accepts ? "SUBSCRIBED" : isNew ? "NOT_SUBSCRIBED" : "UNSUBSCRIBED";
+  if (status) {
+    const st = normState(status);
+    if (READ_ONLY_STATES.includes(st)) return undefined;
+    state = parseEnum(st === "NOT_SUBSCRIBED" ? st : status, kind === "Email" ? EMAIL_STATES : SMS_STATES, `${kind} Marketing: Status`);
+  } else if (accepts !== undefined) state = accepts ? "SUBSCRIBED" : isNew ? "NOT_SUBSCRIBED" : "UNSUBSCRIBED";
   if (!state) return undefined;
   const spec: ConsentSpec = { marketingState: state };
   const level = cell(row, `${kind} Marketing: Level`);
@@ -489,7 +506,34 @@ async function applyAddresses(
   return { rowPatches, notes };
 }
 
-async function createCustomer(ctx: ImportContext, rows: Row[], top: Row): Promise<{ id: string; rowPatches: Array<Row | undefined>; notes: string[] }> {
+/**
+ * Whether the sheet's consent differs from the customer's current consent.
+ * A state derived only from "Accepts ... Marketing" FALSE is satisfied by any
+ * current state that is not subscribed/pending (e.g. never subscribed, invalid,
+ * redacted), so re-importing an export does not try to rewrite it.
+ */
+function consentChanged(
+  row: Row,
+  kind: "Email" | "SMS",
+  spec: ConsentSpec,
+  current: { state?: string | null; level?: string | null } | undefined,
+): boolean {
+  const cur = smsState(current?.state ?? "");
+  const fromStatus = !!cell(row, `${kind} Marketing: Status`);
+  let stateChanged = spec.marketingState !== cur;
+  if (!fromStatus && spec.marketingState === "UNSUBSCRIBED") stateChanged = cur === "SUBSCRIBED" || cur === "PENDING";
+  const levelChanged =
+    !!spec.marketingOptInLevel && !!cell(row, `${kind} Marketing: Level`) && spec.marketingOptInLevel !== (current?.level ?? null);
+  return stateChanged || levelChanged;
+}
+
+interface PreparedCustomer {
+  input: Record<string, any>;
+  addresses: AddressSpec[];
+}
+
+/** Builds and validates the full create input without writing anything. */
+function prepareCreate(rows: Row[], top: Row): PreparedCustomer {
   const input: Record<string, any> = customerFields(top);
   if (!input.email && !input.phone && !input.firstName && !input.lastName) {
     throw new ImportError("Email, Phone, First Name or Last Name is required to create a customer");
@@ -502,14 +546,27 @@ async function createCustomer(ctx: ImportContext, rows: Row[], top: Row): Promis
   if (email) input.emailMarketingConsent = email;
   const sms = consentFromRow(top, "SMS", true);
   if (sms) input.smsMarketingConsent = sms;
+  // A new customer has no addresses yet: Address IDs (e.g. from an export being
+  // REPLACEd) refer to the old record, so every address row is created.
+  const addresses = parseAddresses(rows)
+    .filter((s) => s.command !== "DELETE")
+    .map((s) => ({ ...s, id: undefined }));
+  return { input, addresses };
+}
 
-  const d = await ctx.gql(CUSTOMER_CREATE, { input });
+async function sendCreate(
+  ctx: ImportContext,
+  p: PreparedCustomer,
+): Promise<{ id: string; rowPatches: Array<Row | undefined>; notes: string[] }> {
+  const d = await ctx.gql(CUSTOMER_CREATE, { input: p.input });
   assertNoUserErrors(d.customerCreate, "Create customer");
   const id: string = d.customerCreate.customer.id;
-
-  const specs = parseAddresses(rows).filter((s) => s.command !== "DELETE");
-  const r = await applyAddresses(ctx, id, specs, [], null);
+  const r = await applyAddresses(ctx, id, p.addresses, [], null);
   return { id, ...r };
+}
+
+async function createCustomer(ctx: ImportContext, rows: Row[], top: Row): Promise<{ id: string; rowPatches: Array<Row | undefined>; notes: string[] }> {
+  return sendCreate(ctx, prepareCreate(rows, top));
 }
 
 async function updateCustomer(
@@ -538,21 +595,13 @@ async function updateCustomer(
   // Consent has dedicated mutations; only call them when something changes.
   const email = consentFromRow(top, "Email", false);
   const curEmail = existing.defaultEmailAddress;
-  if (
-    email &&
-    (email.marketingState !== curEmail?.marketingState ||
-      (email.marketingOptInLevel && cell(top, "Email Marketing: Level") && email.marketingOptInLevel !== curEmail?.marketingOptInLevel))
-  ) {
+  if (email && consentChanged(top, "Email", email, { state: curEmail?.marketingState, level: curEmail?.marketingOptInLevel })) {
     const d = await ctx.gql(EMAIL_CONSENT, { input: { customerId: id, emailMarketingConsent: email } });
     assertNoUserErrors(d.customerEmailMarketingConsentUpdate, "Email marketing consent");
   }
   const sms = consentFromRow(top, "SMS", false);
   const curSms = existing.defaultPhoneNumber?.smsMarketingConsent;
-  if (
-    sms &&
-    (sms.marketingState !== smsState(curSms?.state) ||
-      (sms.marketingOptInLevel && cell(top, "SMS Marketing: Level") && sms.marketingOptInLevel !== curSms?.optInLevel))
-  ) {
+  if (sms && consentChanged(top, "SMS", sms, { state: curSms?.state, level: curSms?.optInLevel })) {
     const d = await ctx.gql(SMS_CONSENT, { input: { customerId: id, smsMarketingConsent: sms } });
     assertNoUserErrors(d.customerSmsMarketingConsentUpdate, "SMS marketing consent");
   }
@@ -586,8 +635,10 @@ export async function importCustomer(ctx: ImportContext, rows: Row[], command: C
       return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }
     case "REPLACE": {
+      // Validate everything before deleting anything.
+      const prepared = prepareCreate(rows, top);
       if (existing) await deleteCustomer(ctx.gql, existing.id);
-      const r = await createCustomer(ctx, rows, top);
+      const r = await sendCreate(ctx, prepared);
       return { status: "OK", command, id: r.id, message: [existing ? "Replaced" : "Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }
     case "UPDATE":

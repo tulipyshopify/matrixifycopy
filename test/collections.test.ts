@@ -300,6 +300,51 @@ describe("custom collections import", () => {
   });
 });
 
+describe("collections REPLACE validates before deleting", () => {
+  it("custom REPLACE with an unknown Product: Handle fails without deleting the collection", async () => {
+    const m = mockGql({
+      ImportCollectionById: () => ({ collection: existingCustom }),
+      ImportCollectionProductByHandle: () => ({ productByIdentifier: null }),
+      ImportCollectionDelete: () => ({ collectionDelete: { deletedCollectionId: existingCustom.id, ...ok } }),
+      ImportCollectionCreate: () => ({ collectionCreate: { collection: { id: "gid://shopify/Collection/51", handle: "picks" }, ...ok } }),
+    });
+    await expect(
+      customCollectionsEntity.import!.apply(m.ctx, [{ ID: "12", Handle: "picks", Title: "Picks", "Product: Handle": "typo" }], "REPLACE"),
+    ).rejects.toThrow(/not found/);
+    expect(m.of("ImportCollectionDelete")).toHaveLength(0);
+    expect(m.of("ImportCollectionCreate")).toHaveLength(0);
+  });
+
+  it("smart REPLACE with an invalid rule or Published value fails without deleting", async () => {
+    const m = mockGql({
+      ImportCollectionById: () => ({ collection: existingSmart }),
+      ImportCollectionDelete: () => ({ collectionDelete: { deletedCollectionId: existingSmart.id, ...ok } }),
+    });
+    const base = { ID: "11", Handle: "sale", Title: "Sale", "Rule: Product Column": "tag", "Rule: Relation": "equals", "Rule: Condition": "x" };
+    await expect(smartCollectionsEntity.import!.apply(m.ctx, [{ ...base, "Rule: Relation": "bogus" }], "REPLACE")).rejects.toThrow();
+    await expect(smartCollectionsEntity.import!.apply(m.ctx, [{ ...base, Published: "maybe" }], "REPLACE")).rejects.toThrow();
+    expect(m.of("ImportCollectionDelete")).toHaveLength(0);
+  });
+
+  it("custom REPLACE deletes then creates once the input is valid", async () => {
+    const m = mockGql({
+      ImportCollectionById: () => ({ collection: existingCustom }),
+      ImportCollectionProductByHandle: () => ({ productByIdentifier: { id: "gid://shopify/Product/7" } }),
+      ImportCollectionDelete: () => ({ collectionDelete: { deletedCollectionId: existingCustom.id, ...ok } }),
+      ImportCollectionCreate: () => ({ collectionCreate: { collection: { id: "gid://shopify/Collection/51", handle: "picks" }, ...ok } }),
+    });
+    const r = await customCollectionsEntity.import!.apply(m.ctx, [{ ID: "12", Handle: "picks", Title: "Picks", "Product: Handle": "p" }], "REPLACE");
+    expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Collection/51", message: "Replaced" });
+    expect(m.calls.map((c) => c.op)).toEqual([
+      "ImportCollectionById",
+      "ImportCollectionProductByHandle",
+      "ImportCollectionDelete",
+      "ImportCollectionCreate",
+    ]);
+    expect(m.of("ImportCollectionCreate")[0].vars.input.products).toEqual(["gid://shopify/Product/7"]);
+  });
+});
+
 // --- Schema validation of the bulk export queries ----------------------------------------
 
 const SCHEMA_FILE = path.resolve(".cache/schema/admin_2026-10.json.gz");
