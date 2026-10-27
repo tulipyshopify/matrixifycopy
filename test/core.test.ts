@@ -207,7 +207,7 @@ describe("importer", () => {
     const dir = tmp();
     const out = createXlsxOut(path.join(dir, "r.xlsx"));
     const summaries = await runImport({
-      ctx: { gql: async () => ({}), options: {}, log: () => {}, cache: new Map() },
+      ctx: { gql: (async () => ({})) as any, options: {}, log: () => {}, cache: new Map() },
       sheets: [
         {
           name: "Products",
@@ -246,7 +246,7 @@ describe("importer", () => {
       },
     });
     const [s] = await runImport({
-      ctx: { gql: async () => ({}), options: { dryRun: true }, log: () => {}, cache: new Map() },
+      ctx: { gql: (async () => ({})) as any, options: { dryRun: true }, log: () => {}, cache: new Map() },
       sheets: [{ name: "Products", headers: ["Handle"], rows: [{ Handle: "a" }] }],
       entities: [entity],
       log: () => {},
@@ -272,7 +272,7 @@ describe("exporter", () => {
     const dir = tmp();
     const out = createXlsxOut(path.join(dir, "e.xlsx"));
     const [summary] = await runExport({
-      gql: async () => ({}),
+      gql: (async () => ({})) as any,
       bulk: async function* () {},
       requests: [{ entity, options: {} }],
       out,
