@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "bulkport",
   "private": true,
   "scripts": {
     "build": "react-router build",
@@ -17,7 +17,10 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "typecheck": "react-router typegen && tsc --noEmit"
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "test": "vitest run",
+    "schema:fetch": "node scripts/fetch-schema.mjs",
+    "schema:inspect": "node scripts/schema-inspect.mjs"
   },
   "type": "module",
   "engines": {
