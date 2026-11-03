@@ -33,3 +33,4 @@ pnpm-lock.yaml
 # Local caches and job files
 /.cache
 /storage
+/bulkport.bundle
