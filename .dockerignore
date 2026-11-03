@@ -1,3 +1,10 @@
 .cache
+.git
 build
 node_modules
+storage
+data
+prisma/dev.sqlite*
+*.bundle
+.env
+.env.*

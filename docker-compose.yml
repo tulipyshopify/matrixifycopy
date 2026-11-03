@@ -1,0 +1,33 @@
+# Production setup for a single VPS: the app plus Caddy for HTTPS.
+# Usage: copy .env.production.example to .env.production, fill it in, then
+#   docker compose up -d --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      PORT: "3000"
+    volumes:
+      - ./data:/data
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env (e.g. bulkport.example.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -66,6 +66,7 @@ with a development store.
 
 ```shell
 npm install
+echo 'DATABASE_URL="file:dev.sqlite"' > .env
 npm run setup            # prisma generate + migrate
 shopify app config link  # create/link the app in your Partner account (fills client_id)
 shopify app dev          # tunnel + install on your dev store
@@ -91,6 +92,9 @@ public apps.
 | `ALLOW_PRIVATE_SOURCES` | `false` | Allow URL/FTP sources on private networks (blocked by default against SSRF). |
 
 ### Deploying
+
+**Step-by-step guide for a VPS (Docker + automatic HTTPS): [DEPLOY.md](DEPLOY.md).**
+
 
 The worker runs inside the web process, and job files live on local disk, so run **one** instance with a persistent
 volume (or set `WORKER_ENABLED=false` on all but one replica and share `STORAGE_DIR`). For production, switch Prisma
