@@ -14,6 +14,7 @@ import { filesEntity } from "./files";
 import { metaobjectsEntity } from "./metaobjects";
 import { menusEntity } from "./menus";
 import { shopEntity } from "./shop";
+import { FILTERS } from "./filters";
 
 /** All entities, in import order (dependencies first). */
 export const ENTITIES: Entity[] = [
@@ -34,6 +35,9 @@ export const ENTITIES: Entity[] = [
   menusEntity,
   shopEntity,
 ];
+
+// Attach export filters (kept in one file, see filters.ts).
+for (const e of ENTITIES) if (FILTERS[e.key]) e.filters = FILTERS[e.key];
 
 export function getEntity(key: string): Entity | undefined {
   return ENTITIES.find((e) => e.key === key);

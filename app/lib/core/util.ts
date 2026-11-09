@@ -1,4 +1,4 @@
-import type { Command, Row } from "./types";
+import type { Command, FilterCondition, Row } from "./types";
 import { COMMANDS, ImportError } from "./types";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -220,15 +220,77 @@ export function assertNoUserErrors(payload: any, what: string) {
   }
 }
 
+/** Quotes a value for Shopify search syntax. */
+function searchValue(v: string): string {
+  return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Escapes a bare term (used with a trailing wildcard, which can't be quoted). */
+function bareTerm(v: string): string {
+  return v.replace(/([\\:()"'\s*])/g, "\\$1");
+}
+
+/** Turns a date or datetime cell into a quoted Shopify search date. */
+function searchDate(v: string): string {
+  return `'${v.replace(/'/g, "")}'`;
+}
+
+/**
+ * Compiles structured filters to Shopify search syntax. Conditions are AND-ed;
+ * values are quoted so user input can't change the query structure.
+ */
+export function compileFilters(filters: FilterCondition[] | undefined): string {
+  const parts: string[] = [];
+  for (const f of filters ?? []) {
+    const k = f.field;
+    const v = (f.value ?? "").trim();
+    switch (f.op) {
+      case "is":
+        parts.push(/^(true|false)$/.test(v) || /^-?\d+(\.\d+)?$/.test(v) ? `${k}:${v}` : `${k}:${searchValue(v)}`);
+        break;
+      case "is_not":
+        parts.push(`-${k}:${searchValue(v)}`);
+        break;
+      case "starts_with":
+        parts.push(`${k}:${bareTerm(v)}*`);
+        break;
+      case "any_of": {
+        const values = v.split(",").map((x) => x.trim()).filter(Boolean);
+        parts.push(values.length === 1 ? `${k}:${searchValue(values[0])}` : `(${values.map((x) => `${k}:${searchValue(x)}`).join(" OR ")})`);
+        break;
+      }
+      case "gt":
+      case "gte":
+      case "lt":
+      case "lte": {
+        const sym = { gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.op];
+        parts.push(`${k}:${sym}${/^-?\d+(\.\d+)?$/.test(v) ? v : searchDate(v)}`);
+        break;
+      }
+      case "between": {
+        const lo = /^-?\d+(\.\d+)?$/.test(v) ? v : searchDate(v);
+        const v2 = (f.value2 ?? "").trim();
+        const hi = /^-?\d+(\.\d+)?$/.test(v2) ? v2 : searchDate(v2);
+        parts.push(`${k}:>=${lo} AND ${k}:<=${hi}`);
+        break;
+      }
+    }
+  }
+  return parts.join(" AND ");
+}
+
 /** Builds a Shopify search query string from export options. */
 export function buildSearchQuery(opts: {
   query?: string;
+  filters?: FilterCondition[];
   createdAfter?: string;
   createdBefore?: string;
   updatedAfter?: string;
   updatedBefore?: string;
 }): string {
   const parts: string[] = [];
+  const compiled = compileFilters(opts.filters);
+  if (compiled) parts.push(compiled);
   if (opts.query?.trim()) parts.push(`(${opts.query.trim()})`);
   if (opts.createdAfter) parts.push(`created_at:>='${opts.createdAfter}'`);
   if (opts.createdBefore) parts.push(`created_at:<='${opts.createdBefore}'`);

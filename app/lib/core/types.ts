@@ -23,9 +23,56 @@ export type Command = "NEW" | "MERGE" | "UPDATE" | "REPLACE" | "DELETE" | "IGNOR
 
 export const COMMANDS: Command[] = ["NEW", "MERGE", "UPDATE", "REPLACE", "DELETE", "IGNORE"];
 
+export type FilterType = "text" | "enum" | "number" | "date" | "boolean" | "id";
+
+/** One filterable field of an entity, mapped to a Shopify search syntax field. */
+export interface FilterField {
+  /** Shopify search field, e.g. `vendor`, `financial_status`. */
+  key: string;
+  label: string;
+  type: FilterType;
+  /** Allowed values for enum fields. */
+  options?: Array<{ value: string; label: string }>;
+  help?: string;
+}
+
+export type FilterOp =
+  | "is"
+  | "is_not"
+  | "starts_with"
+  | "any_of"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "between";
+
+/** A filter row from the export form: `field op value [and value2]`. */
+export interface FilterCondition {
+  field: string;
+  op: FilterOp;
+  value: string;
+  /** Upper bound for `between`; extra values for `any_of` are comma separated in `value`. */
+  value2?: string;
+}
+
+/** Operators offered for each filter type. */
+export const FILTER_OPS: Record<FilterType, FilterOp[]> = {
+  text: ["is", "is_not", "starts_with"],
+  enum: ["is", "is_not", "any_of"],
+  number: ["is", "gt", "gte", "lt", "lte", "between"],
+  date: ["gte", "lte", "between"],
+  boolean: ["is"],
+  id: ["is", "is_not"],
+};
+
 export interface ExportOptions {
-  /** Shopify search syntax filter, e.g. `status:active vendor:Acme`. */
+  /** Raw Shopify search syntax, e.g. `status:active vendor:Acme` (advanced). */
   query?: string;
+  /** Structured filters, combined with AND. */
+  filters?: FilterCondition[];
+  /** Static columns to include. Undefined means all. Key columns are always kept. */
+  columns?: string[];
   /** Column groups to include. Undefined means the entity's defaults. */
   groups?: string[];
   createdAfter?: string;
@@ -101,6 +148,8 @@ export interface Entity {
   groups?: ColumnGroup[];
   /** Whether this entity supports the `query` filter in export options. */
   supportsQuery?: boolean;
+  /** Structured filters offered in the export form (Shopify search fields). */
+  filters?: FilterField[];
   export?: (ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) => Promise<void>;
   import?: EntityImporter;
 }

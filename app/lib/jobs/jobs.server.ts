@@ -1,6 +1,6 @@
 import prisma from "../../db.server";
-import type { Command, ExportOptions, ImportOptions } from "../core/types";
-import { COMMANDS } from "../core/types";
+import type { Command, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
+import { COMMANDS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { jobDir, saveUpload, signedDownloadUrl } from "./storage.server";
@@ -17,6 +17,7 @@ export function entityCatalog() {
     canImport: !!e.import,
     columns: e.columns,
     keyColumns: e.import?.keyColumns ?? [],
+    filters: e.filters ?? [],
   }));
 }
 
@@ -48,10 +49,48 @@ export function parseExportConfig(raw: unknown): ExportConfig {
         const valid = new Set((e.groups ?? []).map((g) => g.key));
         o.groups = options.groups.filter((g) => valid.has(g));
       }
+      if (options.filters?.length) o.filters = parseFilters(e, options.filters);
+      if (options.columns) {
+        const valid = new Set(e.columns);
+        o.columns = options.columns.filter((c) => valid.has(c));
+        if (!o.columns.length) throw new Error(`${e.sheet}: choose at least one column`);
+      }
       if (options.limit) o.limit = Math.max(1, Math.floor(Number(options.limit)));
       return { entity: e.key, options: o };
     }),
   };
+}
+
+const NUMBER = /^-?\d+(\.\d+)?$/;
+
+/** Validates filter rows against the entity's filter fields. */
+export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition[] {
+  const fields = new Map((e.filters ?? []).map((f) => [f.key, f]));
+  return raw.slice(0, 30).map((f) => {
+    const field = fields.get(f.field);
+    if (!field) throw new Error(`${e.sheet}: unknown filter "${f.field}"`);
+    if (!FILTER_OPS[field.type].includes(f.op)) throw new Error(`${field.label}: unsupported condition`);
+    const value = String(f.value ?? "").trim().slice(0, 500);
+    const value2 = f.op === "between" ? String(f.value2 ?? "").trim().slice(0, 500) : undefined;
+    const check = (v: string) => {
+      if (!v) throw new Error(`${field.label}: enter a value`);
+      if (field.type === "number" && !NUMBER.test(v)) throw new Error(`${field.label}: "${v}" is not a number`);
+      if (field.type === "date" && !DATE.test(v)) throw new Error(`${field.label}: "${v}" is not a date`);
+      if (field.type === "boolean" && v !== "true" && v !== "false") throw new Error(`${field.label}: choose yes or no`);
+      if (field.type === "id" && !/^(\d+|gid:\/\/shopify\/\w+\/\d+)$/.test(v)) throw new Error(`${field.label}: "${v}" is not an ID`);
+    };
+    if (field.type === "enum") {
+      const allowed = new Set(field.options?.map((o) => o.value));
+      const values = value.split(",").map((v) => v.trim()).filter(Boolean);
+      if (!values.length) throw new Error(`${field.label}: choose a value`);
+      for (const v of values) if (!allowed.has(v)) throw new Error(`${field.label}: "${v}" is not allowed`);
+    } else {
+      check(value);
+    }
+    if (value2 !== undefined) check(value2);
+    const id = field.type === "id" ? value.replace(/^gid:\/\/shopify\/\w+\//, "") : value;
+    return { field: field.key, op: f.op, value: id, ...(value2 !== undefined ? { value2 } : {}) };
+  });
 }
 
 export function parseImportOptions(raw: unknown): ImportOptions {
