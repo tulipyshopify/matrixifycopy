@@ -1,6 +1,6 @@
 # This file stores configurations for your Shopify app.
-# client_id is filled in by `shopify app config link` (not a secret).
-client_id = ""
+# App "Bulkport" in the Tulipy Partner organization. client_id is not a secret.
+client_id = "bdb31c43345b03bfaa4219a5f8cbf4e1"
 name = "Bulkport"
 application_url = "https://bulk.tulipy.app"
 embedded = true
