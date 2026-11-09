@@ -24,41 +24,21 @@ It can take a few minutes to an hour to work. Check with `ping bulk.tulipy.app`.
 
 ## 2. Create the app in Shopify (on your own computer)
 
+`shopify.app.toml` already has the production address (`https://bulk.tulipy.app`), redirect URLs, scopes and
+webhooks. You only need to create the app and publish that config:
+
 ```shell
 git clone https://github.com/tulipyshopify/matrixifycopy.git bulkport
 cd bulkport
 npm install
-shopify app config link
+shopify app config link     # log in, choose "Create a new app", and keep the existing shopify.app.toml
+shopify app deploy          # publishes URLs, scopes and webhooks to Shopify
+git commit -am "Add app client_id" && git push
 ```
 
-`config link` asks you to log in to your Partner account. Choose **"Create a new app"**. It writes the app's
-`client_id` into `shopify.app.toml`.
-
-Open `shopify.app.toml` and set the production address (add these lines if they aren't there):
-
-```toml
-application_url = "https://bulk.tulipy.app"
-embedded = true
-
-[auth]
-redirect_urls = [
-  "https://bulk.tulipy.app/auth/callback",
-  "https://bulk.tulipy.app/auth/shopify/callback",
-  "https://bulk.tulipy.app/api/auth/callback",
-]
-
-[build]
-automatically_update_urls_on_dev = false
-```
-
-Then publish the configuration (URLs, access scopes, webhooks) to Shopify, and push the file so the server gets it:
-
-```shell
-shopify app deploy
-git commit -am "Production app config" && git push
-```
-
-`client_id` is not a secret, so committing it is fine. **Never commit the API secret.**
+`config link` fills in `client_id`, which is not a secret, so committing it is fine. **Never commit the API secret.**
+If `config link` offers to create a new file such as `shopify.app.bulkport.toml`, open `shopify.app.toml` and copy the
+new `client_id` into it, then run `shopify app deploy` again.
 
 ## 3. Partner Dashboard settings
 

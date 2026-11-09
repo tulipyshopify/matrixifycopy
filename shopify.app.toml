@@ -1,5 +1,19 @@
 # This file stores configurations for your Shopify app.
+# client_id is filled in by `shopify app config link` (not a secret).
 client_id = ""
+name = "Bulkport"
+application_url = "https://bulk.tulipy.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+
+[auth]
+redirect_urls = [
+  "https://bulk.tulipy.app/auth/callback",
+  "https://bulk.tulipy.app/auth/shopify/callback",
+  "https://bulk.tulipy.app/api/auth/callback",
+]
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
