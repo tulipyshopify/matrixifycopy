@@ -6,11 +6,11 @@ This puts the app on your VPS with Docker. Caddy handles HTTPS automatically. Th
 You need:
 
 * The Hostinger VPS (Ubuntu 22.04 or 24.04) and its IP address.
-* A domain or subdomain you control, e.g. `bulkport.yourdomain.co.uk`.
+* A domain or subdomain you control, e.g. `bulk.tulipy.app`.
 * A Shopify Partner account (free: https://partners.shopify.com) and your store's `xxxx.myshopify.com` address.
 * On your own computer: Node 22+, Git and the Shopify CLI (`npm install -g @shopify/cli`).
 
-Below, replace `bulkport.yourdomain.co.uk` with your domain.
+Below, replace `bulk.tulipy.app` with your domain.
 
 ## 1. Point the domain at the VPS
 
@@ -18,9 +18,9 @@ Wherever your domain's DNS is managed (Hostinger hPanel → Domains → DNS, if 
 
 | Type | Name | Points to |
 | --- | --- | --- |
-| A | `bulkport` | your VPS IP address |
+| A | `bulk` | your VPS IP address |
 
-It can take a few minutes to an hour to work. Check with `ping bulkport.yourdomain.co.uk`.
+It can take a few minutes to an hour to work. Check with `ping bulk.tulipy.app`.
 
 ## 2. Create the app in Shopify (on your own computer)
 
@@ -37,14 +37,14 @@ shopify app config link
 Open `shopify.app.toml` and set the production address (add these lines if they aren't there):
 
 ```toml
-application_url = "https://bulkport.yourdomain.co.uk"
+application_url = "https://bulk.tulipy.app"
 embedded = true
 
 [auth]
 redirect_urls = [
-  "https://bulkport.yourdomain.co.uk/auth/callback",
-  "https://bulkport.yourdomain.co.uk/auth/shopify/callback",
-  "https://bulkport.yourdomain.co.uk/api/auth/callback",
+  "https://bulk.tulipy.app/auth/callback",
+  "https://bulk.tulipy.app/auth/shopify/callback",
+  "https://bulk.tulipy.app/api/auth/callback",
 ]
 
 [build]
@@ -98,13 +98,13 @@ git config core.sshCommand "ssh -i ~/.ssh/github_deploy"
 
 cp .env.production.example .env.production
 nano .env.production        # fill in SHOPIFY_API_KEY (Client ID), SHOPIFY_API_SECRET, SHOPIFY_APP_URL
-echo "APP_DOMAIN=bulkport.yourdomain.co.uk" > .env
+echo "APP_DOMAIN=bulk.tulipy.app" > .env
 
 docker compose up -d --build
 docker compose logs -f app  # wait for "[worker] started"; Ctrl+C to stop watching
 ```
 
-Check https://bulkport.yourdomain.co.uk opens with a padlock (it shows a log-in page; that's expected).
+Check https://bulk.tulipy.app opens with a padlock (it shows a log-in page; that's expected).
 
 ## 5. Install on your store
 
@@ -149,7 +149,7 @@ crontab -e
 * **No padlock / certificate errors**: the A record isn't pointing at the VPS yet, or ports 80/443 are blocked. See
   `docker compose logs caddy`.
 * **"Oauth error" or a redirect loop when opening the app**: `SHOPIFY_APP_URL` in `.env.production` and
-  `application_url` in `shopify.app.toml` must both be exactly `https://bulkport.yourdomain.co.uk`. After changing the
+  `application_url` in `shopify.app.toml` must both be exactly `https://bulk.tulipy.app`. After changing the
   toml, run `shopify app deploy` again.
 * **Customers/Orders exports fail with an access error**: protected customer data access (step 3) isn't approved yet.
 * **A job is stuck**: `docker compose logs app`, and the job's Log on its page in the app.
