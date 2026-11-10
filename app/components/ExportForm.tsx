@@ -27,6 +27,60 @@ interface EntityState {
   filters: FilterCondition[];
   dateRange: DateRange | null;
   query: string;
+  /** Inventory locations to export; null = all. */
+  locations: string[] | null;
+  /** "namespace.key" lists, comma separated; blank = all. */
+  metafields: string;
+  variantMetafields: string;
+}
+
+export interface PresetData {
+  entities: Array<{ entity: string; options: Record<string, any> }>;
+  format: string;
+}
+
+const splitList = (v: string) => v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+
+function blankState(entities: EntityInfo[], enabled: string[] = []): Record<string, EntityState> {
+  return Object.fromEntries(
+    entities.map((e) => [
+      e.key,
+      {
+        enabled: enabled.includes(e.key),
+        open: true,
+        groups: e.groups.filter((g) => g.default).map((g) => g.key),
+        columns: [...e.columns],
+        filters: [],
+        dateRange: null,
+        query: "",
+        locations: null,
+        metafields: "",
+        variantMetafields: "",
+      },
+    ]),
+  );
+}
+
+/** Form state for a saved set-up; data types it doesn't mention stay blank. */
+function stateFromPreset(entities: EntityInfo[], preset: PresetData): Record<string, EntityState> {
+  const state = blankState(entities);
+  for (const { entity, options: o } of preset.entities) {
+    const e = entities.find((x) => x.key === entity);
+    if (!e) continue;
+    state[entity] = {
+      enabled: true,
+      open: preset.entities.length === 1,
+      groups: o.groups ?? state[entity].groups,
+      columns: o.columns ? e.columns.filter((c) => o.columns.includes(c) || c === "ID" || e.keyColumns.includes(c)) : [...e.columns],
+      filters: o.filters ?? [],
+      dateRange: o.dateRange ?? null,
+      query: o.query ?? "",
+      locations: o.locations ?? null,
+      metafields: (o.metafields ?? []).join(", "),
+      variantMetafields: (o.variantMetafields ?? []).join(", "),
+    };
+  }
+  return state;
 }
 
 const INTERVALS = [
@@ -472,13 +526,16 @@ function ColumnPicker({
   columns,
   groups,
   onChange,
+  state,
 }: {
   entity: EntityInfo;
   columns: string[];
   groups: string[];
-  onChange: (patch: { columns?: string[]; groups?: string[] }) => void;
+  onChange: (patch: Partial<EntityState>) => void;
+  state: EntityState;
 }) {
   const required = new Set(["ID", ...entity.keyColumns]);
+  const storeLocations = useLocations(entity.groups.some((g) => g.key === "inventory") && groups.includes("inventory"));
   // A data group ("Variants & options") that matches a column section ("Variants")
   // is merged into it: the section's checkbox then also controls fetching that data.
   const sections = useMemo(() => {
@@ -500,7 +557,8 @@ function ColumnPicker({
   const selected = entity.columns.filter(
     (c) => required.has(c) || columns.includes(c),
   ).length;
-  const all = selected === entity.columns.length;
+  const allGroups = entity.groups.every((g) => groups.includes(g.key));
+  const all = selected === entity.columns.length && allGroups;
   const setGroup = (list: string[], key: string, on: boolean) =>
     on ? [...new Set([...list, key])] : list.filter((x) => x !== key);
 
@@ -510,26 +568,15 @@ function ColumnPicker({
         <s-checkbox
           label={`${selected} of ${entity.columns.length} columns selected`}
           checked={all}
-          indeterminate={!all && selected > required.size}
+          indeterminate={!all && (selected > required.size || groups.length > 0)}
           onChange={(ev: any) => {
             const on = ev.currentTarget.checked;
             onChange({
               columns: on
                 ? [...new Set([...columns, ...optional])]
                 : columns.filter((c) => !optional.includes(c)),
-              // Selecting everything also turns on the data the columns need.
-              ...(on
-                ? {
-                    groups: [
-                      ...new Set([
-                        ...groups,
-                        ...sections.secs.flatMap((x) =>
-                          x.group ? [x.group.key] : [],
-                        ),
-                      ]),
-                    ],
-                  }
-                : {}),
+              // Select all / none covers every data row too (inventory, metafields…).
+              groups: on ? entity.groups.map((g) => g.key) : [],
             });
           }}
         />
@@ -603,8 +650,59 @@ function ColumnPicker({
             title={g.label}
             checked={groups.includes(g.key)}
             badge={isSlowGroup(g.key) ? "Slower" : undefined}
+            count={
+              !groups.includes(g.key)
+                ? undefined
+                : g.key === "inventory" && state.locations
+                  ? `${state.locations.length} of ${storeLocations?.length ?? "?"} locations`
+                  : g.key === "metafields" && splitList(state.metafields).length
+                    ? `${splitList(state.metafields).length} metafields`
+                    : g.key === "variant_metafields" && splitList(state.variantMetafields).length
+                      ? `${splitList(state.variantMetafields).length} metafields`
+                      : undefined
+            }
             onToggle={(v) => onChange({ groups: setGroup(groups, g.key, v) })}
-          />
+          >
+            {g.key === "inventory" ? (
+              storeLocations === null ? (
+                <s-text tone="neutral">Loading locations…</s-text>
+              ) : storeLocations.length === 0 ? (
+                <s-text tone="neutral">Could not load locations; all locations will be exported.</s-text>
+              ) : (
+                <s-stack direction="block" gap="small">
+                  <s-text tone="neutral">Locations to include as stock columns:</s-text>
+                  <s-grid gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))" gap="small base">
+                    {storeLocations.map((l) => {
+                      const chosen = state.locations ?? storeLocations;
+                      return (
+                        <s-checkbox
+                          key={l}
+                          label={l}
+                          checked={chosen.includes(l)}
+                          onChange={(ev: any) => {
+                            const next = ev.currentTarget.checked ? [...chosen, l] : chosen.filter((x) => x !== l);
+                            onChange({
+                              locations: next.length === storeLocations.length ? null : next,
+                              groups: setGroup(groups, g.key, true),
+                            });
+                          }}
+                        />
+                      );
+                    })}
+                  </s-grid>
+                </s-stack>
+              )
+            ) : g.key === "metafields" || g.key === "variant_metafields" ? (
+              <s-text-field
+                label="Only these metafields (optional)"
+                details="namespace.key, separated by commas, e.g. custom.material, custom.care. Leave empty for all."
+                value={g.key === "metafields" ? state.metafields : state.variantMetafields}
+                onInput={(ev: any) =>
+                  onChange(g.key === "metafields" ? { metafields: ev.currentTarget.value } : { variantMetafields: ev.currentTarget.value })
+                }
+              />
+            ) : undefined}
+          </Section>
           <s-divider />
         </Fragment>
       ))}
@@ -616,6 +714,28 @@ function ColumnPicker({
       </s-box>
     </s-stack>
   );
+}
+
+let locationsCache: string[] | null = null;
+
+/** Store's active location names (fetched once); null while loading. */
+function useLocations(enabled: boolean): string[] | null {
+  const [list, setList] = useState<string[] | null>(locationsCache);
+  useEffect(() => {
+    if (!enabled || locationsCache) return;
+    let live = true;
+    fetch("/app/api/locations")
+      .then((r) => (r.ok ? r.json() : { locations: [] }))
+      .then((d) => {
+        if (d.locations?.length) locationsCache = d.locations;
+        if (live) setList(d.locations ?? []);
+      })
+      .catch(() => live && setList([]));
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return list;
 }
 
 /** Export options for one entity panel, as sent to the server. */
@@ -630,6 +750,9 @@ function panelOptions(e: EntityInfo, s: EntityState) {
     filters: filters.length ? filters : undefined,
     dateRange: s.dateRange ?? undefined,
     query: s.query || undefined,
+    locations: s.groups.includes("inventory") && s.locations ? s.locations : undefined,
+    metafields: splitList(s.metafields).length ? splitList(s.metafields) : undefined,
+    variantMetafields: splitList(s.variantMetafields).length ? splitList(s.variantMetafields) : undefined,
   };
 }
 
@@ -766,6 +889,7 @@ function EntityPanel({
                   entity={e}
                   columns={s.columns}
                   groups={s.groups}
+                  state={s}
                   onChange={(patch) => update(patch)}
                 />
               </s-stack>
@@ -781,25 +905,31 @@ function EntityPanel({
  * The export builder: data types, filters, columns, file format and schedule.
  * Used on the home page and on /app/export; posts to the /app/export action.
  */
-export function ExportForm({ entities }: { entities: EntityInfo[] }) {
+interface SavedPreset {
+  id: string;
+  name: string;
+  data: PresetData;
+}
+
+export function ExportForm({
+  entities,
+  presets: initialPresets = [],
+  latest = null,
+}: {
+  entities: EntityInfo[];
+  presets?: SavedPreset[];
+  latest?: PresetData | null;
+}) {
   const fetcher = useFetcher<{ error?: string }>();
+  const [presets, setPresets] = useState(initialPresets);
+  // "latest" | "blank" | preset id
+  const [presetId, setPresetId] = useState(latest ? "latest" : "blank");
+  const [presetName, setPresetName] = useState("");
+  const [presetMsg, setPresetMsg] = useState<{ tone: "success" | "critical"; text: string } | null>(null);
   const [state, setState] = useState<Record<string, EntityState>>(() =>
-    Object.fromEntries(
-      entities.map((e) => [
-        e.key,
-        {
-          enabled: e.key === "products",
-          open: true,
-          groups: e.groups.filter((g) => g.default).map((g) => g.key),
-          columns: [...e.columns],
-          filters: [],
-          dateRange: null,
-          query: "",
-        },
-      ]),
-    ),
+    latest ? stateFromPreset(entities, latest) : blankState(entities, ["products"]),
   );
-  const [format, setFormat] = useState("xlsx");
+  const [format, setFormat] = useState(latest?.format === "csv" ? "csv" : "xlsx");
   const [name, setName] = useState("");
   const [scheduled, setScheduled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
@@ -813,6 +943,55 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
   const update = (key: string, patch: Partial<EntityState>) =>
     setState((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
   const busy = fetcher.state !== "idle";
+  const currentPreset = presets.find((p) => p.id === presetId);
+
+  const loadPreset = (id: string) => {
+    setPresetId(id);
+    setPresetMsg(null);
+    const data = id === "latest" ? latest : presets.find((p) => p.id === id)?.data;
+    setState(data ? stateFromPreset(entities, data) : blankState(entities));
+    if (data) setFormat(data.format === "csv" ? "csv" : "xlsx");
+    setPresetName(presets.find((p) => p.id === id)?.name ?? "");
+  };
+
+  const presetRequest = async (body: Record<string, unknown>) => {
+    try {
+      const res = await fetch("/app/api/presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) return setPresetMsg({ tone: "critical", text: data.error });
+      setPresets(data.presets);
+      return data as { savedId?: string };
+    } catch {
+      setPresetMsg({ tone: "critical", text: "Could not reach the server. Try again." });
+    }
+  };
+
+  const savePreset = async () => {
+    const name = presetName.trim();
+    const data = {
+      format,
+      entities: selected.map((e) => ({ entity: e.key, options: panelOptions(e, state[e.key]) })),
+    };
+    const result = await presetRequest({ intent: "save", name, data });
+    if (result?.savedId) {
+      setPresetId(result.savedId);
+      setPresetMsg({ tone: "success", text: `Saved preset "${name}".` });
+    }
+  };
+
+  const deleteCurrentPreset = async () => {
+    if (!currentPreset) return;
+    const result = await presetRequest({ intent: "delete", id: currentPreset.id });
+    if (result) {
+      setPresetMsg({ tone: "success", text: `Deleted preset "${currentPreset.name}".` });
+      setPresetId("blank");
+      setPresetName("");
+    }
+  };
 
   const submit = () => {
     const payload: ExportPayload = {
@@ -840,6 +1019,43 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
           {fetcher.data.error}
         </s-banner>
       ) : null}
+
+      <s-section heading="Preset">
+        <s-stack direction="block" gap="base">
+          <s-grid gridTemplateColumns="1fr 1fr auto auto" gap="base" alignItems="end">
+            <s-select label="Start from" value={presetId} onChange={(ev: any) => loadPreset(ev.currentTarget.value)}>
+              {latest ? <s-option value="latest">Latest export</s-option> : null}
+              <s-option value="blank">New blank export</s-option>
+              {presets.length ? (
+                <s-option-group label="Saved">
+                  {presets.map((p) => (
+                    <s-option key={p.id} value={p.id}>
+                      {p.name}
+                    </s-option>
+                  ))}
+                </s-option-group>
+              ) : null}
+            </s-select>
+            <s-text-field
+              label="Save current set-up as"
+              placeholder="Preset name"
+              value={presetName}
+              onInput={(ev: any) => setPresetName(ev.currentTarget.value)}
+            />
+            <s-button onClick={savePreset} disabled={!presetName.trim() || !selected.length}>
+              {presets.some((p) => p.name === presetName.trim()) ? "Update preset" : "Save preset"}
+            </s-button>
+            {currentPreset ? (
+              <s-button variant="tertiary" tone="critical" onClick={deleteCurrentPreset}>
+                Delete
+              </s-button>
+            ) : (
+              <span />
+            )}
+          </s-grid>
+          {presetMsg ? <s-text tone={presetMsg.tone}>{presetMsg.text}</s-text> : null}
+        </s-stack>
+      </s-section>
 
       <s-box padding="base small-200 none small-200">
         <s-grid

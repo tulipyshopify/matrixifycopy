@@ -110,6 +110,11 @@ export interface ExportOptions {
   query?: string;
   /** Structured filters, combined with AND. */
   filters?: FilterCondition[];
+  /** Inventory locations (names) to include as columns. Undefined means all. */
+  locations?: string[];
+  /** Metafields ("namespace.key") to include as columns. Undefined means all. */
+  metafields?: string[];
+  variantMetafields?: string[];
   /** Static columns to include. Undefined means all. Key columns are always kept. */
   columns?: string[];
   /** Column groups to include. Undefined means the entity's defaults. */

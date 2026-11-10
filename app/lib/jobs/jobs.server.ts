@@ -52,6 +52,16 @@ export function parseExportConfig(raw: unknown): ExportConfig {
       }
       if (options.filters?.length) o.filters = parseFilters(e, options.filters);
       if (options.dateRange) o.dateRange = parseDateRange(e, options.dateRange);
+      for (const k of ["locations", "metafields", "variantMetafields"] as const) {
+        const list = options[k];
+        if (!Array.isArray(list)) continue;
+        const clean = [...new Set(list.map((v) => String(v).trim().slice(0, 200)).filter(Boolean))].slice(0, 250);
+        if (k !== "locations") {
+          for (const m of clean) if (!/^[^.\s]+\.[^\s]+$/.test(m)) throw new Error(`${e.sheet}: metafield "${m}" must look like namespace.key`);
+        }
+        if (clean.length) o[k] = clean;
+        else if (k === "locations") throw new Error(`${e.sheet}: choose at least one inventory location, or untick Inventory by location`);
+      }
       if (options.columns) {
         const valid = new Set(e.columns);
         o.columns = options.columns.filter((c) => valid.has(c));
@@ -329,8 +339,50 @@ export async function deleteSchedule(shop: string, id: string) {
 export async function purgeShop(shop: string) {
   await prisma.job.deleteMany({ where: { shop } });
   await prisma.schedule.deleteMany({ where: { shop } });
+  await prisma.preset.deleteMany({ where: { shop } });
   const fs = await import("node:fs");
   const path = await import("node:path");
   const dir = path.dirname(jobDir(shop, "_"));
   await fs.promises.rm(dir, { recursive: true, force: true });
+}
+
+// --- Export presets -----------------------------------------------------------
+
+export interface PresetData {
+  entities: ExportConfig["entities"];
+  format: string;
+}
+
+/** Saved export set-ups for a shop, newest first. */
+export async function listPresets(shop: string) {
+  const rows = await prisma.preset.findMany({ where: { shop }, orderBy: { name: "asc" } });
+  return rows.map((r) => ({ id: r.id, name: r.name, data: JSON.parse(r.config) as PresetData }));
+}
+
+/** Creates a preset, or overwrites the one with the same name. */
+export async function savePreset(shop: string, name: string, raw: unknown) {
+  const clean = name.trim().slice(0, 80);
+  if (!clean) throw new Error("Give the preset a name");
+  const body = raw as { entities?: unknown; format?: string };
+  const config = parseExportConfig(body);
+  const data: PresetData = { entities: config.entities, format: body.format === "csv" ? "csv" : "xlsx" };
+  const existing = await prisma.preset.findFirst({ where: { shop, name: clean } });
+  if (existing) return prisma.preset.update({ where: { id: existing.id }, data: { config: JSON.stringify(data) } });
+  if ((await prisma.preset.count({ where: { shop } })) >= 100) throw new Error("Preset limit reached (100). Delete one first.");
+  return prisma.preset.create({ data: { shop, name: clean, config: JSON.stringify(data) } });
+}
+
+export async function deletePreset(shop: string, id: string) {
+  await prisma.preset.deleteMany({ where: { id, shop } });
+}
+
+/** The set-up of the most recent export job, offered as "Latest export". */
+export async function latestExportPreset(shop: string): Promise<PresetData | null> {
+  const job = await prisma.job.findFirst({ where: { shop, type: "export" }, orderBy: { createdAt: "desc" } });
+  if (!job) return null;
+  try {
+    return { entities: (JSON.parse(job.config) as ExportConfig).entities, format: job.format };
+  } catch {
+    return null;
+  }
 }

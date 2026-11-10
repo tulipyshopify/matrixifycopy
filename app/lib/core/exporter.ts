@@ -28,7 +28,27 @@ export interface RunExportArgs {
  * file can be imported back; dynamic columns (metafields, inventory per
  * location) are controlled by column groups instead.
  */
+const INVENTORY_PREFIX = "Inventory Available: ";
+
+/** Applies the location and metafield choices to dynamic column headers. */
+function keepDynamic(options: ExportOptions, h: string): boolean {
+  if (options.locations && h.startsWith(INVENTORY_PREFIX)) {
+    return options.locations.some((l) => l.toLowerCase() === h.slice(INVENTORY_PREFIX.length).trim().toLowerCase());
+  }
+  for (const [prefix, list] of [
+    ["Variant Metafield: ", options.variantMetafields],
+    ["Metafield: ", options.metafields],
+  ] as const) {
+    if (list && h.startsWith(prefix)) {
+      const key = h.slice(prefix.length).replace(/\s*\[.*$/, "").trim().toLowerCase();
+      return list.some((m) => m.toLowerCase() === key);
+    }
+  }
+  return true;
+}
+
 export function selectColumns(entity: Entity, options: ExportOptions, headers: string[]): string[] {
+  headers = headers.filter((h) => keepDynamic(options, h));
   if (!options.columns) return headers;
   const keep = new Set([...options.columns, "ID", ...(entity.import?.keyColumns ?? [])]);
   const known = new Set(entity.columns);

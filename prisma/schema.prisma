@@ -85,3 +85,16 @@ model Schedule {
 
   @@index([enabled, nextRunAt])
 }
+
+/// A saved export set-up (data types, filters, columns, format).
+model Preset {
+  id        String   @id @default(cuid())
+  shop      String
+  name      String
+  /// JSON: { entities: [{ entity, options }], format }
+  config    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, name])
+}

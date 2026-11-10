@@ -3,7 +3,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, entityCatalog, listJobs, rerunJob } from "../lib/jobs/jobs.server";
+import { cancelJob, downloadLinks, entityCatalog, latestExportPreset, listPresets, listJobs, rerunJob } from "../lib/jobs/jobs.server";
 import { StatusBadge, formatDate, isActive, jobSummary, progressText } from "../components/jobs";
 import { ExportForm } from "../components/ExportForm";
 import { ImportForm } from "../components/ImportForm";
@@ -16,6 +16,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     jobs: jobs.map((j) => ({ ...j, links: downloadLinks({ ...j, inputFile: null }) })),
     entities: entityCatalog().filter((e) => e.canExport),
+    presets: await listPresets(session.shop),
+    latest: await latestExportPreset(session.shop),
     maxUploadMb: MAX_UPLOAD_MB,
   };
 };
@@ -30,7 +32,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Home() {
-  const { jobs, entities, maxUploadMb } = useLoaderData<typeof loader>();
+  const { jobs, entities, maxUploadMb, presets, latest } = useLoaderData<typeof loader>();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "import" ? "import" : "export";
   const setTab = (t: string) => setParams(t === "export" ? {} : { tab: t }, { replace: true });
@@ -66,7 +68,7 @@ export default function Home() {
         </s-stack>
       </s-section>
 
-      {tab === "export" ? <ExportForm entities={entities} /> : <ImportForm maxUploadMb={maxUploadMb} />}
+      {tab === "export" ? <ExportForm entities={entities} presets={presets} latest={latest} /> : <ImportForm maxUploadMb={maxUploadMb} />}
 
       {jobs.length === 0 ? null : (
         <s-section heading="Recent jobs">

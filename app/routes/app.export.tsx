@@ -2,12 +2,16 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { createExportJob, createSchedule, entityCatalog, parseExportConfig } from "../lib/jobs/jobs.server";
+import { createExportJob, createSchedule, entityCatalog, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return { entities: entityCatalog().filter((e) => e.canExport) };
+  const { session } = await authenticate.admin(request);
+  return {
+    entities: entityCatalog().filter((e) => e.canExport),
+    presets: await listPresets(session.shop),
+    latest: await latestExportPreset(session.shop),
+  };
 };
 
 
@@ -37,14 +41,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewExport() {
-  const { entities } = useLoaderData<typeof loader>();
+  const { entities, presets, latest } = useLoaderData<typeof loader>();
   return (
     <s-page heading="New export" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
       <div className="bp-column">
-        <ExportForm entities={entities} />
+        <ExportForm entities={entities} presets={presets} latest={latest} />
       </div>
     </s-page>
   );
