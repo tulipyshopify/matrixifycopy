@@ -39,11 +39,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function NewExport() {
   const { entities } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="New export" inlineSize="base">
+    <s-page heading="New export" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
-      <ExportForm entities={entities} />
+      <div className="bp-column">
+        <ExportForm entities={entities} />
+      </div>
     </s-page>
   );
 }

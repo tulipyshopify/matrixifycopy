@@ -688,90 +688,92 @@ function EntityPanel({
   const total = useItemCount(e, s);
   const [advanced, setAdvanced] = useState(!!s.query);
   return (
-    <s-box padding="large" borderWidth="base" borderRadius="large">
-      <s-stack direction="block" gap="large">
-        <s-stack
-          direction="inline"
-          alignItems="center"
-          justifyContent="space-between"
-        >
-          <s-stack direction="inline" gap="small" alignItems="center">
-            <s-heading>{e.sheet}</s-heading>
-            {total ? <s-badge>{total}</s-badge> : null}
-          </s-stack>
-          <s-stack direction="inline" gap="small-200">
-            <s-button
-              variant="tertiary"
-              icon={s.open ? "chevron-up" : "chevron-down"}
-              accessibilityLabel={
-                s.open ? `Collapse ${e.sheet}` : `Expand ${e.sheet}`
-              }
-              onClick={() => update({ open: !s.open })}
-            />
-            <s-button
-              variant="tertiary"
-              icon="delete"
-              accessibilityLabel={`Remove ${e.sheet}`}
-              onClick={() => update({ enabled: false })}
-            />
-          </s-stack>
-        </s-stack>
-        {s.open ? (
-          <>
-            <s-text tone="neutral">{e.description}</s-text>
-            {e.filters.length ? (
-              <>
-                <s-divider />
-                <s-stack direction="block" gap="base">
-                  <s-heading>Filters</s-heading>
-                  <DateRangeFilter
-                    entity={e}
-                    value={s.dateRange}
-                    onChange={(dateRange) => update({ dateRange })}
-                  />
-                  <FilterBuilder
-                    entity={e}
-                    filters={s.filters}
-                    onChange={(filters) => update({ filters })}
-                  />
-                </s-stack>
-              </>
-            ) : null}
-            {e.supportsQuery ? (
-              advanced ? (
-                <s-text-field
-                  label="Shopify search query"
-                  details="Added to the filters above with AND, e.g. tag:sale OR tag:clearance"
-                  value={s.query}
-                  onInput={(ev: any) =>
-                    update({ query: ev.currentTarget.value })
-                  }
-                />
-              ) : (
-                <s-stack direction="inline">
-                  <s-button
-                    variant="tertiary"
-                    onClick={() => setAdvanced(true)}
-                  >
-                    Advanced search query
-                  </s-button>
-                </s-stack>
-              )
-            ) : null}
-            <s-divider />
-            <s-stack direction="block" gap="base">
-              <s-heading>Columns</s-heading>
-              <ColumnPicker
-                entity={e}
-                columns={s.columns}
-                groups={s.groups}
-                onChange={(patch) => update(patch)}
+    <s-section>
+      <s-box padding="small base">
+        <s-stack direction="block" gap="large">
+          <s-stack
+            direction="inline"
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <s-stack direction="inline" gap="small" alignItems="center">
+              <s-heading>{e.sheet}</s-heading>
+              {total ? <s-badge>{total}</s-badge> : null}
+            </s-stack>
+            <s-stack direction="inline" gap="small-200">
+              <s-button
+                variant="tertiary"
+                icon={s.open ? "chevron-up" : "chevron-down"}
+                accessibilityLabel={
+                  s.open ? `Collapse ${e.sheet}` : `Expand ${e.sheet}`
+                }
+                onClick={() => update({ open: !s.open })}
+              />
+              <s-button
+                variant="tertiary"
+                icon="delete"
+                accessibilityLabel={`Remove ${e.sheet}`}
+                onClick={() => update({ enabled: false })}
               />
             </s-stack>
-          </>
-        ) : null}
-      </s-stack>
-    </s-box>
+          </s-stack>
+          {s.open ? (
+            <>
+              <s-text tone="neutral">{e.description}</s-text>
+              {e.filters.length ? (
+                <>
+                  <s-divider />
+                  <s-stack direction="block" gap="base">
+                    <s-heading>Filters</s-heading>
+                    <DateRangeFilter
+                      entity={e}
+                      value={s.dateRange}
+                      onChange={(dateRange) => update({ dateRange })}
+                    />
+                    <FilterBuilder
+                      entity={e}
+                      filters={s.filters}
+                      onChange={(filters) => update({ filters })}
+                    />
+                  </s-stack>
+                </>
+              ) : null}
+              {e.supportsQuery ? (
+                advanced ? (
+                  <s-text-field
+                    label="Shopify search query"
+                    details="Added to the filters above with AND, e.g. tag:sale OR tag:clearance"
+                    value={s.query}
+                    onInput={(ev: any) =>
+                      update({ query: ev.currentTarget.value })
+                    }
+                  />
+                ) : (
+                  <s-stack direction="inline">
+                    <s-button
+                      variant="tertiary"
+                      onClick={() => setAdvanced(true)}
+                    >
+                      Advanced search query
+                    </s-button>
+                  </s-stack>
+                )
+              ) : null}
+              <s-divider />
+              <s-stack direction="block" gap="base">
+                <s-heading>Columns</s-heading>
+                <ColumnPicker
+                  entity={e}
+                  columns={s.columns}
+                  groups={s.groups}
+                  onChange={(patch) => update(patch)}
+                />
+              </s-stack>
+            </>
+          ) : null}
+        </s-stack>
+      </s-box>
+    </s-section>
   );
 }
 
@@ -839,22 +841,17 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
         </s-banner>
       ) : null}
 
-      <s-section heading="Data to export">
-        <s-stack direction="block" gap="large">
-          {selected.map((e) => (
-            <EntityPanel
-              key={e.key}
-              entity={e}
-              state={state[e.key]}
-              update={(patch) => update(e.key, patch)}
-            />
-          ))}
+      <s-box padding="base small-200 none small-200">
+        <s-grid
+          gridTemplateColumns="1fr minmax(220px, 280px)"
+          gap="base"
+          alignItems="center"
+        >
+          <s-heading>Data to export</s-heading>
           {available.length ? (
             <s-select
               label="Add data type"
-              labelAccessibilityVisibility={
-                selected.length ? "exclusive" : undefined
-              }
+              labelAccessibilityVisibility="exclusive"
               placeholder="+ Add data type…"
               value=""
               onChange={(ev: any) => {
@@ -868,9 +865,26 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
                 </s-option>
               ))}
             </s-select>
-          ) : null}
-        </s-stack>
-      </s-section>
+          ) : (
+            <span />
+          )}
+        </s-grid>
+      </s-box>
+      {selected.length === 0 ? (
+        <s-section>
+          <s-text tone="neutral">
+            Nothing selected yet. Add a data type to start.
+          </s-text>
+        </s-section>
+      ) : null}
+      {selected.map((e) => (
+        <EntityPanel
+          key={e.key}
+          entity={e}
+          state={state[e.key]}
+          update={(patch) => update(e.key, patch)}
+        />
+      ))}
 
       <s-section heading="File">
         <s-stack direction="block" gap="base">
