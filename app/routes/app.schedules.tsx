@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { deleteSchedule, listSchedules, updateSchedule } from "../lib/jobs/jobs.server";
+import { deleteSchedule, listSchedules, publicFileUrl, resetPublicToken, updateSchedule } from "../lib/jobs/jobs.server";
 import { redactUrl } from "../lib/jobs/sources.server";
 import { formatDate } from "../components/jobs";
 
@@ -20,6 +20,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       lastJobId: s.lastJobId,
       sourceUrl: s.sourceUrl ? redactUrl(s.sourceUrl) : null,
       uploadUrl: s.uploadUrl ? redactUrl(s.uploadUrl) : null,
+      format: s.format,
+      fileUrl: publicFileUrl(s),
     })),
   };
 };
@@ -32,6 +34,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "toggle") await updateSchedule(session.shop, id, { enabled: form.get("enabled") === "true" });
   if (intent === "run") await updateSchedule(session.shop, id, { runNow: true });
   if (intent === "delete") await deleteSchedule(session.shop, id);
+  if (intent === "resetLink") await resetPublicToken(session.shop, id);
   return { ok: true };
 };
 
@@ -82,6 +85,28 @@ export default function Schedules() {
                       </s-text>
                       {s.sourceUrl ? <s-text tone="neutral">From {s.sourceUrl}</s-text> : null}
                       {s.uploadUrl ? <s-text tone="neutral">Upload to {s.uploadUrl}</s-text> : null}
+                      {s.fileUrl ? (
+                        <s-stack direction="block" gap="small-300">
+                          <s-text tone="neutral">
+                            Permanent link ({s.format === "csv" ? "CSV" : "Excel"}), always the latest file:
+                          </s-text>
+                          <s-stack direction="inline" gap="small-200" alignItems="center">
+                            <code style={{ wordBreak: "break-all" }}>{s.fileUrl}</code>
+                            <s-button
+                              variant="tertiary"
+                              onClick={() => {
+                                navigator.clipboard.writeText(s.fileUrl!);
+                                (window as any).shopify?.toast?.show("Link copied");
+                              }}
+                            >
+                              Copy
+                            </s-button>
+                            <s-button variant="tertiary" tone="critical" onClick={() => post({ intent: "resetLink", id: s.id })}>
+                              Reset link
+                            </s-button>
+                          </s-stack>
+                        </s-stack>
+                      ) : null}
                       {s.lastJobId ? <s-link href={`/app/jobs/${s.lastJobId}`}>Last run</s-link> : null}
                     </s-stack>
                   </s-table-cell>

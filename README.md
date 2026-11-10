@@ -59,6 +59,11 @@ Jobs run in the background (exports use Bulk Operations; imports call the Admin 
 4 items in parallel). Jobs show live progress and logs and can be cancelled. Exports can repeat hourly/daily/weekly and
 optionally upload to FTP/FTPS; imports can repeat from a URL or FTP file.
 
+**Permanent links.** Every scheduled export has a fixed address (`https://<app>/files/<token>`, shown on the
+Schedules page) that always downloads the newest finished file, in the schedule's format (Excel or CSV), under a
+stable file name. Use it in Google Sheets, feeds or other tools. Anyone with the link can download the file; "Reset
+link" on the Schedules page replaces it.
+
 ## Running it
 
 Prerequisites: Node 22.12+, the [Shopify CLI](https://shopify.dev/docs/apps/tools/cli) and a Shopify Partner account

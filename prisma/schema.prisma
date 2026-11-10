@@ -79,6 +79,8 @@ model Schedule {
   nextRunAt       DateTime
   enabled         Boolean   @default(true)
   lastJobId       String?
+  /// export: secret token of the permanent link that serves the latest result
+  publicToken     String?   @unique
   createdAt       DateTime  @default(now())
 
   @@index([enabled, nextRunAt])

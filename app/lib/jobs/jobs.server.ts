@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
@@ -265,12 +266,47 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
       uploadUrl,
       intervalMinutes: interval,
       nextRunAt: start,
+      publicToken: input.type === "export" ? newPublicToken() : null,
     },
   });
 }
 
-export function listSchedules(shop: string) {
-  return prisma.schedule.findMany({ where: { shop, intervalMinutes: { gt: 0 } }, orderBy: { createdAt: "desc" } });
+function newPublicToken(): string {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+/**
+ * Permanent link for a scheduled export: always serves the newest finished
+ * file. Anyone with the link can download, so the token is long and random.
+ */
+export function publicFileUrl(schedule: { publicToken: string | null; name: string; format: string }): string | null {
+  if (!schedule.publicToken) return null;
+  const base = (process.env.SHOPIFY_APP_URL ?? "").replace(/\/$/, "");
+  return `${base}/files/${schedule.publicToken}`;
+}
+
+/** Gives export schedules created before permanent links a token, or replaces it (revoking the old link). */
+export async function resetPublicToken(shop: string, id: string) {
+  await prisma.schedule.updateMany({ where: { id, shop, type: "export" }, data: { publicToken: newPublicToken() } });
+}
+
+/** Newest finished result file of the schedule behind a permanent link. */
+export async function latestPublicFile(token: string) {
+  if (!/^[A-Za-z0-9_-]{20,}$/.test(token)) return null;
+  const schedule = await prisma.schedule.findUnique({ where: { publicToken: token } });
+  if (!schedule) return null;
+  const job = await prisma.job.findFirst({
+    where: { scheduleId: schedule.id, shop: schedule.shop, status: "finished", resultFile: { not: null } },
+    orderBy: { finishedAt: "desc" },
+  });
+  return { schedule, job };
+}
+
+export async function listSchedules(shop: string) {
+  const where = { shop, intervalMinutes: { gt: 0 } };
+  const missing = await prisma.schedule.findMany({ where: { ...where, type: "export", publicToken: null }, select: { id: true } });
+  for (const m of missing) await resetPublicToken(shop, m.id);
+  return prisma.schedule.findMany({ where, orderBy: { createdAt: "desc" } });
 }
 
 export async function updateSchedule(shop: string, id: string, data: { enabled?: boolean; runNow?: boolean }) {
