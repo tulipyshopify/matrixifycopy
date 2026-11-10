@@ -1,11 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFetcher } from "react-router";
 import type { EntityInfo } from "../lib/jobs/jobs.server";
-import { FILTER_OPS, type FilterCondition, type FilterField, type FilterOp } from "../lib/core/types";
+import {
+  DATE_PRESETS,
+  FILTER_OPS,
+  type DateRange,
+  type DatePreset,
+  type FilterCondition,
+  type FilterField,
+  type FilterOp,
+} from "../lib/core/types";
 import { compileFilters } from "../lib/core/util";
-
-// Boolean props on Polaris web components use `x || undefined`: React 18 server-renders
-// false as the attribute ="false", which the components read as true.
 
 export interface ExportPayload {
   entities: Array<{ entity: string; options: Record<string, unknown> }>;
@@ -16,11 +21,12 @@ export interface ExportPayload {
 
 interface EntityState {
   enabled: boolean;
+  open: boolean;
   groups: string[];
   columns: string[];
   filters: FilterCondition[];
+  dateRange: DateRange | null;
   query: string;
-  showColumns: boolean;
 }
 
 const INTERVALS = [
@@ -79,7 +85,7 @@ function FilterValue({
             <s-checkbox
               key={o.value}
               label={o.label}
-              checked={(selected.includes(o.value)) || undefined}
+              checked={selected.includes(o.value)}
               onChange={(ev: any) =>
                 onChange({
                   value: (ev.currentTarget.checked ? [...selected, o.value] : selected.filter((v) => v !== o.value)).join(","),
@@ -140,7 +146,6 @@ function FilterBuilder({
   const update = (i: number, patch: Partial<FilterCondition>) => onChange(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)));
   return (
     <s-stack direction="block" gap="small">
-      {filters.length === 0 ? <s-text tone="neutral">No filters: every item is exported.</s-text> : null}
       {filters.map((cond, i) => {
         const field = byKey.get(cond.field)!;
         return (
@@ -195,79 +200,361 @@ function FilterBuilder({
   );
 }
 
+/** Date filter: which date field, and a preset or custom range. */
+function DateRangeFilter({
+  entity,
+  value,
+  onChange,
+}: {
+  entity: EntityInfo;
+  value: DateRange | null;
+  onChange: (r: DateRange | null) => void;
+}) {
+  const dateFields = entity.filters.filter((f) => f.type === "date");
+  if (!dateFields.length) return null;
+  const field = value?.field ?? (dateFields.find((f) => f.key === "created_at") ?? dateFields[0]).key;
+  return (
+    <s-grid gridTemplateColumns={value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"} gap="small" alignItems="end">
+      <s-select
+        label="Date"
+        value={field}
+        onChange={(ev: any) => onChange(value ? { ...value, field: ev.currentTarget.value } : null)}
+      >
+        {dateFields.map((f) => (
+          <s-option key={f.key} value={f.key}>
+            {f.label}
+          </s-option>
+        ))}
+      </s-select>
+      <s-select
+        label="Range"
+        value={value?.preset ?? ""}
+        onChange={(ev: any) => {
+          const preset = ev.currentTarget.value as DatePreset | "";
+          onChange(preset ? { field, preset, from: value?.from, to: value?.to } : null);
+        }}
+      >
+        <s-option value="">Any time</s-option>
+        {DATE_PRESETS.map((p) => (
+          <s-option key={p.value} value={p.value}>
+            {p.label}
+          </s-option>
+        ))}
+      </s-select>
+      {value?.preset === "custom" ? (
+        <>
+          <s-date-field label="From" value={value.from ?? ""} onChange={(ev: any) => onChange({ ...value, from: ev.currentTarget.value })} />
+          <s-date-field label="To" value={value.to ?? ""} onChange={(ev: any) => onChange({ ...value, to: ev.currentTarget.value })} />
+        </>
+      ) : (
+        <span />
+      )}
+    </s-grid>
+  );
+}
+
+const SECTION_NAMES: Record<string, string> = {
+  Variant: "Variants",
+  Image: "Images",
+  Category: "Category",
+  Line: "Line items",
+  Address: "Addresses",
+  Location: "Locations",
+  Contact: "Contacts",
+  Rule: "Rules",
+  Item: "Menu items",
+  Field: "Fields",
+  Product: "Products",
+  Transaction: "Transactions",
+  Billing: "Billing address",
+  Shipping: "Shipping",
+  Customer: "Customer",
+  Blog: "Blog",
+  Definition: "Definition",
+};
+
+/** Splits an entity's columns into named sections by their prefix. */
+function columnSections(entity: EntityInfo): Array<{ name: string; columns: string[] }> {
+  const sections: Array<{ name: string; columns: string[] }> = [];
+  for (const c of entity.columns) {
+    const m = /^([^:]+):/.exec(c) ?? /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Transaction)\b/.exec(c);
+    const prefix = m ? m[1].replace(/^Option\d$/, "Variant") : "";
+    const name = prefix ? (SECTION_NAMES[prefix] ?? prefix) : "Basic columns";
+    const found = sections.find((x) => x.name === name);
+    if (found) found.columns.push(c);
+    else sections.push({ name, columns: [c] });
+  }
+  // Basic columns first.
+  sections.sort((a, b) => Number(b.name === "Basic columns") - Number(a.name === "Basic columns"));
+  return sections;
+}
+
+/** Data groups that add API work per item and so make exports slower. */
+const isSlowGroup = (key: string) => /metafield|inventory|publication|transaction|item/.test(key);
+
+function Section({
+  title,
+  checked,
+  indeterminate,
+  onToggle,
+  badge,
+  children,
+  defaultOpen,
+}: {
+  title: string;
+  checked: boolean;
+  indeterminate?: boolean;
+  onToggle: (on: boolean) => void;
+  badge?: string;
+  children?: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <s-box background="subdued" borderRadius="base" padding="small-100 base">
+      <s-stack direction="block" gap="small">
+        <s-stack direction="inline" gap="small" alignItems="center" justifyContent="space-between">
+          <s-stack direction="inline" gap="small" alignItems="center">
+            <s-checkbox
+              label={title}
+              checked={checked}
+              indeterminate={indeterminate}
+              onChange={(ev: any) => onToggle(ev.currentTarget.checked)}
+            />
+            {badge ? <s-badge>{badge}</s-badge> : null}
+          </s-stack>
+          {children ? (
+            <s-button
+              variant="tertiary"
+              icon={open ? "chevron-up" : "chevron-down"}
+              accessibilityLabel={open ? `Collapse ${title}` : `Expand ${title}`}
+              onClick={() => setOpen(!open)}
+            />
+          ) : null}
+        </s-stack>
+        {open && children ? <s-box padding="none none small large">{children}</s-box> : null}
+      </s-stack>
+    </s-box>
+  );
+}
+
+const firstWord = (t: string) => t.toLowerCase().split(/[^a-z]+/).find(Boolean)?.replace(/s$/, "") ?? "";
+
+/** Column checklist: master checkbox, then collapsible sections of columns and extra data. */
 function ColumnPicker({
   entity,
   columns,
+  groups,
   onChange,
 }: {
   entity: EntityInfo;
   columns: string[];
-  onChange: (columns: string[]) => void;
+  groups: string[];
+  onChange: (patch: { columns?: string[]; groups?: string[] }) => void;
 }) {
-  const [search, setSearch] = useState("");
   const required = new Set(["ID", ...entity.keyColumns]);
-  const visible = entity.columns.filter((c) => c.toLowerCase().includes(search.toLowerCase()));
-  // Group by the column's prefix ("Variant SKU" -> Variant, "Billing: City" -> Billing).
-  const groupOf = (c: string) => {
-    const m = /^([^:]+):/.exec(c) ?? /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Product|Shipping|Billing|Customer|Transaction|Field|Definition|Blog)\b/.exec(c);
-    if (!m) return entity.sheet.replace(/s$/, "");
-    return m[1].replace(/^Option\d$/, "Variant");
-  };
-  const groups: Array<[string, string[]]> = [];
-  for (const c of visible) {
-    const g = groupOf(c);
-    const found = groups.find(([name]) => name === g);
-    if (found) found[1].push(c);
-    else groups.push([g, [c]]);
-  }
+  // A data group ("Variants & options") that matches a column section ("Variants")
+  // is merged into it: the section's checkbox then also controls fetching that data.
+  const sections = useMemo(() => {
+    const secs = columnSections(entity).map((sec) => ({ ...sec, group: undefined as undefined | { key: string; label: string } }));
+    const extra: Array<{ key: string; label: string }> = [];
+    for (const g of entity.groups) {
+      const sec = secs.find((x) => !x.group && firstWord(x.name) === firstWord(g.label));
+      if (sec) sec.group = g;
+      else extra.push(g);
+    }
+    return { secs, extra };
+  }, [entity]);
+  const optional = entity.columns.filter((c) => !required.has(c));
+  const selected = entity.columns.filter((c) => required.has(c) || columns.includes(c)).length;
+  const all = selected === entity.columns.length;
+  const setGroup = (list: string[], key: string, on: boolean) => (on ? [...new Set([...list, key])] : list.filter((x) => x !== key));
+
   return (
     <s-stack direction="block" gap="small">
-      <s-stack direction="inline" gap="small" alignItems="center">
-        <s-search-field label="Find a column" labelAccessibilityVisibility="exclusive" placeholder="Find a column" value={search} onInput={(ev: any) => setSearch(ev.currentTarget.value)} />
-        <s-button variant="tertiary" onClick={() => onChange([...entity.columns])}>
-          Select all
-        </s-button>
-        <s-button variant="tertiary" onClick={() => onChange(entity.columns.filter((c) => required.has(c)))}>
-          Keys only
-        </s-button>
-        <s-text tone="neutral">
-          {columns.length} of {entity.columns.length} selected
-        </s-text>
-      </s-stack>
-      {groups.map(([group, cols]) => {
-        const optional = cols.filter((c) => !required.has(c));
-        const allOn = optional.every((c) => columns.includes(c));
+      <s-box background="subdued" borderRadius="base" padding="small-100 base">
+        <s-checkbox
+          label={`${selected} of ${entity.columns.length} columns selected`}
+          checked={all}
+          indeterminate={!all && selected > required.size}
+          onChange={(ev: any) => {
+            const on = ev.currentTarget.checked;
+            onChange({
+              columns: on ? [...new Set([...columns, ...optional])] : columns.filter((c) => !optional.includes(c)),
+              // Selecting everything also turns on the data the columns need.
+              ...(on ? { groups: [...new Set([...groups, ...sections.secs.flatMap((x) => (x.group ? [x.group.key] : []))])] } : {}),
+            });
+          }}
+        />
+      </s-box>
+      {sections.secs.map((sec, i) => {
+        const opt = sec.columns.filter((c) => !required.has(c));
+        const groupOn = !sec.group || groups.includes(sec.group.key);
+        const on = groupOn ? opt.filter((c) => columns.includes(c)).length : 0;
+        const toggleSection = (v: boolean) =>
+          onChange({
+            columns: v ? [...new Set([...columns, ...opt])] : columns.filter((c) => !opt.includes(c)),
+            ...(sec.group ? { groups: setGroup(groups, sec.group.key, v) } : {}),
+          });
         return (
-          <s-stack key={group} direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-text type="strong">{group}</s-text>
-              {optional.length > 1 ? (
-                <s-button
-                  variant="tertiary"
-                  onClick={() =>
-                    onChange(allOn ? columns.filter((c) => !optional.includes(c)) : [...new Set([...columns, ...optional])])
-                  }
-                >
-                  {allOn ? "Clear" : "All"}
-                </s-button>
-              ) : null}
-            </s-stack>
-            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(220px, 1fr))" gap="small-200">
-              {cols.map((c) => (
+          <Section
+            key={sec.name}
+            title={sec.name}
+            checked={opt.length > 0 && on === opt.length}
+            indeterminate={on > 0 && on < opt.length}
+            badge={sec.group && isSlowGroup(sec.group.key) ? "Slower" : undefined}
+            onToggle={toggleSection}
+            defaultOpen={i === 0}
+          >
+            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(200px, 1fr))" gap="small-200">
+              {sec.columns.map((c) => (
                 <s-checkbox
                   key={c}
                   label={c}
-                  checked={(columns.includes(c) || required.has(c)) || undefined}
-                  disabled={(required.has(c)) || undefined}
-                  onChange={(ev: any) => onChange(ev.currentTarget.checked ? [...columns, c] : columns.filter((x) => x !== c))}
+                  checked={required.has(c) || (groupOn && columns.includes(c))}
+                  disabled={required.has(c)}
+                  onChange={(ev: any) => {
+                    const v = ev.currentTarget.checked;
+                    onChange({
+                      columns: v ? [...new Set([...columns, c])] : columns.filter((x) => x !== c),
+                      // Ticking a column of a switched-off section switches its data on.
+                      ...(v && sec.group && !groupOn ? { groups: setGroup(groups, sec.group.key, true) } : {}),
+                    });
+                  }}
                 />
               ))}
             </s-grid>
-          </s-stack>
+          </Section>
         );
       })}
-      <s-text tone="neutral">Greyed-out key columns are always included so the file can be imported back.</s-text>
+      {sections.extra.map((g) => (
+        <Section
+          key={g.key}
+          title={g.label}
+          checked={groups.includes(g.key)}
+          badge={isSlowGroup(g.key) ? "Slower" : undefined}
+          onToggle={(v) => onChange({ groups: setGroup(groups, g.key, v) })}
+        />
+      ))}
+      <s-text tone="neutral">Key columns ({[...required].join(", ")}) are always included so the file can be imported back.</s-text>
     </s-stack>
+  );
+}
+
+/** Export options for one entity panel, as sent to the server. */
+function panelOptions(e: EntityInfo, s: EntityState) {
+  const allColumns = e.columns.every((c) => s.columns.includes(c));
+  const filters = s.filters.filter((f) => f.value && (f.op !== "between" || f.value2));
+  return {
+    groups: e.groups.length ? s.groups : undefined,
+    columns: allColumns ? undefined : s.columns,
+    filters: filters.length ? filters : undefined,
+    dateRange: s.dateRange ?? undefined,
+    query: s.query || undefined,
+  };
+}
+
+/**
+ * Live item total for a panel, refreshed when its filters change. Uses plain
+ * fetch (App Bridge adds the session token) so a failed count only hides the
+ * total instead of triggering the route error boundary or a page revalidation.
+ */
+function useItemCount(e: EntityInfo, s: EntityState): string | null {
+  const [label, setLabel] = useState<string | null>(null);
+  const key = JSON.stringify([s.enabled, s.filters, s.dateRange, s.query]);
+  useEffect(() => {
+    if (!s.enabled) return;
+    const controller = new AbortController();
+    const t = setTimeout(async () => {
+      setLabel("Counting…");
+      try {
+        const res = await fetch("/app/api/count", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entity: e.key, options: panelOptions(e, s) }),
+          signal: controller.signal,
+        });
+        const data = res.ok ? await res.json() : null;
+        const r = data?.result as { count: number; precision: string; unfiltered?: boolean } | null | undefined;
+        if (!r) return setLabel(null);
+        const n = r.count.toLocaleString();
+        setLabel(`Total: ${r.precision === "AT_LEAST" ? `${n}+` : n}${r.unfiltered ? " (before filters)" : ""}`);
+      } catch {
+        if (!controller.signal.aborted) setLabel(null);
+      }
+    }, 600);
+    return () => {
+      clearTimeout(t);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return label;
+}
+
+function EntityPanel({
+  entity: e,
+  state: s,
+  update,
+}: {
+  entity: EntityInfo;
+  state: EntityState;
+  update: (patch: Partial<EntityState>) => void;
+}) {
+  const total = useItemCount(e, s);
+  const [advanced, setAdvanced] = useState(!!s.query);
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="base">
+        <s-stack direction="inline" alignItems="center" justifyContent="space-between">
+          <s-stack direction="inline" gap="small" alignItems="center">
+            <s-heading>{e.sheet}</s-heading>
+            {total ? <s-badge>{total}</s-badge> : null}
+          </s-stack>
+          <s-stack direction="inline" gap="small-200">
+            <s-button
+              variant="tertiary"
+              icon={s.open ? "chevron-up" : "chevron-down"}
+              accessibilityLabel={s.open ? `Collapse ${e.sheet}` : `Expand ${e.sheet}`}
+              onClick={() => update({ open: !s.open })}
+            />
+            <s-button variant="tertiary" icon="delete" accessibilityLabel={`Remove ${e.sheet}`} onClick={() => update({ enabled: false })} />
+          </s-stack>
+        </s-stack>
+        {s.open ? (
+          <>
+            <s-text tone="neutral">{e.description}</s-text>
+            {e.filters.length ? (
+              <s-stack direction="block" gap="small">
+                <s-heading>Filters</s-heading>
+                <DateRangeFilter entity={e} value={s.dateRange} onChange={(dateRange) => update({ dateRange })} />
+                <FilterBuilder entity={e} filters={s.filters} onChange={(filters) => update({ filters })} />
+              </s-stack>
+            ) : null}
+            {e.supportsQuery ? (
+              advanced ? (
+                <s-text-field
+                  label="Shopify search query"
+                  details="Added to the filters above with AND, e.g. tag:sale OR tag:clearance"
+                  value={s.query}
+                  onInput={(ev: any) => update({ query: ev.currentTarget.value })}
+                />
+              ) : (
+                <s-stack direction="inline">
+                  <s-button variant="tertiary" onClick={() => setAdvanced(true)}>
+                    Advanced search query
+                  </s-button>
+                </s-stack>
+              )
+            ) : null}
+            <s-stack direction="block" gap="small">
+              <s-heading>Columns</s-heading>
+              <ColumnPicker entity={e} columns={s.columns} groups={s.groups} onChange={(patch) => update(patch)} />
+            </s-stack>
+          </>
+        ) : null}
+      </s-stack>
+    </s-box>
   );
 }
 
@@ -283,11 +570,12 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
         e.key,
         {
           enabled: e.key === "products",
+          open: true,
           groups: e.groups.filter((g) => g.default).map((g) => g.key),
           columns: [...e.columns],
           filters: [],
+          dateRange: null,
           query: "",
-          showColumns: false,
         },
       ]),
     ),
@@ -299,6 +587,7 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
   const [uploadUrl, setUploadUrl] = useState("");
 
   const selected = useMemo(() => entities.filter((e) => state[e.key].enabled), [entities, state]);
+  const available = entities.filter((e) => !state[e.key].enabled);
   const update = (key: string, patch: Partial<EntityState>) => setState((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
   const busy = fetcher.state !== "idle";
 
@@ -306,19 +595,7 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
     const payload: ExportPayload = {
       format,
       name,
-      entities: selected.map((e) => {
-        const s = state[e.key];
-        const allColumns = e.columns.every((c) => s.columns.includes(c));
-        return {
-          entity: e.key,
-          options: {
-            groups: e.groups.length ? s.groups : undefined,
-            columns: allColumns ? undefined : s.columns,
-            filters: s.filters.length ? s.filters : undefined,
-            query: s.query || undefined,
-          },
-        };
-      }),
+      entities: selected.map((e) => ({ entity: e.key, options: panelOptions(e, state[e.key]) })),
       ...(scheduled ? { schedule: { intervalMinutes, uploadUrl: uploadUrl || undefined } } : {}),
     };
     fetcher.submit(payload as any, { method: "post", encType: "application/json", action: "/app/export" });
@@ -332,71 +609,29 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
         </s-banner>
       ) : null}
 
-      <s-section heading="What to export">
+      <s-section heading="Data to export">
         <s-stack direction="block" gap="base">
-          {entities.map((e) => {
-            const s = state[e.key];
-            return (
-              <s-box key={e.key} padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="base">
-                  <s-checkbox
-                    label={e.sheet}
-                    details={e.description}
-                    checked={(s.enabled) || undefined}
-                    onChange={(ev: any) => update(e.key, { enabled: ev.currentTarget.checked })}
-                  />
-                  {s.enabled ? (
-                    <s-stack direction="block" gap="base" padding="none none none large">
-                      {e.filters.length ? (
-                        <s-stack direction="block" gap="small">
-                          <s-heading>Filters</s-heading>
-                          <FilterBuilder entity={e} filters={s.filters} onChange={(filters) => update(e.key, { filters })} />
-                        </s-stack>
-                      ) : null}
-
-                      <s-stack direction="block" gap="small">
-                        <s-stack direction="inline" gap="small" alignItems="center">
-                          <s-heading>Columns</s-heading>
-                          <s-text tone="neutral">
-                            {s.columns.length === e.columns.length ? "All columns" : `${s.columns.length} of ${e.columns.length}`}
-                          </s-text>
-                          <s-button variant="tertiary" onClick={() => update(e.key, { showColumns: !s.showColumns })}>
-                            {s.showColumns ? "Hide" : "Choose columns"}
-                          </s-button>
-                        </s-stack>
-                        {s.showColumns ? <ColumnPicker entity={e} columns={s.columns} onChange={(columns) => update(e.key, { columns })} /> : null}
-                        {e.groups.length ? (
-                          <s-stack direction="inline" gap="base">
-                            {e.groups.map((g) => (
-                              <s-checkbox
-                                key={g.key}
-                                label={g.label}
-                                checked={(s.groups.includes(g.key)) || undefined}
-                                onChange={(ev: any) =>
-                                  update(e.key, {
-                                    groups: ev.currentTarget.checked ? [...s.groups, g.key] : s.groups.filter((x) => x !== g.key),
-                                  })
-                                }
-                              />
-                            ))}
-                          </s-stack>
-                        ) : null}
-                      </s-stack>
-
-                      {e.supportsQuery ? (
-                        <s-text-field
-                          label="Advanced: Shopify search query (optional)"
-                          details="Added to the filters above with AND, e.g. tag:sale OR tag:clearance"
-                          value={s.query}
-                          onInput={(ev: any) => update(e.key, { query: ev.currentTarget.value })}
-                        />
-                      ) : null}
-                    </s-stack>
-                  ) : null}
-                </s-stack>
-              </s-box>
-            );
-          })}
+          {selected.map((e) => (
+            <EntityPanel key={e.key} entity={e} state={state[e.key]} update={(patch) => update(e.key, patch)} />
+          ))}
+          {available.length ? (
+            <s-select
+              label="Add data type"
+              labelAccessibilityVisibility={selected.length ? "exclusive" : undefined}
+              placeholder="+ Add data type…"
+              value=""
+              onChange={(ev: any) => {
+                const key = ev.currentTarget.value;
+                if (key) update(key, { enabled: true, open: true });
+              }}
+            >
+              {available.map((e) => (
+                <s-option key={e.key} value={e.key}>
+                  {e.sheet}
+                </s-option>
+              ))}
+            </s-select>
+          ) : null}
         </s-stack>
       </s-section>
 
@@ -406,13 +641,8 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
             <s-option value="xlsx">Excel (.xlsx), one sheet per data type</s-option>
             <s-option value="csv">CSV (.csv, zipped when several data types)</s-option>
           </s-select>
-          <s-text-field label="File name (optional)" value={name} placeholder="Export_2026-11-09" onInput={(ev: any) => setName(ev.currentTarget.value)} />
-        </s-stack>
-      </s-section>
-
-      <s-section heading="Schedule">
-        <s-stack direction="block" gap="base">
-          <s-switch label="Repeat this export on a schedule" checked={(scheduled) || undefined} onChange={(ev: any) => setScheduled(ev.currentTarget.checked)} />
+          <s-text-field label="File name (optional)" value={name} placeholder="Export_2026-11-10" onInput={(ev: any) => setName(ev.currentTarget.value)} />
+          <s-switch label="Repeat this export on a schedule" checked={scheduled} onChange={(ev: any) => setScheduled(ev.currentTarget.checked)} />
           {scheduled ? (
             <>
               <s-select label="How often" value={String(intervalMinutes)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
@@ -431,7 +661,7 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
             </>
           ) : null}
           <s-stack direction="inline" justifyContent="end">
-            <s-button variant="primary" onClick={submit} disabled={(!selected.length || busy) || undefined} loading={(busy) || undefined}>
+            <s-button variant="primary" onClick={submit} disabled={!selected.length || busy} loading={busy}>
               {scheduled ? "Save schedule" : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
             </s-button>
           </s-stack>

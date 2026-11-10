@@ -1,6 +1,6 @@
 import prisma from "../../db.server";
-import type { Command, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
-import { COMMANDS, FILTER_OPS } from "../core/types";
+import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
+import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { jobDir, saveUpload, signedDownloadUrl } from "./storage.server";
@@ -50,6 +50,7 @@ export function parseExportConfig(raw: unknown): ExportConfig {
         o.groups = options.groups.filter((g) => valid.has(g));
       }
       if (options.filters?.length) o.filters = parseFilters(e, options.filters);
+      if (options.dateRange) o.dateRange = parseDateRange(e, options.dateRange);
       if (options.columns) {
         const valid = new Set(e.columns);
         o.columns = options.columns.filter((c) => valid.has(c));
@@ -62,6 +63,20 @@ export function parseExportConfig(raw: unknown): ExportConfig {
 }
 
 const NUMBER = /^-?\d+(\.\d+)?$/;
+
+/** Validates a date range against the entity's date filter fields. */
+export function parseDateRange(e: Entity, r: DateRange): DateRange | undefined {
+  const field = (e.filters ?? []).find((f) => f.key === r.field && f.type === "date");
+  if (!field) throw new Error(`${e.sheet}: can't filter by date "${r.field}"`);
+  if (!DATE_PRESETS.some((p) => p.value === r.preset)) throw new Error(`${e.sheet}: unknown date range`);
+  if (r.preset !== "custom") return { field: r.field, preset: r.preset };
+  const from = r.from?.trim() || undefined;
+  const to = r.to?.trim() || undefined;
+  for (const d of [from, to]) if (d && !DATE.test(d)) throw new Error(`${field.label}: "${d}" is not a date`);
+  if (!from && !to) return undefined;
+  if (from && to && from > to) throw new Error(`${field.label}: the start date is after the end date`);
+  return { field: r.field, preset: "custom", from, to };
+}
 
 /** Validates filter rows against the entity's filter fields. */
 export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition[] {

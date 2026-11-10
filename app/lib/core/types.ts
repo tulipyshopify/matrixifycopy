@@ -66,7 +66,46 @@ export const FILTER_OPS: Record<FilterType, FilterOp[]> = {
   id: ["is", "is_not"],
 };
 
+export type DatePreset =
+  | "today"
+  | "yesterday"
+  | "last_7_days"
+  | "last_30_days"
+  | "last_90_days"
+  | "this_month"
+  | "last_month"
+  | "this_year"
+  | "last_year"
+  | "custom";
+
+export const DATE_PRESETS: Array<{ value: DatePreset; label: string }> = [
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "last_7_days", label: "Last 7 days" },
+  { value: "last_30_days", label: "Last 30 days" },
+  { value: "last_90_days", label: "Last 90 days" },
+  { value: "this_month", label: "This month" },
+  { value: "last_month", label: "Last month" },
+  { value: "this_year", label: "This year" },
+  { value: "last_year", label: "Last year" },
+  { value: "custom", label: "Custom range" },
+];
+
+/**
+ * Date filter on one of the entity's date fields. Presets are resolved when the
+ * export runs, so a scheduled "last 7 days" export always covers the latest week.
+ */
+export interface DateRange {
+  field: string;
+  preset: DatePreset;
+  /** Custom range bounds (YYYY-MM-DD); either may be empty. */
+  from?: string;
+  to?: string;
+}
+
 export interface ExportOptions {
+  /** Date range filter, resolved at run time. */
+  dateRange?: DateRange;
   /** Raw Shopify search syntax, e.g. `status:active vendor:Acme` (advanced). */
   query?: string;
   /** Structured filters, combined with AND. */

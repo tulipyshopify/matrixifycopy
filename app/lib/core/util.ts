@@ -1,4 +1,4 @@
-import type { Command, FilterCondition, Row } from "./types";
+import type { Command, DateRange, FilterCondition, Row } from "./types";
 import { COMMANDS, ImportError } from "./types";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -279,16 +279,64 @@ export function compileFilters(filters: FilterCondition[] | undefined): string {
   return parts.join(" AND ");
 }
 
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Resolves a date range (preset or custom) to inclusive YYYY-MM-DD bounds. */
+export function resolveDateRange(r: DateRange, now = new Date()): { from?: string; to?: string } {
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400_000);
+  const y = day.getUTCFullYear();
+  const m = day.getUTCMonth();
+  switch (r.preset) {
+    case "today":
+      return { from: ymd(day), to: ymd(day) };
+    case "yesterday":
+      return { from: ymd(addDays(day, -1)), to: ymd(addDays(day, -1)) };
+    case "last_7_days":
+      return { from: ymd(addDays(day, -6)), to: ymd(day) };
+    case "last_30_days":
+      return { from: ymd(addDays(day, -29)), to: ymd(day) };
+    case "last_90_days":
+      return { from: ymd(addDays(day, -89)), to: ymd(day) };
+    case "this_month":
+      return { from: ymd(new Date(Date.UTC(y, m, 1))), to: ymd(day) };
+    case "last_month":
+      return { from: ymd(new Date(Date.UTC(y, m - 1, 1))), to: ymd(new Date(Date.UTC(y, m, 0))) };
+    case "this_year":
+      return { from: `${y}-01-01`, to: ymd(day) };
+    case "last_year":
+      return { from: `${y - 1}-01-01`, to: `${y - 1}-12-31` };
+    case "custom":
+      return { from: r.from || undefined, to: r.to || undefined };
+  }
+}
+
+/** Date range as search syntax. The upper bound is exclusive of the next day. */
+export function compileDateRange(r: DateRange | undefined, now = new Date()): string {
+  if (!r) return "";
+  const { from, to } = resolveDateRange(r, now);
+  const parts: string[] = [];
+  if (from) parts.push(`${r.field}:>='${from}'`);
+  if (to) {
+    const next = new Date(Date.parse(`${to}T00:00:00Z`) + 86400_000);
+    parts.push(`${r.field}:<'${ymd(next)}'`);
+  }
+  return parts.join(" AND ");
+}
+
 /** Builds a Shopify search query string from export options. */
 export function buildSearchQuery(opts: {
   query?: string;
   filters?: FilterCondition[];
+  dateRange?: DateRange;
   createdAfter?: string;
   createdBefore?: string;
   updatedAfter?: string;
   updatedBefore?: string;
 }): string {
   const parts: string[] = [];
+  const dates = compileDateRange(opts.dateRange);
+  if (dates) parts.push(dates);
   const compiled = compileFilters(opts.filters);
   if (compiled) parts.push(compiled);
   if (opts.query?.trim()) parts.push(`(${opts.query.trim()})`);

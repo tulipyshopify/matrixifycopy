@@ -95,11 +95,11 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
           <s-checkbox
             label="Dry run"
             details="Read and check the file without changing anything in the store"
-            checked={(dryRun) || undefined}
+            checked={dryRun}
             onChange={(ev: any) => setDryRun(ev.currentTarget.checked)}
           />
           <s-stack direction="inline" justifyContent="end">
-            <s-button variant="primary" onClick={submit} disabled={(!ready || busy) || undefined} loading={(busy) || undefined}>
+            <s-button variant="primary" onClick={submit} disabled={!ready || busy} loading={busy}>
               {source === "url" && interval > 0 ? "Save schedule" : dryRun ? "Check file" : "Import"}
             </s-button>
           </s-stack>

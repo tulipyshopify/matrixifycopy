@@ -5,7 +5,8 @@ import { ENTITIES, getEntity } from "../app/lib/entities";
 import { FILTER_OPS } from "../app/lib/core/types";
 
 // jobs.server imports prisma; load it lazily so prisma isn't needed for these tests.
-const { parseExportConfig, parseFilters } = await import("../app/lib/jobs/jobs.server");
+const jobs = await import("../app/lib/jobs/jobs.server");
+const { parseExportConfig, parseFilters } = jobs;
 
 describe("filter compilation", () => {
   it("compiles each operator to Shopify search syntax", () => {
@@ -110,5 +111,27 @@ describe("column selection", () => {
       "Metafield: custom.fit [single_line_text_field]",
       "Inventory Available: Shop",
     ]);
+  });
+});
+
+describe("date range", async () => {
+  const { resolveDateRange, compileDateRange } = await import("../app/lib/core/util");
+  const now = new Date("2026-11-10T15:00:00Z");
+  it("resolves presets relative to the run date", () => {
+    expect(resolveDateRange({ field: "created_at", preset: "today" }, now)).toEqual({ from: "2026-11-10", to: "2026-11-10" });
+    expect(resolveDateRange({ field: "created_at", preset: "last_7_days" }, now)).toEqual({ from: "2026-11-04", to: "2026-11-10" });
+    expect(resolveDateRange({ field: "created_at", preset: "last_month" }, now)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+    expect(resolveDateRange({ field: "created_at", preset: "last_year" }, now)).toEqual({ from: "2025-01-01", to: "2025-12-31" });
+  });
+  it("compiles with an inclusive end day", () => {
+    expect(compileDateRange({ field: "updated_at", preset: "yesterday" }, now)).toBe("updated_at:>='2026-11-09' AND updated_at:<'2026-11-10'");
+    expect(compileDateRange({ field: "processed_at", preset: "custom", from: "2026-01-01" }, now)).toBe("processed_at:>='2026-01-01'");
+  });
+  it("is validated against the entity's date fields", () => {
+    const orders = getEntity("orders")!;
+    const { parseDateRange } = jobs;
+    expect(parseDateRange(orders, { field: "processed_at", preset: "last_30_days" })).toEqual({ field: "processed_at", preset: "last_30_days" });
+    expect(() => parseDateRange(orders, { field: "email", preset: "today" })).toThrow(/can't filter by date/);
+    expect(() => parseDateRange(orders, { field: "created_at", preset: "custom", from: "2026-02-01", to: "2026-01-01" })).toThrow(/after the end/);
   });
 });
