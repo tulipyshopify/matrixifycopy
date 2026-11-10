@@ -18,9 +18,7 @@ export default function App() {
   return (
     <AppProvider apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">Jobs</s-link>
-        <s-link href="/app/export">New export</s-link>
-        <s-link href="/app/import">New import</s-link>
+        <s-link href="/app">Home</s-link>
         <s-link href="/app/schedules">Schedules</s-link>
         <s-link href="/app/help">Sheet reference</s-link>
       </s-app-nav>

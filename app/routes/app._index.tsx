@@ -1,16 +1,22 @@
 import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, listJobs, rerunJob } from "../lib/jobs/jobs.server";
+import { cancelJob, downloadLinks, entityCatalog, listJobs, rerunJob } from "../lib/jobs/jobs.server";
 import { StatusBadge, formatDate, isActive, jobSummary, progressText } from "../components/jobs";
+import { ExportForm } from "../components/ExportForm";
+import { ImportForm } from "../components/ImportForm";
+
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const jobs = await listJobs(session.shop);
   return {
     jobs: jobs.map((j) => ({ ...j, links: downloadLinks({ ...j, inputFile: null }) })),
+    entities: entityCatalog().filter((e) => e.canExport),
+    maxUploadMb: MAX_UPLOAD_MB,
   };
 };
 
@@ -23,9 +29,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { ok: true };
 };
 
-export default function Jobs() {
-  const { jobs } = useLoaderData<typeof loader>();
-  const navigate = useNavigate();
+export default function Home() {
+  const { jobs, entities, maxUploadMb } = useLoaderData<typeof loader>();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "import" ? "import" : "export";
+  const setTab = (t: string) => setParams(t === "export" ? {} : { tab: t }, { replace: true });
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const anyActive = jobs.some((j) => isActive(j.status));
@@ -40,32 +48,27 @@ export default function Jobs() {
   }, [anyActive, revalidator]);
 
   return (
-    <s-page heading="Jobs">
-      <s-button slot="primary-action" variant="primary" onClick={() => navigate("/app/export")}>
-        New export
-      </s-button>
-      <s-button slot="secondary-actions" onClick={() => navigate("/app/import")}>
-        New import
-      </s-button>
+    <s-page heading="Bulkport" inlineSize="large">
+      <s-section padding="base">
+        <s-stack direction="inline" gap="small" alignItems="center">
+          <s-button variant={tab === "export" ? "primary" : "secondary"} onClick={() => setTab("export")}>
+            Export
+          </s-button>
+          <s-button variant={tab === "import" ? "primary" : "secondary"} onClick={() => setTab("import")}>
+            Import
+          </s-button>
+          <s-text tone="neutral">
+            {tab === "export"
+              ? "Choose data, filters and columns, then download an Excel or CSV file."
+              : "Upload an edited file to create, update or delete items in bulk."}
+          </s-text>
+        </s-stack>
+      </s-section>
 
-      {jobs.length === 0 ? (
-        <s-section>
-          <s-stack direction="block" gap="base" alignItems="center" padding="large">
-            <s-heading>Move your store data in bulk</s-heading>
-            <s-paragraph>
-              Export products, collections, customers, orders and more to Excel or CSV. Edit the file, then import it
-              back to create, update or delete items in bulk.
-            </s-paragraph>
-            <s-stack direction="inline" gap="base">
-              <s-button variant="primary" onClick={() => navigate("/app/export")}>
-                Start an export
-              </s-button>
-              <s-button onClick={() => navigate("/app/import")}>Import a file</s-button>
-            </s-stack>
-          </s-stack>
-        </s-section>
-      ) : (
-        <s-section padding="none">
+      {tab === "export" ? <ExportForm entities={entities} /> : <ImportForm maxUploadMb={maxUploadMb} />}
+
+      {jobs.length === 0 ? null : (
+        <s-section heading="Recent jobs">
           <s-table>
             <s-table-header-row>
               <s-table-header listSlot="primary">Job</s-table-header>

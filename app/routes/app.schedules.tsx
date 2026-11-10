@@ -50,10 +50,10 @@ export default function Schedules() {
 
   return (
     <s-page heading="Schedules">
-      <s-button slot="primary-action" onClick={() => navigate("/app/export")}>
+      <s-button slot="primary-action" onClick={() => navigate("/app")}>
         New scheduled export
       </s-button>
-      <s-button slot="secondary-actions" onClick={() => navigate("/app/import")}>
+      <s-button slot="secondary-actions" onClick={() => navigate("/app?tab=import")}>
         New scheduled import
       </s-button>
       {schedules.length === 0 ? (
