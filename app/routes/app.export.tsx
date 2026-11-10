@@ -39,7 +39,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function NewExport() {
   const { entities } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="New export" inlineSize="large">
+    <s-page heading="New export" inlineSize="base">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>

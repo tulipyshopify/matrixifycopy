@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useFetcher } from "react-router";
 import type { EntityInfo } from "../lib/jobs/jobs.server";
 import {
@@ -49,13 +49,23 @@ const OP_LABELS: Record<FilterOp, string> = {
 };
 
 function opLabel(field: FilterField, op: FilterOp): string {
-  if (field.type === "date") return { gte: "on or after", lte: "on or before", between: "between" }[op as "gte"] ?? OP_LABELS[op];
-  if (field.type === "number") return { gte: "at least", lte: "at most" }[op as "gte"] ?? OP_LABELS[op];
+  if (field.type === "date")
+    return (
+      { gte: "on or after", lte: "on or before", between: "between" }[
+        op as "gte"
+      ] ?? OP_LABELS[op]
+    );
+  if (field.type === "number")
+    return { gte: "at least", lte: "at most" }[op as "gte"] ?? OP_LABELS[op];
   return OP_LABELS[op];
 }
 
 function newCondition(field: FilterField): FilterCondition {
-  return { field: field.key, op: FILTER_OPS[field.type][0], value: field.type === "boolean" ? "true" : "" };
+  return {
+    field: field.key,
+    op: FILTER_OPS[field.type][0],
+    value: field.type === "boolean" ? "true" : "",
+  };
 }
 
 /** Value input(s) for one filter row, chosen by field type and operator. */
@@ -70,7 +80,12 @@ function FilterValue({
 }) {
   if (field.type === "boolean") {
     return (
-      <s-select label="Value" labelAccessibilityVisibility="exclusive" value={cond.value} onChange={(ev: any) => onChange({ value: ev.currentTarget.value })}>
+      <s-select
+        label="Value"
+        labelAccessibilityVisibility="exclusive"
+        value={cond.value}
+        onChange={(ev: any) => onChange({ value: ev.currentTarget.value })}
+      >
         <s-option value="true">Yes</s-option>
         <s-option value="false">No</s-option>
       </s-select>
@@ -88,7 +103,10 @@ function FilterValue({
               checked={selected.includes(o.value)}
               onChange={(ev: any) =>
                 onChange({
-                  value: (ev.currentTarget.checked ? [...selected, o.value] : selected.filter((v) => v !== o.value)).join(","),
+                  value: (ev.currentTarget.checked
+                    ? [...selected, o.value]
+                    : selected.filter((v) => v !== o.value)
+                  ).join(","),
                 })
               }
             />
@@ -97,7 +115,13 @@ function FilterValue({
       );
     }
     return (
-      <s-select label="Value" labelAccessibilityVisibility="exclusive" value={cond.value} placeholder="Choose…" onChange={(ev: any) => onChange({ value: ev.currentTarget.value })}>
+      <s-select
+        label="Value"
+        labelAccessibilityVisibility="exclusive"
+        value={cond.value}
+        placeholder="Choose…"
+        onChange={(ev: any) => onChange({ value: ev.currentTarget.value })}
+      >
         {field.options!.map((o) => (
           <s-option key={o.value} value={o.value}>
             {o.label}
@@ -108,9 +132,21 @@ function FilterValue({
   }
   const single = (value: string, key: "value" | "value2", label: string) =>
     field.type === "date" ? (
-      <s-date-field key={key} label={label} labelAccessibilityVisibility="exclusive" value={value} onChange={(ev: any) => onChange({ [key]: ev.currentTarget.value })} />
+      <s-date-field
+        key={key}
+        label={label}
+        labelAccessibilityVisibility="exclusive"
+        value={value}
+        onChange={(ev: any) => onChange({ [key]: ev.currentTarget.value })}
+      />
     ) : field.type === "number" ? (
-      <s-number-field key={key} label={label} labelAccessibilityVisibility="exclusive" value={value} onInput={(ev: any) => onChange({ [key]: ev.currentTarget.value })} />
+      <s-number-field
+        key={key}
+        label={label}
+        labelAccessibilityVisibility="exclusive"
+        value={value}
+        onInput={(ev: any) => onChange({ [key]: ev.currentTarget.value })}
+      />
     ) : (
       <s-text-field
         key={key}
@@ -143,20 +179,28 @@ function FilterBuilder({
   onChange: (filters: FilterCondition[]) => void;
 }) {
   const byKey = new Map(entity.filters.map((f) => [f.key, f]));
-  const update = (i: number, patch: Partial<FilterCondition>) => onChange(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  const update = (i: number, patch: Partial<FilterCondition>) =>
+    onChange(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)));
   return (
     <s-stack direction="block" gap="base">
       {filters.map((cond, i) => {
         const field = byKey.get(cond.field)!;
         return (
-          <s-grid key={i} gridTemplateColumns="minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto" gap="base" alignItems="center">
+          <s-grid
+            key={i}
+            gridTemplateColumns="minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto"
+            gap="base"
+            alignItems="center"
+          >
             <s-select
               label="Field"
               labelAccessibilityVisibility="exclusive"
               value={cond.field}
               onChange={(ev: any) => {
                 const f = byKey.get(ev.currentTarget.value)!;
-                onChange(filters.map((x, j) => (j === i ? newCondition(f) : x)));
+                onChange(
+                  filters.map((x, j) => (j === i ? newCondition(f) : x)),
+                );
               }}
             >
               {entity.filters.map((f) => (
@@ -172,7 +216,12 @@ function FilterBuilder({
                 label="Condition"
                 labelAccessibilityVisibility="exclusive"
                 value={cond.op}
-                onChange={(ev: any) => update(i, { op: ev.currentTarget.value, ...(field.type === "enum" ? { value: "" } : {}) })}
+                onChange={(ev: any) =>
+                  update(i, {
+                    op: ev.currentTarget.value,
+                    ...(field.type === "enum" ? { value: "" } : {}),
+                  })
+                }
               >
                 {FILTER_OPS[field.type].map((op) => (
                   <s-option key={op} value={op}>
@@ -181,18 +230,39 @@ function FilterBuilder({
                 ))}
               </s-select>
             )}
-            <FilterValue field={field} cond={cond} onChange={(patch) => update(i, patch)} />
-            <s-button variant="tertiary" icon="delete" accessibilityLabel="Remove filter" onClick={() => onChange(filters.filter((_, j) => j !== i))} />
+            <FilterValue
+              field={field}
+              cond={cond}
+              onChange={(patch) => update(i, patch)}
+            />
+            <s-button
+              variant="tertiary"
+              icon="delete"
+              accessibilityLabel="Remove filter"
+              onClick={() => onChange(filters.filter((_, j) => j !== i))}
+            />
           </s-grid>
         );
       })}
       <s-stack direction="inline" gap="base" alignItems="center">
-        <s-button icon="plus" onClick={() => onChange([...filters, newCondition(entity.filters[0])])}>
+        <s-button
+          icon="plus"
+          onClick={() =>
+            onChange([...filters, newCondition(entity.filters[0])])
+          }
+        >
           Add filter
         </s-button>
         {filters.some((f) => f.value) ? (
           <s-text tone="neutral">
-            Shopify search: <code>{compileFilters(filters.filter((f) => f.value && (f.op !== "between" || f.value2)))}</code>
+            Shopify search:{" "}
+            <code>
+              {compileFilters(
+                filters.filter(
+                  (f) => f.value && (f.op !== "between" || f.value2),
+                ),
+              )}
+            </code>
           </s-text>
         ) : null}
       </s-stack>
@@ -212,13 +282,23 @@ function DateRangeFilter({
 }) {
   const dateFields = entity.filters.filter((f) => f.type === "date");
   if (!dateFields.length) return null;
-  const field = value?.field ?? (dateFields.find((f) => f.key === "created_at") ?? dateFields[0]).key;
+  const field =
+    value?.field ??
+    (dateFields.find((f) => f.key === "created_at") ?? dateFields[0]).key;
   return (
-    <s-grid gridTemplateColumns={value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"} gap="base" alignItems="end">
+    <s-grid
+      gridTemplateColumns={
+        value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"
+      }
+      gap="base"
+      alignItems="end"
+    >
       <s-select
         label="Date"
         value={field}
-        onChange={(ev: any) => onChange(value ? { ...value, field: ev.currentTarget.value } : null)}
+        onChange={(ev: any) =>
+          onChange(value ? { ...value, field: ev.currentTarget.value } : null)
+        }
       >
         {dateFields.map((f) => (
           <s-option key={f.key} value={f.key}>
@@ -231,7 +311,9 @@ function DateRangeFilter({
         value={value?.preset ?? ""}
         onChange={(ev: any) => {
           const preset = ev.currentTarget.value as DatePreset | "";
-          onChange(preset ? { field, preset, from: value?.from, to: value?.to } : null);
+          onChange(
+            preset ? { field, preset, from: value?.from, to: value?.to } : null,
+          );
         }}
       >
         <s-option value="">Any time</s-option>
@@ -243,8 +325,20 @@ function DateRangeFilter({
       </s-select>
       {value?.preset === "custom" ? (
         <>
-          <s-date-field label="From" value={value.from ?? ""} onChange={(ev: any) => onChange({ ...value, from: ev.currentTarget.value })} />
-          <s-date-field label="To" value={value.to ?? ""} onChange={(ev: any) => onChange({ ...value, to: ev.currentTarget.value })} />
+          <s-date-field
+            label="From"
+            value={value.from ?? ""}
+            onChange={(ev: any) =>
+              onChange({ ...value, from: ev.currentTarget.value })
+            }
+          />
+          <s-date-field
+            label="To"
+            value={value.to ?? ""}
+            onChange={(ev: any) =>
+              onChange({ ...value, to: ev.currentTarget.value })
+            }
+          />
         </>
       ) : (
         <span />
@@ -274,10 +368,16 @@ const SECTION_NAMES: Record<string, string> = {
 };
 
 /** Splits an entity's columns into named sections by their prefix. */
-function columnSections(entity: EntityInfo): Array<{ name: string; columns: string[] }> {
+function columnSections(
+  entity: EntityInfo,
+): Array<{ name: string; columns: string[] }> {
   const sections: Array<{ name: string; columns: string[] }> = [];
   for (const c of entity.columns) {
-    const m = /^([^:]+):/.exec(c) ?? /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Transaction)\b/.exec(c);
+    const m =
+      /^([^:]+):/.exec(c) ??
+      /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Transaction)\b/.exec(
+        c,
+      );
     const prefix = m ? m[1].replace(/^Option\d$/, "Variant") : "";
     const name = prefix ? (SECTION_NAMES[prefix] ?? prefix) : "Basic columns";
     const found = sections.find((x) => x.name === name);
@@ -285,12 +385,16 @@ function columnSections(entity: EntityInfo): Array<{ name: string; columns: stri
     else sections.push({ name, columns: [c] });
   }
   // Basic columns first.
-  sections.sort((a, b) => Number(b.name === "Basic columns") - Number(a.name === "Basic columns"));
+  sections.sort(
+    (a, b) =>
+      Number(b.name === "Basic columns") - Number(a.name === "Basic columns"),
+  );
   return sections;
 }
 
 /** Data groups that add API work per item and so make exports slower. */
-const isSlowGroup = (key: string) => /metafield|inventory|publication|transaction|item/.test(key);
+const isSlowGroup = (key: string) =>
+  /metafield|inventory|publication|transaction|item/.test(key);
 
 function Section({
   title,
@@ -298,22 +402,28 @@ function Section({
   indeterminate,
   onToggle,
   badge,
+  count,
   children,
-  defaultOpen,
 }: {
   title: string;
   checked: boolean;
   indeterminate?: boolean;
   onToggle: (on: boolean) => void;
   badge?: string;
+  /** Selection summary shown on the right, e.g. "3 of 22 columns". */
+  count?: string;
   children?: React.ReactNode;
-  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(!!defaultOpen);
+  const [open, setOpen] = useState(false);
   return (
-    <s-box background="subdued" borderRadius="base" padding="small base">
+    <s-box padding="small small-200">
       <s-stack direction="block" gap="base">
-        <s-stack direction="inline" gap="small" alignItems="center" justifyContent="space-between">
+        <s-stack
+          direction="inline"
+          gap="base"
+          alignItems="center"
+          justifyContent="space-between"
+        >
           <s-stack direction="inline" gap="small" alignItems="center">
             <s-checkbox
               label={title}
@@ -323,22 +433,38 @@ function Section({
             />
             {badge ? <s-badge>{badge}</s-badge> : null}
           </s-stack>
-          {children ? (
-            <s-button
-              variant="tertiary"
-              icon={open ? "chevron-up" : "chevron-down"}
-              accessibilityLabel={open ? `Collapse ${title}` : `Expand ${title}`}
-              onClick={() => setOpen(!open)}
-            />
-          ) : null}
+          <s-stack direction="inline" gap="small" alignItems="center">
+            {count ? (
+              <s-badge tone={indeterminate ? "warning" : "neutral"}>
+                {count}
+              </s-badge>
+            ) : null}
+            {children ? (
+              <s-button
+                variant="tertiary"
+                icon={open ? "chevron-up" : "chevron-down"}
+                accessibilityLabel={
+                  open ? `Collapse ${title}` : `Expand ${title}`
+                }
+                onClick={() => setOpen(!open)}
+              />
+            ) : null}
+          </s-stack>
         </s-stack>
-        {open && children ? <s-box padding="none none small large-100">{children}</s-box> : null}
+        {open && children ? (
+          <s-box padding="small none base large-200">{children}</s-box>
+        ) : null}
       </s-stack>
     </s-box>
   );
 }
 
-const firstWord = (t: string) => t.toLowerCase().split(/[^a-z]+/).find(Boolean)?.replace(/s$/, "") ?? "";
+const firstWord = (t: string) =>
+  t
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .find(Boolean)
+    ?.replace(/s$/, "") ?? "";
 
 /** Column checklist: master checkbox, then collapsible sections of columns and extra data. */
 function ColumnPicker({
@@ -356,22 +482,30 @@ function ColumnPicker({
   // A data group ("Variants & options") that matches a column section ("Variants")
   // is merged into it: the section's checkbox then also controls fetching that data.
   const sections = useMemo(() => {
-    const secs = columnSections(entity).map((sec) => ({ ...sec, group: undefined as undefined | { key: string; label: string } }));
+    const secs = columnSections(entity).map((sec) => ({
+      ...sec,
+      group: undefined as undefined | { key: string; label: string },
+    }));
     const extra: Array<{ key: string; label: string }> = [];
     for (const g of entity.groups) {
-      const sec = secs.find((x) => !x.group && firstWord(x.name) === firstWord(g.label));
+      const sec = secs.find(
+        (x) => !x.group && firstWord(x.name) === firstWord(g.label),
+      );
       if (sec) sec.group = g;
       else extra.push(g);
     }
     return { secs, extra };
   }, [entity]);
   const optional = entity.columns.filter((c) => !required.has(c));
-  const selected = entity.columns.filter((c) => required.has(c) || columns.includes(c)).length;
+  const selected = entity.columns.filter(
+    (c) => required.has(c) || columns.includes(c),
+  ).length;
   const all = selected === entity.columns.length;
-  const setGroup = (list: string[], key: string, on: boolean) => (on ? [...new Set([...list, key])] : list.filter((x) => x !== key));
+  const setGroup = (list: string[], key: string, on: boolean) =>
+    on ? [...new Set([...list, key])] : list.filter((x) => x !== key);
 
   return (
-    <s-stack direction="block" gap="small">
+    <s-stack direction="block" gap="none">
       <s-box background="subdued" borderRadius="base" padding="small base">
         <s-checkbox
           label={`${selected} of ${entity.columns.length} columns selected`}
@@ -380,63 +514,106 @@ function ColumnPicker({
           onChange={(ev: any) => {
             const on = ev.currentTarget.checked;
             onChange({
-              columns: on ? [...new Set([...columns, ...optional])] : columns.filter((c) => !optional.includes(c)),
+              columns: on
+                ? [...new Set([...columns, ...optional])]
+                : columns.filter((c) => !optional.includes(c)),
               // Selecting everything also turns on the data the columns need.
-              ...(on ? { groups: [...new Set([...groups, ...sections.secs.flatMap((x) => (x.group ? [x.group.key] : []))])] } : {}),
+              ...(on
+                ? {
+                    groups: [
+                      ...new Set([
+                        ...groups,
+                        ...sections.secs.flatMap((x) =>
+                          x.group ? [x.group.key] : [],
+                        ),
+                      ]),
+                    ],
+                  }
+                : {}),
             });
           }}
         />
       </s-box>
-      {sections.secs.map((sec, i) => {
+      {sections.secs.map((sec) => {
         const opt = sec.columns.filter((c) => !required.has(c));
         const groupOn = !sec.group || groups.includes(sec.group.key);
         const on = groupOn ? opt.filter((c) => columns.includes(c)).length : 0;
         const toggleSection = (v: boolean) =>
           onChange({
-            columns: v ? [...new Set([...columns, ...opt])] : columns.filter((c) => !opt.includes(c)),
-            ...(sec.group ? { groups: setGroup(groups, sec.group.key, v) } : {}),
+            columns: v
+              ? [...new Set([...columns, ...opt])]
+              : columns.filter((c) => !opt.includes(c)),
+            ...(sec.group
+              ? { groups: setGroup(groups, sec.group.key, v) }
+              : {}),
           });
         return (
-          <Section
-            key={sec.name}
-            title={sec.name}
-            checked={opt.length > 0 && on === opt.length}
-            indeterminate={on > 0 && on < opt.length}
-            badge={sec.group && isSlowGroup(sec.group.key) ? "Slower" : undefined}
-            onToggle={toggleSection}
-            defaultOpen={i === 0}
-          >
-            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))" gap="small base">
-              {sec.columns.map((c) => (
-                <s-checkbox
-                  key={c}
-                  label={c}
-                  checked={required.has(c) || (groupOn && columns.includes(c))}
-                  disabled={required.has(c)}
-                  onChange={(ev: any) => {
-                    const v = ev.currentTarget.checked;
-                    onChange({
-                      columns: v ? [...new Set([...columns, c])] : columns.filter((x) => x !== c),
-                      // Ticking a column of a switched-off section switches its data on.
-                      ...(v && sec.group && !groupOn ? { groups: setGroup(groups, sec.group.key, true) } : {}),
-                    });
-                  }}
-                />
-              ))}
-            </s-grid>
-          </Section>
+          <Fragment key={sec.name}>
+            <Section
+              title={sec.name}
+              checked={opt.length > 0 && on === opt.length}
+              indeterminate={on > 0 && on < opt.length}
+              badge={
+                sec.group && isSlowGroup(sec.group.key) ? "Slower" : undefined
+              }
+              count={
+                on === 0
+                  ? undefined
+                  : on === opt.length
+                    ? `${sec.columns.length} columns`
+                    : `${on} of ${opt.length} columns`
+              }
+              onToggle={toggleSection}
+            >
+              <s-grid
+                gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))"
+                gap="small base"
+              >
+                {sec.columns.map((c) => (
+                  <s-checkbox
+                    key={c}
+                    label={c}
+                    checked={
+                      required.has(c) || (groupOn && columns.includes(c))
+                    }
+                    disabled={required.has(c)}
+                    onChange={(ev: any) => {
+                      const v = ev.currentTarget.checked;
+                      onChange({
+                        columns: v
+                          ? [...new Set([...columns, c])]
+                          : columns.filter((x) => x !== c),
+                        // Ticking a column of a switched-off section switches its data on.
+                        ...(v && sec.group && !groupOn
+                          ? { groups: setGroup(groups, sec.group.key, true) }
+                          : {}),
+                      });
+                    }}
+                  />
+                ))}
+              </s-grid>
+            </Section>
+            <s-divider />
+          </Fragment>
         );
       })}
       {sections.extra.map((g) => (
-        <Section
-          key={g.key}
-          title={g.label}
-          checked={groups.includes(g.key)}
-          badge={isSlowGroup(g.key) ? "Slower" : undefined}
-          onToggle={(v) => onChange({ groups: setGroup(groups, g.key, v) })}
-        />
+        <Fragment key={g.key}>
+          <Section
+            title={g.label}
+            checked={groups.includes(g.key)}
+            badge={isSlowGroup(g.key) ? "Slower" : undefined}
+            onToggle={(v) => onChange({ groups: setGroup(groups, g.key, v) })}
+          />
+          <s-divider />
+        </Fragment>
       ))}
-      <s-text tone="neutral">Key columns ({[...required].join(", ")}) are always included so the file can be imported back.</s-text>
+      <s-box padding="base none none small-200">
+        <s-text tone="neutral">
+          Key columns ({[...required].join(", ")}) are always included so the
+          file can be imported back.
+        </s-text>
+      </s-box>
     </s-stack>
   );
 }
@@ -444,7 +621,9 @@ function ColumnPicker({
 /** Export options for one entity panel, as sent to the server. */
 function panelOptions(e: EntityInfo, s: EntityState) {
   const allColumns = e.columns.every((c) => s.columns.includes(c));
-  const filters = s.filters.filter((f) => f.value && (f.op !== "between" || f.value2));
+  const filters = s.filters.filter(
+    (f) => f.value && (f.op !== "between" || f.value2),
+  );
   return {
     groups: e.groups.length ? s.groups : undefined,
     columns: allColumns ? undefined : s.columns,
@@ -475,10 +654,15 @@ function useItemCount(e: EntityInfo, s: EntityState): string | null {
           signal: controller.signal,
         });
         const data = res.ok ? await res.json() : null;
-        const r = data?.result as { count: number; precision: string; unfiltered?: boolean } | null | undefined;
+        const r = data?.result as
+          | { count: number; precision: string; unfiltered?: boolean }
+          | null
+          | undefined;
         if (!r) return setLabel(null);
         const n = r.count.toLocaleString();
-        setLabel(`Total: ${r.precision === "AT_LEAST" ? `${n}+` : n}${r.unfiltered ? " (before filters)" : ""}`);
+        setLabel(
+          `Total: ${r.precision === "AT_LEAST" ? `${n}+` : n}${r.unfiltered ? " (before filters)" : ""}`,
+        );
       } catch {
         if (!controller.signal.aborted) setLabel(null);
       }
@@ -506,7 +690,11 @@ function EntityPanel({
   return (
     <s-box padding="large" borderWidth="base" borderRadius="large">
       <s-stack direction="block" gap="large">
-        <s-stack direction="inline" alignItems="center" justifyContent="space-between">
+        <s-stack
+          direction="inline"
+          alignItems="center"
+          justifyContent="space-between"
+        >
           <s-stack direction="inline" gap="small" alignItems="center">
             <s-heading>{e.sheet}</s-heading>
             {total ? <s-badge>{total}</s-badge> : null}
@@ -515,10 +703,17 @@ function EntityPanel({
             <s-button
               variant="tertiary"
               icon={s.open ? "chevron-up" : "chevron-down"}
-              accessibilityLabel={s.open ? `Collapse ${e.sheet}` : `Expand ${e.sheet}`}
+              accessibilityLabel={
+                s.open ? `Collapse ${e.sheet}` : `Expand ${e.sheet}`
+              }
               onClick={() => update({ open: !s.open })}
             />
-            <s-button variant="tertiary" icon="delete" accessibilityLabel={`Remove ${e.sheet}`} onClick={() => update({ enabled: false })} />
+            <s-button
+              variant="tertiary"
+              icon="delete"
+              accessibilityLabel={`Remove ${e.sheet}`}
+              onClick={() => update({ enabled: false })}
+            />
           </s-stack>
         </s-stack>
         {s.open ? (
@@ -529,8 +724,16 @@ function EntityPanel({
                 <s-divider />
                 <s-stack direction="block" gap="base">
                   <s-heading>Filters</s-heading>
-                  <DateRangeFilter entity={e} value={s.dateRange} onChange={(dateRange) => update({ dateRange })} />
-                  <FilterBuilder entity={e} filters={s.filters} onChange={(filters) => update({ filters })} />
+                  <DateRangeFilter
+                    entity={e}
+                    value={s.dateRange}
+                    onChange={(dateRange) => update({ dateRange })}
+                  />
+                  <FilterBuilder
+                    entity={e}
+                    filters={s.filters}
+                    onChange={(filters) => update({ filters })}
+                  />
                 </s-stack>
               </>
             ) : null}
@@ -540,11 +743,16 @@ function EntityPanel({
                   label="Shopify search query"
                   details="Added to the filters above with AND, e.g. tag:sale OR tag:clearance"
                   value={s.query}
-                  onInput={(ev: any) => update({ query: ev.currentTarget.value })}
+                  onInput={(ev: any) =>
+                    update({ query: ev.currentTarget.value })
+                  }
                 />
               ) : (
                 <s-stack direction="inline">
-                  <s-button variant="tertiary" onClick={() => setAdvanced(true)}>
+                  <s-button
+                    variant="tertiary"
+                    onClick={() => setAdvanced(true)}
+                  >
                     Advanced search query
                   </s-button>
                 </s-stack>
@@ -553,7 +761,12 @@ function EntityPanel({
             <s-divider />
             <s-stack direction="block" gap="base">
               <s-heading>Columns</s-heading>
-              <ColumnPicker entity={e} columns={s.columns} groups={s.groups} onChange={(patch) => update(patch)} />
+              <ColumnPicker
+                entity={e}
+                columns={s.columns}
+                groups={s.groups}
+                onChange={(patch) => update(patch)}
+              />
             </s-stack>
           </>
         ) : null}
@@ -590,19 +803,32 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
   const [uploadUrl, setUploadUrl] = useState("");
 
-  const selected = useMemo(() => entities.filter((e) => state[e.key].enabled), [entities, state]);
+  const selected = useMemo(
+    () => entities.filter((e) => state[e.key].enabled),
+    [entities, state],
+  );
   const available = entities.filter((e) => !state[e.key].enabled);
-  const update = (key: string, patch: Partial<EntityState>) => setState((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
+  const update = (key: string, patch: Partial<EntityState>) =>
+    setState((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
   const busy = fetcher.state !== "idle";
 
   const submit = () => {
     const payload: ExportPayload = {
       format,
       name,
-      entities: selected.map((e) => ({ entity: e.key, options: panelOptions(e, state[e.key]) })),
-      ...(scheduled ? { schedule: { intervalMinutes, uploadUrl: uploadUrl || undefined } } : {}),
+      entities: selected.map((e) => ({
+        entity: e.key,
+        options: panelOptions(e, state[e.key]),
+      })),
+      ...(scheduled
+        ? { schedule: { intervalMinutes, uploadUrl: uploadUrl || undefined } }
+        : {}),
     };
-    fetcher.submit(payload as any, { method: "post", encType: "application/json", action: "/app/export" });
+    fetcher.submit(payload as any, {
+      method: "post",
+      encType: "application/json",
+      action: "/app/export",
+    });
   };
 
   return (
@@ -616,12 +842,19 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
       <s-section heading="Data to export">
         <s-stack direction="block" gap="large">
           {selected.map((e) => (
-            <EntityPanel key={e.key} entity={e} state={state[e.key]} update={(patch) => update(e.key, patch)} />
+            <EntityPanel
+              key={e.key}
+              entity={e}
+              state={state[e.key]}
+              update={(patch) => update(e.key, patch)}
+            />
           ))}
           {available.length ? (
             <s-select
               label="Add data type"
-              labelAccessibilityVisibility={selected.length ? "exclusive" : undefined}
+              labelAccessibilityVisibility={
+                selected.length ? "exclusive" : undefined
+              }
               placeholder="+ Add data type…"
               value=""
               onChange={(ev: any) => {
@@ -641,15 +874,38 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
 
       <s-section heading="File">
         <s-stack direction="block" gap="base">
-          <s-select label="Format" value={format} onChange={(ev: any) => setFormat(ev.currentTarget.value)}>
-            <s-option value="xlsx">Excel (.xlsx), one sheet per data type</s-option>
-            <s-option value="csv">CSV (.csv, zipped when several data types)</s-option>
+          <s-select
+            label="Format"
+            value={format}
+            onChange={(ev: any) => setFormat(ev.currentTarget.value)}
+          >
+            <s-option value="xlsx">
+              Excel (.xlsx), one sheet per data type
+            </s-option>
+            <s-option value="csv">
+              CSV (.csv, zipped when several data types)
+            </s-option>
           </s-select>
-          <s-text-field label="File name (optional)" value={name} placeholder="Export_2026-11-10" onInput={(ev: any) => setName(ev.currentTarget.value)} />
-          <s-switch label="Repeat this export on a schedule" checked={scheduled} onChange={(ev: any) => setScheduled(ev.currentTarget.checked)} />
+          <s-text-field
+            label="File name (optional)"
+            value={name}
+            placeholder="Export_2026-11-10"
+            onInput={(ev: any) => setName(ev.currentTarget.value)}
+          />
+          <s-switch
+            label="Repeat this export on a schedule"
+            checked={scheduled}
+            onChange={(ev: any) => setScheduled(ev.currentTarget.checked)}
+          />
           {scheduled ? (
             <>
-              <s-select label="How often" value={String(intervalMinutes)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
+              <s-select
+                label="How often"
+                value={String(intervalMinutes)}
+                onChange={(ev: any) =>
+                  setIntervalMinutes(Number(ev.currentTarget.value))
+                }
+              >
                 {INTERVALS.map((i) => (
                   <s-option key={i.value} value={String(i.value)}>
                     {i.label}
@@ -665,8 +921,15 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
             </>
           ) : null}
           <s-stack direction="inline" justifyContent="end">
-            <s-button variant="primary" onClick={submit} disabled={!selected.length || busy} loading={busy}>
-              {scheduled ? "Save schedule" : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
+            <s-button
+              variant="primary"
+              onClick={submit}
+              disabled={!selected.length || busy}
+              loading={busy}
+            >
+              {scheduled
+                ? "Save schedule"
+                : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
             </s-button>
           </s-stack>
         </s-stack>
