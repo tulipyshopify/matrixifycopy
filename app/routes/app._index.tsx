@@ -49,8 +49,8 @@ export default function Home() {
 
   return (
     <s-page heading="Bulkport" inlineSize="large">
-      <s-section padding="base">
-        <s-stack direction="inline" gap="small" alignItems="center">
+      <s-section>
+        <s-stack direction="inline" gap="base" alignItems="center">
           <s-button variant={tab === "export" ? "primary" : "secondary"} onClick={() => setTab("export")}>
             Export
           </s-button>

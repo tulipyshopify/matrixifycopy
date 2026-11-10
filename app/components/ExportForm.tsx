@@ -145,11 +145,11 @@ function FilterBuilder({
   const byKey = new Map(entity.filters.map((f) => [f.key, f]));
   const update = (i: number, patch: Partial<FilterCondition>) => onChange(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)));
   return (
-    <s-stack direction="block" gap="small">
+    <s-stack direction="block" gap="base">
       {filters.map((cond, i) => {
         const field = byKey.get(cond.field)!;
         return (
-          <s-grid key={i} gridTemplateColumns="minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto" gap="small" alignItems="center">
+          <s-grid key={i} gridTemplateColumns="minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto" gap="base" alignItems="center">
             <s-select
               label="Field"
               labelAccessibilityVisibility="exclusive"
@@ -214,7 +214,7 @@ function DateRangeFilter({
   if (!dateFields.length) return null;
   const field = value?.field ?? (dateFields.find((f) => f.key === "created_at") ?? dateFields[0]).key;
   return (
-    <s-grid gridTemplateColumns={value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"} gap="small" alignItems="end">
+    <s-grid gridTemplateColumns={value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"} gap="base" alignItems="end">
       <s-select
         label="Date"
         value={field}
@@ -311,8 +311,8 @@ function Section({
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
   return (
-    <s-box background="subdued" borderRadius="base" padding="small-100 base">
-      <s-stack direction="block" gap="small">
+    <s-box background="subdued" borderRadius="base" padding="small base">
+      <s-stack direction="block" gap="base">
         <s-stack direction="inline" gap="small" alignItems="center" justifyContent="space-between">
           <s-stack direction="inline" gap="small" alignItems="center">
             <s-checkbox
@@ -332,7 +332,7 @@ function Section({
             />
           ) : null}
         </s-stack>
-        {open && children ? <s-box padding="none none small large">{children}</s-box> : null}
+        {open && children ? <s-box padding="none none small large-100">{children}</s-box> : null}
       </s-stack>
     </s-box>
   );
@@ -372,7 +372,7 @@ function ColumnPicker({
 
   return (
     <s-stack direction="block" gap="small">
-      <s-box background="subdued" borderRadius="base" padding="small-100 base">
+      <s-box background="subdued" borderRadius="base" padding="small base">
         <s-checkbox
           label={`${selected} of ${entity.columns.length} columns selected`}
           checked={all}
@@ -406,7 +406,7 @@ function ColumnPicker({
             onToggle={toggleSection}
             defaultOpen={i === 0}
           >
-            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(200px, 1fr))" gap="small-200">
+            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))" gap="small base">
               {sec.columns.map((c) => (
                 <s-checkbox
                   key={c}
@@ -504,8 +504,8 @@ function EntityPanel({
   const total = useItemCount(e, s);
   const [advanced, setAdvanced] = useState(!!s.query);
   return (
-    <s-box padding="base" borderWidth="base" borderRadius="base">
-      <s-stack direction="block" gap="base">
+    <s-box padding="large" borderWidth="base" borderRadius="large">
+      <s-stack direction="block" gap="large">
         <s-stack direction="inline" alignItems="center" justifyContent="space-between">
           <s-stack direction="inline" gap="small" alignItems="center">
             <s-heading>{e.sheet}</s-heading>
@@ -525,11 +525,14 @@ function EntityPanel({
           <>
             <s-text tone="neutral">{e.description}</s-text>
             {e.filters.length ? (
-              <s-stack direction="block" gap="small">
-                <s-heading>Filters</s-heading>
-                <DateRangeFilter entity={e} value={s.dateRange} onChange={(dateRange) => update({ dateRange })} />
-                <FilterBuilder entity={e} filters={s.filters} onChange={(filters) => update({ filters })} />
-              </s-stack>
+              <>
+                <s-divider />
+                <s-stack direction="block" gap="base">
+                  <s-heading>Filters</s-heading>
+                  <DateRangeFilter entity={e} value={s.dateRange} onChange={(dateRange) => update({ dateRange })} />
+                  <FilterBuilder entity={e} filters={s.filters} onChange={(filters) => update({ filters })} />
+                </s-stack>
+              </>
             ) : null}
             {e.supportsQuery ? (
               advanced ? (
@@ -547,7 +550,8 @@ function EntityPanel({
                 </s-stack>
               )
             ) : null}
-            <s-stack direction="block" gap="small">
+            <s-divider />
+            <s-stack direction="block" gap="base">
               <s-heading>Columns</s-heading>
               <ColumnPicker entity={e} columns={s.columns} groups={s.groups} onChange={(patch) => update(patch)} />
             </s-stack>
@@ -610,7 +614,7 @@ export function ExportForm({ entities }: { entities: EntityInfo[] }) {
       ) : null}
 
       <s-section heading="Data to export">
-        <s-stack direction="block" gap="base">
+        <s-stack direction="block" gap="large">
           {selected.map((e) => (
             <EntityPanel key={e.key} entity={e} state={state[e.key]} update={(patch) => update(e.key, patch)} />
           ))}
