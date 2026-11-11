@@ -151,6 +151,35 @@ function titleCase(s: string | null | undefined) {
 
 // --- Export -------------------------------------------------------------------------
 
+/**
+ * Shopify allows at most 5 connections per bulk query. Products, product
+ * metafields, media, variants and inventory levels already use 5, so with all
+ * of those on, variant metafields are fetched by a separate query first.
+ */
+export function splitVariantMetafields(groups: Set<string>): boolean {
+  return (
+    groups.has("variant_metafields") &&
+    groups.has("variants") &&
+    groups.has("metafields") &&
+    groups.has("images") &&
+    groups.has("inventory")
+  );
+}
+
+/** Variant metafields only, for the same products as the main query. */
+export function variantMetafieldsBulkQuery(search: string): string {
+  const args = search ? `(query: ${gqlString(search)})` : "";
+  return `{
+    products${args} { edges { node {
+      id
+      variants { edges { node {
+        id
+        metafields { edges { node { id namespace key type value } } }
+      } } }
+    } } }
+  }`;
+}
+
 export function productsBulkQuery(search: string, groups: Set<string>): string {
   const args = search ? `(query: ${gqlString(search)})` : "";
   const metafields = `metafields { edges { node { id namespace key type value } } }`;
@@ -166,7 +195,7 @@ export function productsBulkQuery(search: string, groups: Set<string>): string {
         measurement { weight { value unit } }
         ${groups.has("inventory") ? inventoryLevels : ""}
       }
-      ${groups.has("variant_metafields") ? metafields : ""}
+      ${groups.has("variant_metafields") && !splitVariantMetafields(groups) ? metafields : ""}
   } } }`;
   return `{
     products${args} { edges { node {
@@ -291,8 +320,19 @@ async function exportProducts(
       productsEntity.groups!.filter((g) => g.default).map((g) => g.key),
   );
   const search = buildSearchQuery(ctx.options);
+  // Pre-pass: variant ID -> metafields (only variants that have any are kept).
+  const variantMetafields = new Map<string, any[]>();
+  if (splitVariantMetafields(groups)) {
+    ctx.log("Fetching variant metafields");
+    for await (const p of ctx.bulk(variantMetafieldsBulkQuery(search))) {
+      for (const v of p.variants ?? []) if (v.metafields?.length) variantMetafields.set(v.id, v.metafields);
+    }
+  }
   let n = 0;
   for await (const p of ctx.bulk(productsBulkQuery(search, groups))) {
+    if (variantMetafields.size) {
+      for (const v of p.variants ?? []) v.metafields ??= variantMetafields.get(v.id);
+    }
     await emit(productToRows(p, groups));
     ctx.progress(++n);
     if (ctx.options.limit && n >= ctx.options.limit) break;

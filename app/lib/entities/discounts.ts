@@ -136,10 +136,25 @@ const COMMON = `title status startsAt endsAt createdAt updatedAt asyncUsageCount
  * to `codes` (one per code discount type) and one to metafields, so product/
  * collection lists of "Applies To" are fetched per discount afterwards.
  */
+/** Discount metafields only, for the same discounts as the main query. */
+export function discountMetafieldsBulkQuery(search: string): string {
+  const args = search ? `(query: ${gqlString(search)})` : "";
+  return `{
+    discountNodes${args} { edges { node {
+      id
+      metafields { edges { node { id namespace key type value } } }
+    } } }
+  }`;
+}
+
 export function discountsBulkQuery(search: string, groups: Set<string>): string {
   const args = search ? `(query: ${gqlString(search)})` : "";
   const codes = groups.has("codes") ? `codes { edges { node { id code asyncUsageCount } } }` : "";
-  const metafields = groups.has("metafields") ? `metafields { edges { node { id namespace key type value } } }` : "";
+  // The four code-discount types each need a `codes` connection, which with the
+  // top-level one reaches Shopify's limit of 5 connections per bulk query, so
+  // metafields are then fetched by discountMetafieldsBulkQuery instead.
+  const metafields =
+    groups.has("metafields") && !groups.has("codes") ? `metafields { edges { node { id namespace key type value } } }` : "";
   return `{
     discountNodes${args} { edges { node {
       id
@@ -400,7 +415,14 @@ async function exportDiscounts(ctx: ExportContext, emit: (rows: Row[]) => Promis
   const groups = new Set(ctx.options.groups ?? discountsEntity.groups!.filter((g) => g.default).map((g) => g.key));
   const search = buildSearchQuery(ctx.options);
   let n = 0;
+  const nodeMetafields = new Map<string, any[]>();
+  if (groups.has("metafields") && groups.has("codes")) {
+    for await (const node of ctx.bulk(discountMetafieldsBulkQuery(search))) {
+      if (node.metafields?.length) nodeMetafields.set(node.id, node.metafields);
+    }
+  }
   for await (const node of ctx.bulk(discountsBulkQuery(search, groups))) {
+    node.metafields ??= nodeMetafields.get(node.id);
     let items: any;
     const t = node.discount?.customerGets?.items?.__typename;
     if (t === "DiscountProducts" || t === "DiscountCollections") {

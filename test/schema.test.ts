@@ -38,6 +38,24 @@ function staticOperations(file: string): Array<{ name: string; source: string }>
     .filter((b) => /^\s*(query|mutation)\b/m.test(b.source));
 }
 
+/** Counts connection fields (those selecting `edges`) and their deepest nesting. */
+function connectionStats(query: string): { total: number; depth: number } {
+  let total = 0;
+  let depth = 0;
+  const walk = (node: any, level: number) => {
+    for (const sel of node.selectionSet?.selections ?? []) {
+      const isConnection = sel.selectionSet?.selections?.some((x: any) => x.name?.value === "edges");
+      if (isConnection) {
+        total++;
+        depth = Math.max(depth, level + 1);
+      }
+      walk(sel, level + (isConnection ? 1 : 0));
+    }
+  };
+  for (const def of parse(query).definitions) walk(def, 0);
+  return { total, depth };
+}
+
 describe.skipIf(!hasSchema)("GraphQL operations match the Admin API schema", () => {
   const schema = hasSchema ? loadSchema() : (null as any);
 
@@ -73,6 +91,13 @@ describe.skipIf(!hasSchema)("GraphQL operations match the Admin API schema", () 
       for (const q of queries) {
         const errors = validate(schema, parse(q));
         expect(errors.map((e) => e.message), q).toEqual([]);
+      }
+      // Shopify bulk operation limits: at most 5 connections in a query and
+      // nested connections at most 2 levels below the top-level one.
+      for (const q of queries) {
+        const { total, depth } = connectionStats(q);
+        expect(total, `connections in ${entity.key} bulk query`).toBeLessThanOrEqual(5);
+        expect(depth, `nested connection depth in ${entity.key} bulk query`).toBeLessThanOrEqual(3);
       }
     });
   }
