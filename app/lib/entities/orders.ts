@@ -89,6 +89,75 @@ const ORDER_COLUMNS = [
   "Top Row",
 ];
 
+/**
+ * Order totals in the customer's currency ("Price: X", see "Customer Currency") and the shop's currency
+ * ("Price: X (Shop Currency)"). Export only. [label, MoneyBag field on Order]
+ */
+const PRICE_FIELDS: Array<[string, string]> = [
+  ["Total Line Items", ""], // computed from line items
+  ["Current Subtotal", "currentSubtotalPriceSet"],
+  ["Subtotal", "subtotalPriceSet"],
+  ["Current Total Duties", "currentTotalDutiesSet"],
+  ["Total Duties", "originalTotalDutiesSet"],
+  ["Current Total Fees", "currentTotalAdditionalFeesSet"],
+  ["Total Fees", "originalTotalAdditionalFeesSet"],
+  ["Total Refund", "totalRefundedSet"],
+  ["Total Outstanding", "totalOutstandingSet"],
+  ["Current Total", "currentTotalPriceSet"],
+  ["Total", "totalPriceSet"],
+];
+const PRICE_COLUMNS = PRICE_FIELDS.flatMap(([label]) => [`Price: ${label}`, `Price: ${label} (Shop Currency)`]);
+
+/** Tax lines exported as numbered column triplets. */
+const MAX_TAX_LINES = 5;
+const TAX_COLUMNS = Array.from({ length: MAX_TAX_LINES }, (_, i) => [`Tax ${i + 1}: Title`, `Tax ${i + 1}: Rate`, `Tax ${i + 1}: Price`]).flat();
+
+/** Extra order details. Export only. */
+const DETAIL_COLUMNS = [
+  "Customer Currency",
+  "Source Identifier",
+  "Source URL",
+  "Physical Location",
+  "Cart Token",
+  "Token",
+  "Order Status URL",
+  "Weight Total",
+  "Additional Details",
+  "Purchase Order Number",
+];
+
+/** Current product/variant data of each line item (group line_product_data). Export only. */
+const LINE_PRODUCT_COLUMNS = [
+  "Line: Product Type",
+  "Line: Product Tags",
+  "Line: Variant SKU",
+  "Line: Variant Barcode",
+  "Line: Variant Weight",
+  "Line: Variant Weight Unit",
+  "Line: Variant Inventory Qty",
+  "Line: Variant Cost",
+  "Line: Variant Price",
+  "Line: Variant Compare At Price",
+  "Line: Variant Country of Origin",
+  "Line: Variant Province of Origin",
+  "Line: Variant HS Code",
+];
+
+const FULFILLMENT_COLUMNS = [
+  "Fulfillment: ID",
+  "Fulfillment: Status",
+  "Fulfillment: Created At",
+  "Fulfillment: Updated At",
+  "Fulfillment: Tracking Company",
+  "Fulfillment: Location",
+  "Fulfillment: Shipment Status",
+  "Fulfillment: Tracking Number",
+  "Fulfillment: Tracking URL",
+];
+
+const WEIGHT_UNIT_CELL: Record<string, string> = { GRAMS: "g", KILOGRAMS: "kg", OUNCES: "oz", POUNDS: "lb" };
+const BOTH = "{ shopMoney { amount } presentmentMoney { amount } }";
+
 const ORDER_LINE_COLUMNS = [...LINE_COLUMNS, "Line: Fulfillable Quantity"];
 
 const TRANSACTION_COLUMNS = [
@@ -145,9 +214,17 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       id title variantTitle sku quantity unfulfilledQuantity vendor requiresShipping taxable
       originalUnitPriceSet ${MONEY}
       totalDiscountSet ${MONEY}
-      variant { id }
-      product { id }
+      variant { id ${
+        groups.has("line_product_data")
+          ? `sku barcode price compareAtPrice inventoryQuantity inventoryItem {
+              unitCost { amount } countryCodeOfOrigin provinceCodeOfOrigin harmonizedSystemCode
+              measurement { weight { value unit } } }`
+          : ""
+      } }
+      product { id ${groups.has("line_product_data") ? "productType tags" : ""} }
   } } }`;
+  // fulfillments is a plain list (not a connection), so it comes inline.
+  const fulfillments = `fulfillments { id status displayStatus createdAt updatedAt location { name } trackingInfo { company number url } }`;
   return `{
     orders${args} { edges { node {
       id name email phone createdAt updatedAt processedAt cancelledAt cancelReason closedAt currencyCode
@@ -162,6 +239,11 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       billingAddress { ${ADDRESS_SELECTION} }
       shippingAddress { ${ADDRESS_SELECTION} }
       shippingLine { title code originalPriceSet ${MONEY} }
+      presentmentCurrencyCode sourceIdentifier registeredSourceUrl cartToken checkoutToken statusPageUrl
+      totalWeight poNumber retailLocation { name } customAttributes { key value }
+      ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
+      taxLines { title rate priceSet ${BOTH} }
+      ${groups.has("fulfillments") ? fulfillments : ""}
       ${groups.has("transactions") ? transactions : ""}
       ${groups.has("metafields") ? metafields : ""}
       ${groups.has("line_items") ? lineItems : ""}
@@ -172,7 +254,8 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
 export function orderToRows(o: any, groups: Set<string>): Row[] {
   const lines: any[] = o.lineItems ?? [];
   const transactions: any[] = o.transactions ?? [];
-  const count = Math.max(1, lines.length, transactions.length);
+  const fulfillments: any[] = groups.has("fulfillments") ? (o.fulfillments ?? []) : [];
+  const count = Math.max(1, lines.length, transactions.length, fulfillments.length);
   const rows: Row[] = [];
   for (let i = 0; i < count; i++) {
     const row: Row = { ID: gidToId(o.id), Name: o.name ?? "", "Row #": String(i + 1), "Top Row": boolCell(i === 0) };
@@ -209,6 +292,36 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         "Shipping Line: Code": o.shippingLine?.code ?? "",
         "Shipping Line: Price": bagAmount(o.shippingLine?.originalPriceSet),
       });
+      Object.assign(row, {
+        "Customer Currency": o.presentmentCurrencyCode ?? "",
+        "Source Identifier": o.sourceIdentifier ?? "",
+        "Source URL": o.registeredSourceUrl ?? "",
+        "Physical Location": o.retailLocation?.name ?? "",
+        "Cart Token": o.cartToken ?? "",
+        Token: o.checkoutToken ?? "",
+        "Order Status URL": o.statusPageUrl ?? "",
+        "Weight Total": str(o.totalWeight),
+        "Additional Details": (o.customAttributes ?? []).map((a: any) => `${a.key}: ${a.value ?? ""}`).join("\n"),
+        "Purchase Order Number": o.poNumber ?? "",
+      });
+      for (const [label, field] of PRICE_FIELDS) {
+        // "Total Line Items" has no API field: price x quantity over the lines.
+        const bag = field
+          ? o[field]
+          : lines.length
+            ? {
+                shopMoney: { amount: sumLines(lines, "shopMoney") },
+                presentmentMoney: { amount: sumLines(lines, "presentmentMoney") },
+              }
+            : null;
+        row[`Price: ${label}`] = bag?.presentmentMoney?.amount ?? "";
+        row[`Price: ${label} (Shop Currency)`] = bag?.shopMoney?.amount ?? "";
+      }
+      (o.taxLines ?? []).slice(0, MAX_TAX_LINES).forEach((t: any, n: number) => {
+        row[`Tax ${n + 1}: Title`] = t.title ?? "";
+        row[`Tax ${n + 1}: Rate`] = str(t.rate);
+        row[`Tax ${n + 1}: Price`] = t.priceSet?.presentmentMoney?.amount ?? "";
+      });
       addressToRow(row, "Billing", o.billingAddress);
       addressToRow(row, "Shipping", o.shippingAddress);
       if (groups.has("metafields")) metafieldsToRow(row, o.metafields);
@@ -217,6 +330,40 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
     if (li) {
       lineToRow(row, li);
       row["Line: Fulfillable Quantity"] = str(li.unfulfilledQuantity);
+      if (groups.has("line_product_data")) {
+        const v = li.variant ?? {};
+        const inv = v.inventoryItem ?? {};
+        Object.assign(row, {
+          "Line: Product Type": li.product?.productType ?? "",
+          "Line: Product Tags": joinTags(li.product?.tags),
+          "Line: Variant SKU": v.sku ?? "",
+          "Line: Variant Barcode": v.barcode ?? "",
+          "Line: Variant Weight": str(inv.measurement?.weight?.value),
+          "Line: Variant Weight Unit": WEIGHT_UNIT_CELL[inv.measurement?.weight?.unit] ?? "",
+          "Line: Variant Inventory Qty": str(v.inventoryQuantity),
+          "Line: Variant Cost": inv.unitCost?.amount ?? "",
+          "Line: Variant Price": v.price ?? "",
+          "Line: Variant Compare At Price": v.compareAtPrice ?? "",
+          "Line: Variant Country of Origin": inv.countryCodeOfOrigin ?? "",
+          "Line: Variant Province of Origin": inv.provinceCodeOfOrigin ?? "",
+          "Line: Variant HS Code": inv.harmonizedSystemCode ?? "",
+        });
+      }
+    }
+    const f = fulfillments[i];
+    if (f) {
+      const tracking: any[] = f.trackingInfo ?? [];
+      Object.assign(row, {
+        "Fulfillment: ID": gidToId(f.id),
+        "Fulfillment: Status": enumToCell(f.status),
+        "Fulfillment: Created At": f.createdAt ?? "",
+        "Fulfillment: Updated At": f.updatedAt ?? "",
+        "Fulfillment: Tracking Company": tracking.map((t) => t.company).filter(Boolean).join(", "),
+        "Fulfillment: Location": f.location?.name ?? "",
+        "Fulfillment: Shipment Status": enumToCell(f.displayStatus),
+        "Fulfillment: Tracking Number": tracking.map((t) => t.number).filter(Boolean).join(", "),
+        "Fulfillment: Tracking URL": tracking.map((t) => t.url).filter(Boolean).join(", "),
+      });
     }
     const t = transactions[i];
     if (t) {
@@ -232,6 +379,12 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
     rows.push(row);
   }
   return rows;
+}
+
+/** Sum of unit price x quantity over line items, to 2 decimals. */
+function sumLines(lines: any[], money: "shopMoney" | "presentmentMoney"): string {
+  const total = lines.reduce((n, li) => n + Number(li.originalUnitPriceSet?.[money]?.amount ?? 0) * Number(li.quantity ?? 0), 0);
+  return total.toFixed(2);
 }
 
 async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
@@ -561,10 +714,23 @@ export const ordersEntity: Entity = {
   sheet: "Orders",
   aliases: ["order"],
   description: "Orders with line items, addresses, transactions and metafields. Import creates orders (migrations) and updates editable fields.",
-  columns: [...ORDER_COLUMNS, ...addressColumns("Billing"), ...addressColumns("Shipping"), ...ORDER_LINE_COLUMNS, ...TRANSACTION_COLUMNS],
+  columns: [
+    ...ORDER_COLUMNS,
+    ...DETAIL_COLUMNS,
+    ...PRICE_COLUMNS,
+    ...TAX_COLUMNS,
+    ...addressColumns("Billing"),
+    ...addressColumns("Shipping"),
+    ...ORDER_LINE_COLUMNS,
+    ...LINE_PRODUCT_COLUMNS,
+    ...FULFILLMENT_COLUMNS,
+    ...TRANSACTION_COLUMNS,
+  ],
   supportsQuery: true,
   groups: [
     { key: "line_items", label: "Line items", default: true },
+    { key: "line_product_data", label: "Line items product data", default: false },
+    { key: "fulfillments", label: "Fulfillments", default: true },
     { key: "transactions", label: "Transactions", default: true },
     { key: "metafields", label: "Order metafields", default: true },
   ],

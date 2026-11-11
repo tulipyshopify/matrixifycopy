@@ -402,6 +402,9 @@ function DateRangeFilter({
 }
 
 const SECTION_NAMES: Record<string, string> = {
+  Fulfillment: "Fulfillments",
+  Price: "Prices",
+  Tax: "Taxes",
   Variant: "Variants",
   Image: "Images",
   Category: "Category",
@@ -432,8 +435,13 @@ function columnSections(
       /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Transaction)\b/.exec(
         c,
       );
-    const prefix = m ? m[1].replace(/^Option\d$/, "Variant") : "";
-    const name = prefix ? (SECTION_NAMES[prefix] ?? prefix) : "Basic columns";
+    const prefix = m ? m[1].replace(/^Option\d$/, "Variant").replace(/^Tax \d+$/, "Tax") : "";
+    // Current product/variant data of order lines is its own (slower) section.
+    const name = /^Line: (Product (Type|Tags)|Variant (?!ID$|Title$))/.test(c)
+      ? "Line items product data"
+      : prefix
+        ? (SECTION_NAMES[prefix] ?? prefix)
+        : "Basic columns";
     const found = sections.find((x) => x.name === name);
     if (found) found.columns.push(c);
     else sections.push({ name, columns: [c] });
@@ -545,9 +553,9 @@ function ColumnPicker({
     }));
     const extra: Array<{ key: string; label: string }> = [];
     for (const g of entity.groups) {
-      const sec = secs.find(
-        (x) => !x.group && firstWord(x.name) === firstWord(g.label),
-      );
+      const sec =
+        secs.find((x) => !x.group && x.name.toLowerCase() === g.label.toLowerCase()) ??
+        secs.find((x) => !x.group && firstWord(x.name) === firstWord(g.label));
       if (sec) sec.group = g;
       else extra.push(g);
     }
