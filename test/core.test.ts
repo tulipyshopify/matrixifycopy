@@ -10,6 +10,7 @@ import { runExport } from "../app/lib/core/exporter";
 import { detectEntity } from "../app/lib/core/registry";
 import { createCsvOut, createXlsxOut, parseCsv, readWorkbook } from "../app/lib/core/sheets";
 import type { Entity, Row } from "../app/lib/core/types";
+import { ImportError } from "../app/lib/core/types";
 import {
   buildSearchQuery,
   cellToMetafieldValue,
@@ -236,23 +237,59 @@ describe("importer", () => {
     expect(result.rows[4]["Import Comment"]).toMatch(/Unknown command/);
   });
 
-  it("dry run calls nothing", async () => {
-    let called = false;
+  it("dry run matches and validates every item but never writes", async () => {
+    const mutations: string[] = [];
+    const gql = (async (q: string) => {
+      if (/mutation/.test(q)) mutations.push(q);
+      return { found: true };
+    }) as any;
     const entity = fakeEntity("products", "Products", {
       keyColumns: ["Handle"],
-      async apply(_c, _r, command) {
-        called = true;
-        return { status: "OK", command };
+      async apply(c, rows, command) {
+        const handle = rows[0].Handle;
+        await c.gql("#graphql\n  query Lookup { x }"); // lookups still run
+        if (handle === "bad") throw new ImportError("Title is required");
+        if (handle === "same") return { status: "OK", command, message: "No changes" };
+        await c.gql(handle === "new" ? "#graphql\n  mutation ImportProductSet { x }" : "mutation ImportProductUpdate { x }");
+        return { status: "OK", command, id: "gid://shopify/Product/1" };
       },
     });
+    const logs: string[] = [];
+    const dir = tmp();
+    const out = createXlsxOut(path.join(dir, "dry.xlsx"));
     const [s] = await runImport({
-      ctx: { gql: (async () => ({})) as any, options: { dryRun: true }, log: () => {}, cache: new Map() },
-      sheets: [{ name: "Products", headers: ["Handle"], rows: [{ Handle: "a" }] }],
+      ctx: { gql, options: { dryRun: true }, log: () => {}, cache: new Map() },
+      sheets: [
+        {
+          name: "Products",
+          headers: ["Handle", "Command"],
+          rows: [
+            { Handle: "new", Command: "" },
+            { Handle: "old", Command: "" },
+            { Handle: "gone", Command: "DELETE" },
+            { Handle: "same", Command: "" },
+            { Handle: "bad", Command: "" },
+          ],
+        },
+      ],
       entities: [entity],
-      log: () => {},
+      out,
+      log: (m) => logs.push(m),
     });
-    expect(called).toBe(false);
-    expect(s.skipped).toBe(1);
+    expect(mutations).toEqual([]);
+    expect(s).toMatchObject({ ok: 4, failed: 1, skipped: 0 });
+    const rows = (await readWorkbook(await out.close()))[0].rows;
+    expect(rows.map((r) => r["Import Comment"])).toEqual([
+      "Dry run: would create",
+      "Dry run: would update",
+      "Dry run: would delete",
+      "Dry run: No changes",
+      "Title is required",
+    ]);
+    expect(rows[0].ID).toBe(""); // no IDs invented in a dry run
+    // The log says what failed and why, with the spreadsheet row number.
+    expect(logs.join("\n")).toMatch(/Dry run: the file is checked/);
+    expect(logs).toContain("  Row 6 (Handle: bad): Title is required");
   });
 });
 

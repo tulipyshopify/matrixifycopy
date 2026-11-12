@@ -7,6 +7,34 @@ import { detectEntity } from "./registry";
 export const RESULT_COLUMN = "Import Result";
 export const COMMENT_COLUMN = "Import Comment";
 
+/** Thrown by the dry-run API wrapper when an item reaches its first write. */
+class DryRunStop extends Error {
+  constructor(public operation: string) {
+    super(`Dry run stopped at ${operation}`);
+  }
+}
+
+/**
+ * API wrapper for dry runs: lookups run for real, so an item is matched and
+ * validated exactly as in a real import, but the first mutation stops it.
+ */
+function dryRunGql(gql: ImportContext["gql"]): ImportContext["gql"] {
+  return (async (query: string, variables?: Record<string, unknown>) => {
+    const m = /^\s*(?:#graphql\s*)?(query|mutation)\s+(\w+)/.exec(query);
+    if (m?.[1] === "mutation") throw new DryRunStop(m[2]);
+    return gql(query, variables);
+  }) as ImportContext["gql"];
+}
+
+function dryRunVerb(command: Command, operation: string): string {
+  if (command === "DELETE" || command === "REPLACE") return command.toLowerCase();
+  if (/Delete/.test(operation)) return "delete";
+  return /Create|Set$|Upsert/.test(operation) ? "create" : "update";
+}
+
+/** How many failed rows are written to the job log per sheet. */
+const MAX_LOGGED_FAILURES = 20;
+
 export interface ImportItem {
   key: string;
   rows: Row[];
@@ -85,6 +113,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [],
   }));
   const total = grouped.reduce((n, g) => n + g.items.length, 0);
+  if (ctx.options.dryRun) log("Dry run: the file is checked against the store, but nothing is changed.");
   let done = 0;
   const summaries: ImportSummary[] = [];
 
@@ -123,7 +152,14 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
           if (command === "IGNORE") {
             result = { status: "Skipped", command, message: "Command IGNORE" };
           } else if (ctx.options.dryRun) {
-            result = { status: "Skipped", command, message: `Dry run: would ${command}` };
+            try {
+              const r = await entity.import!.apply({ ...ctx, gql: dryRunGql(ctx.gql) }, item.rows, command);
+              // Finished without writing anything: nothing to change (or a problem it reported).
+              result = { ...r, id: undefined, rowPatches: undefined, message: `Dry run: ${r.message ?? "no changes needed"}` };
+            } catch (e) {
+              if (!(e instanceof DryRunStop)) throw e;
+              result = { status: "OK", command, message: `Dry run: would ${dryRunVerb(command, e.operation)}` };
+            }
           } else {
             result = await entity.import!.apply(ctx, item.rows, command);
           }
@@ -145,6 +181,15 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    // Say why rows failed right in the log (the results file has every row).
+    const failures = results.filter((r) => r.result.status === "Failed").sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0]);
+    for (const { item, result } of failures.slice(0, MAX_LOGGED_FAILURES)) {
+      // +2: spreadsheet rows start at 1 and the header is row 1.
+      log(`  Row ${item.rowIndexes[0] + 2} (${item.key.replace(/^#row\d+$/, "no key").replace("=", ": ")}): ${result.message ?? "Failed"}`);
+    }
+    if (failures.length > MAX_LOGGED_FAILURES) {
+      log(`  …and ${failures.length - MAX_LOGGED_FAILURES} more failed rows. The results file lists every one.`);
+    }
 
     if (out) {
       // Write the original rows back with result columns.

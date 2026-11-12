@@ -239,6 +239,7 @@ describe("discounts import", () => {
       startsAt: "2026-11-01",
       destination: { countries: { add: ["US", "CA"] } },
       maximumShippingPrice: "15",
+      context: { all: "ALL" }, // new discounts apply to all buyers by default
     });
   });
 

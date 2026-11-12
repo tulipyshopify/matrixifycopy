@@ -631,7 +631,8 @@ function combinesWith(v: string): Record<string, boolean> {
 
 function contextInput(top: Row, existing: ExistingDiscount | null): Record<string, any> | undefined {
   const sel = cell(top, "Customer Selection");
-  if (!sel) return undefined;
+  // New discounts apply to all buyers unless the sheet says otherwise.
+  if (!sel) return existing ? undefined : { all: "ALL" };
   const ctx = existing?.discount?.context;
   switch (sel.toLowerCase()) {
     case "all":
