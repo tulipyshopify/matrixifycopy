@@ -4,7 +4,7 @@ import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { cancelJob, downloadLinks, getJob, rerunJob } from "../lib/jobs/jobs.server";
-import { StatusBadge, formatDate, isActive, jobSummary, progressText } from "../components/jobs";
+import { StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -23,6 +23,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       stats: JSON.parse(job.stats) as any[],
       log: job.log,
       error: job.error,
+      cancelRequested: job.cancelRequested,
       createdAt: job.createdAt,
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
@@ -56,6 +57,7 @@ export default function JobDetail() {
     return () => clearInterval(t);
   }, [active, revalidator]);
 
+  const timing = jobTiming(job);
   const pct = job.total ? Math.min(100, Math.floor((job.progress / job.total) * 100)) : null;
   const heading = `${job.type === "export" ? "Export" : "Import"}: ${jobSummary(job)}`;
 
@@ -91,9 +93,21 @@ export default function JobDetail() {
 
       <s-section heading="Status">
         <s-stack direction="block" gap="base">
-          <s-stack direction="inline" gap="base" alignItems="center">
-            <StatusBadge status={job.status} />
-            <s-text>{progressText(job)}</s-text>
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+            <s-stack direction="inline" gap="base" alignItems="center">
+              <StatusBadge status={job.cancelRequested && active ? "stopping" : job.status} />
+              <s-text>{progressText(job)}</s-text>
+              {timing ? <s-text tone="neutral">{timing}</s-text> : null}
+            </s-stack>
+            {active ? (
+              <s-button
+                tone="critical"
+                disabled={job.cancelRequested}
+                onClick={() => fetcher.submit({ intent: "cancel" }, { method: "post" })}
+              >
+                {job.cancelRequested ? "Stopping…" : job.type === "export" ? "Stop export" : "Stop import"}
+              </s-button>
+            ) : null}
           </s-stack>
           {pct !== null && active ? (
             <s-box background="subdued" borderRadius="base" blockSize="8px">

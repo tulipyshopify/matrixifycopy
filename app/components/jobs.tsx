@@ -5,6 +5,7 @@ const TONES: Record<string, "info" | "success" | "critical" | "warning" | "neutr
   finished: "success",
   failed: "critical",
   cancelled: "warning",
+  stopping: "warning",
 };
 
 export function StatusBadge({ status }: { status: string }) {
@@ -35,3 +36,33 @@ export function jobSummary(job: { type: string; config: string; inputName: strin
 }
 
 export const isActive = (status: string) => status === "queued" || status === "running" || status === "uploading";
+
+function duration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} sec`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${s % 60} sec`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/**
+ * "Running for 2 min 10 sec · about 6 min left" for active jobs, "Took 8 min"
+ * for finished ones. The estimate assumes the rest goes at the pace so far.
+ */
+export function jobTiming(job: {
+  status: string;
+  progress: number;
+  total: number;
+  startedAt: string | Date | null;
+  finishedAt: string | Date | null;
+}): string {
+  if (!job.startedAt) return "";
+  const start = new Date(job.startedAt).getTime();
+  if (job.finishedAt) return `Took ${duration(new Date(job.finishedAt).getTime() - start)}`;
+  if (job.status !== "running") return "";
+  const elapsed = Date.now() - start;
+  const fraction = job.total ? job.progress / job.total : 0;
+  const left =
+    fraction >= 0.03 && fraction < 1 && elapsed > 15_000 ? ` · about ${duration((elapsed * (1 - fraction)) / fraction)} left` : "";
+  return `Running for ${duration(elapsed)}${left}`;
+}

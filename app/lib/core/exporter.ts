@@ -21,11 +21,14 @@ export interface RunExportArgs {
   tmpDir: string;
   log: Logger;
   progress?: (entity: string, items: number) => void;
+  /** Called before each entity's export starts. */
+  onStart?: (entity: string) => void;
+  isCancelled?: () => boolean | Promise<boolean>;
 }
 
 /**
- * Applies the column choice. Key columns (ID, Handle…) are always kept so the
- * file can be imported back; dynamic columns (metafields, inventory per
+ * Applies the column choice (key columns such as ID are optional too, though a
+ * file without them can't be imported back); dynamic columns (metafields, inventory per
  * location) are controlled by column groups instead.
  */
 const INVENTORY_PREFIX = "Inventory Available: ";
@@ -50,7 +53,7 @@ function keepDynamic(options: ExportOptions, h: string): boolean {
 export function selectColumns(entity: Entity, options: ExportOptions, headers: string[]): string[] {
   headers = headers.filter((h) => keepDynamic(options, h));
   if (!options.columns) return headers;
-  const keep = new Set([...options.columns, "ID", ...(entity.import?.keyColumns ?? [])]);
+  const keep = new Set(options.columns);
   const known = new Set(entity.columns);
   return headers.filter((h) => keep.has(h) || !known.has(h));
 }
@@ -79,8 +82,12 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
         args.progress?.(entity.key, n);
       },
     };
+    args.onStart?.(entity.key);
+    let batches = 0;
     try {
       await entity.export(ctx, async (rows) => {
+        // Stop promptly when the job is cancelled while rows are being written.
+        if (++batches % 100 === 0 && args.isCancelled && (await args.isCancelled())) throw new Error("Cancelled");
         for (const r of rows) await spool.push(r);
       });
       await spool.finish();

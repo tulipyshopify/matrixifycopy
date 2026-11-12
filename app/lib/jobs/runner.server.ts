@@ -31,7 +31,14 @@ export interface RunnerDeps {
   log: Logger;
   progress: (done: number, total: number) => void;
   isCancelled: () => Promise<boolean>;
+  /** Expected number of items for an entity's export, or null when unknown. */
+  count?: (entity: string, options: ExportOptions) => Promise<number | null>;
+  /** The worker's bulk runner reports prepared root items through this hook. */
+  bulkEvents?: { onRoots: (n: number) => void };
 }
+
+/** Share of an export's time spent while Shopify prepares the data (the rest is writing the file). */
+const PREPARE_WEIGHT = 0.8;
 
 export function timestamp(d = new Date()): string {
   return d.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "_");
@@ -53,7 +60,34 @@ export async function executeJob(
     });
     const base = job.name ? job.name.replace(/[^\w.-]+/g, "_") : `Export_${timestamp()}`;
     const out = createWorkbookOut(format, path.join(dir, base), deps.log);
+    // Expected totals make a percentage and time estimate possible. If any
+    // data type can't be counted, progress falls back to a plain item counter.
+    const expected: Array<number | null> = [];
+    for (const r of requests) {
+      expected.push(deps.count ? await deps.count(r.entity.key, r.options).catch(() => null) : null);
+    }
+    const known = expected.every((n) => n !== null);
+    const grandTotal = known ? (expected as number[]).reduce((a, b) => a + b, 0) : 0;
     const counts = new Map<string, number>();
+    let index = -1;
+    let doneBefore = 0;
+    let prepared = 0;
+    let written = 0;
+    const report = () => {
+      if (!known || !grandTotal) {
+        return deps.progress([...counts.values()].reduce((a, b) => a + b, 0), 0);
+      }
+      const t = expected[index] ?? 0;
+      const units = doneBefore + PREPARE_WEIGHT * Math.min(prepared, t) + (1 - PREPARE_WEIGHT) * Math.min(written, t);
+      // Keep 100% for the real finish.
+      deps.progress(Math.min(Math.round(units), grandTotal - 1), grandTotal);
+    };
+    if (deps.bulkEvents) {
+      deps.bulkEvents.onRoots = (n) => {
+        prepared = Math.max(prepared, n);
+        report();
+      };
+    }
     const stats = await runExport({
       gql: deps.gql,
       bulk: deps.bulk,
@@ -61,9 +95,17 @@ export async function executeJob(
       out,
       tmpDir: tmpDir(),
       log: deps.log,
+      isCancelled: deps.isCancelled,
+      onStart: () => {
+        if (index >= 0) doneBefore += expected[index] ?? 0;
+        index++;
+        prepared = 0;
+        written = 0;
+      },
       progress: (entity, n) => {
         counts.set(entity, n);
-        deps.progress([...counts.values()].reduce((a, b) => a + b, 0), 0);
+        written = n;
+        report();
       },
     });
     const resultFile = await out.close();

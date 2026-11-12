@@ -32,6 +32,7 @@ describe("order export: extra columns", () => {
       "Customer Currency": "EUR", "Source Identifier": "abc", "Source URL": "https://x.test", "Physical Location": "Shop",
       "Cart Token": "c1", Token: "t1", "Order Status URL": "https://s.test/1", "Weight Total": "1200", "Purchase Order Number": "PO-7",
       "Additional Details": "Gift: yes\nNote: ",
+      "Current Total Price": "90.00",
       "Price: Current Total": "105.00", "Price: Current Total (Shop Currency)": "90.00",
       "Price: Total": "117.00", "Price: Total (Shop Currency)": "100.00",
       "Price: Total Line Items": "29.25", "Price: Total Line Items (Shop Currency)": "25.00",

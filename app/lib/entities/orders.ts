@@ -69,6 +69,7 @@ const ORDER_COLUMNS = [
   "Total Shipping",
   "Total Tax",
   "Total Price",
+  "Current Total Price",
   "Total Refunded",
   "Tags",
   "Tags Command",
@@ -278,6 +279,8 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         "Total Shipping": bagAmount(o.totalShippingPriceSet),
         "Total Tax": bagAmount(o.totalTaxSet),
         "Total Price": bagAmount(o.totalPriceSet),
+        // After refunds, returns and order edits (Total Price stays as first paid). Export only.
+        "Current Total Price": bagAmount(o.currentTotalPriceSet),
         "Total Refunded": bagAmount(o.totalRefundedSet),
         Tags: joinTags(o.tags),
         "Tags Command": "REPLACE",

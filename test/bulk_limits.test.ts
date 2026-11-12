@@ -6,7 +6,7 @@ async function run(groups: string[]) {
   const queries: string[] = [];
   const rows: Row[] = [];
   const ctx: ExportContext = {
-    gql: async () => ({}),
+    gql: (async () => ({})) as any,
     bulk: (q) => {
       queries.push(q);
       const main = /descriptionHtml/.test(q);

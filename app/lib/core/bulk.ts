@@ -57,6 +57,8 @@ export const DEFAULT_CHILD_KEYS: Record<string, string> = {
 export interface BulkOptions {
   log?: Logger;
   isCancelled?: () => boolean | Promise<boolean>;
+  /** Called while Shopify prepares the data, with the number of root items so far. */
+  onRoots?: (rootObjectCount: number) => void;
   childKeys?: Record<string, string>;
   /** Override for downloading the result file (tests). */
   fetchLines?: (url: string) => AsyncIterable<string>;
@@ -130,6 +132,7 @@ export function createBulkRunner(gql: Gql, opts: BulkOptions = {}): BulkRunner {
         throw new Error("Cancelled");
       }
       op = (await gql(POLL, { id })).bulkOperation;
+      opts.onRoots?.(Number(op.rootObjectCount ?? 0));
       if (op.objectCount !== lastCount) {
         lastCount = op.objectCount;
         log(`Shopify is preparing data: ${op.objectCount} objects so far`);

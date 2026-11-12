@@ -4,6 +4,7 @@ import { unauthenticated } from "../../shopify.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
 import { executeJob } from "./runner.server";
+import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir } from "./storage.server";
 import { downloadSource, redactUrl, uploadResult } from "./sources.server";
 
@@ -79,7 +80,8 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       const res = await admin.graphql(query, { variables, tries: 3 });
       return res.json();
     }, log);
-    const bulk = createBulkRunner(gql, { log, isCancelled });
+    const bulkEvents = { onRoots: (_n: number) => {} };
+    const bulk = createBulkRunner(gql, { log, isCancelled, onRoots: (n) => bulkEvents.onRoots(n) });
 
     // Imports scheduled from a URL fetch their file at run time.
     if (job.type === "import" && !job.inputFile) {
@@ -101,6 +103,11 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
         dirty = true;
       },
       isCancelled,
+      bulkEvents,
+      count: async (entity, options) => {
+        const r = await countItems(gql, entity, options);
+        return r && !r.unfiltered && r.precision === "EXACT" ? r.count : null;
+      },
     });
 
     if (job.type === "export" && job.scheduleId) {

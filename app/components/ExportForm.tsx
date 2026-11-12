@@ -71,7 +71,7 @@ function stateFromPreset(entities: EntityInfo[], preset: PresetData): Record<str
       enabled: true,
       open: preset.entities.length === 1,
       groups: o.groups ?? state[entity].groups,
-      columns: o.columns ? e.columns.filter((c) => o.columns.includes(c) || c === "ID" || e.keyColumns.includes(c)) : [...e.columns],
+      columns: o.columns ? e.columns.filter((c) => o.columns.includes(c)) : [...e.columns],
       filters: o.filters ?? [],
       dateRange: o.dateRange ?? null,
       query: o.query ?? "",
@@ -542,7 +542,10 @@ function ColumnPicker({
   onChange: (patch: Partial<EntityState>) => void;
   state: EntityState;
 }) {
-  const required = new Set(["ID", ...entity.keyColumns]);
+  // Nothing is forced: key columns can be left out for report-style exports.
+  const required = new Set<string>();
+  const keyColumns = ["ID", ...entity.keyColumns];
+  const missingKeys = keyColumns.every((c) => !columns.includes(c));
   const storeLocations = useLocations(entity.groups.some((g) => g.key === "inventory") && groups.includes("inventory"));
   // A data group ("Variants & options") that matches a column section ("Variants")
   // is merged into it: the section's checkbox then also controls fetching that data.
@@ -715,9 +718,10 @@ function ColumnPicker({
         </Fragment>
       ))}
       <s-box padding="base none none small-200">
-        <s-text tone="neutral">
-          Key columns ({[...required].join(", ")}) are always included so the
-          file can be imported back.
+        <s-text tone={missingKeys ? "caution" : "neutral"}>
+          {missingKeys
+            ? `Without ${keyColumns.join(" or ")} this file can't be imported back. Fine for reports.`
+            : `Keep ${keyColumns.join(" or ")} if you plan to import the file back.`}
         </s-text>
       </s-box>
     </s-stack>

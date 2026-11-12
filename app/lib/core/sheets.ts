@@ -289,6 +289,14 @@ export class RowSpool {
     for await (const line of rl) if (line) yield JSON.parse(line);
   }
   async dispose() {
+    // Close the stream first: it may still be opening the file (failed or
+    // cancelled exports), which would otherwise recreate it after the unlink.
+    if (!this.out.closed) {
+      await new Promise<void>((r) => {
+        this.out.once("close", () => r());
+        this.out.destroy();
+      });
+    }
     await fs.promises.unlink(this.file).catch(() => {});
   }
 }
