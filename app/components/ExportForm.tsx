@@ -136,7 +136,7 @@ const OP_LABELS: Record<FilterOp, string> = {
   between: "is between",
 };
 
-function opLabel(field: FilterField, op: FilterOp): string {
+export function opLabel(field: FilterField, op: FilterOp): string {
   if (field.type === "date")
     return (
       { gte: "on or after", lte: "on or before", between: "between" }[
@@ -459,7 +459,7 @@ const SECTION_NAMES: Record<string, string> = {
 };
 
 /** Splits an entity's columns into named sections by their prefix. */
-function columnSections(
+export function columnSections(
   entity: EntityInfo,
 ): Array<{ name: string; columns: string[] }> {
   const sections: Array<{ name: string; columns: string[] }> = [];

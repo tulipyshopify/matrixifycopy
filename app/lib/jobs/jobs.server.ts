@@ -403,8 +403,11 @@ export async function deletePreset(shop: string, id: string) {
 }
 
 /** The set-up of the most recent export job, offered as "Latest export". */
-export async function latestExportPreset(shop: string): Promise<PresetData | null> {
-  const job = await prisma.job.findFirst({ where: { shop, type: "export" }, orderBy: { createdAt: "desc" } });
+export async function latestExportPreset(shop: string, jobId?: string): Promise<PresetData | null> {
+  const job = await prisma.job.findFirst({
+    where: { shop, type: "export", ...(jobId ? { id: jobId } : {}) },
+    orderBy: { createdAt: "desc" },
+  });
   if (!job) return null;
   try {
     return { entities: (JSON.parse(job.config) as ExportConfig).entities, format: job.format };

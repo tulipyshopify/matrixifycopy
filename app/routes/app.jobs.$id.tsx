@@ -3,7 +3,8 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, getJob, rerunJob } from "../lib/jobs/jobs.server";
+import { cancelJob, downloadLinks, entityCatalog, getJob, rerunJob } from "../lib/jobs/jobs.server";
+import { ExportDetails } from "../components/ExportDetails";
 import { StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -29,6 +30,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       finishedAt: job.finishedAt,
     },
     links: downloadLinks(job),
+    entities: job.type === "export" ? entityCatalog() : [],
   };
 };
 
@@ -44,7 +46,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links } = useLoaderData<typeof loader>();
+  const { job, links, entities } = useLoaderData<typeof loader>();
+  let exported: any[] = [];
+  try {
+    if (job.type === "export") exported = JSON.parse(job.config).entities ?? [];
+  } catch {
+    // unreadable config: just skip the details
+  }
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const active = isActive(job.status);
@@ -144,7 +152,19 @@ export default function JobDetail() {
         </s-stack>
       </s-section>
 
-      {job.stats.length ? (
+      {exported.length ? (
+        <>
+          <s-box padding="base small-200 none small-200">
+            <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+              <s-heading>What was exported</s-heading>
+              <s-button href={`/app?from=${job.id}`}>Edit and export again</s-button>
+            </s-stack>
+          </s-box>
+          <ExportDetails entities={entities} exported={exported} stats={job.stats} />
+        </>
+      ) : null}
+
+      {job.stats.length && job.type !== "export" ? (
         <s-section heading="Summary" padding="none">
           <s-table>
             <s-table-header-row>
