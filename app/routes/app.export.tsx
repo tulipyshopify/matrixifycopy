@@ -28,6 +28,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         format: body.format,
         uploadUrl: body.schedule.uploadUrl,
         publicLink: body.schedule.publicLink,
+        runAt: body.schedule.runAt,
+        timezone: body.schedule.timezone,
+        weekday: body.schedule.weekday,
         intervalMinutes: body.schedule.intervalMinutes,
         startAt: body.schedule.startAt,
       });

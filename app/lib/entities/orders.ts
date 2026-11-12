@@ -183,7 +183,7 @@ const BROWSER_SELECTION = `clientIp customerJourneySummary { firstVisit ${VISIT}
 const WEIGHT_UNIT_CELL: Record<string, string> = { GRAMS: "g", KILOGRAMS: "kg", OUNCES: "oz", POUNDS: "lb" };
 const BOTH = "{ shopMoney { amount } presentmentMoney { amount } }";
 
-const ORDER_LINE_COLUMNS = [...LINE_COLUMNS, "Line: Fulfillable Quantity"];
+const ORDER_LINE_COLUMNS = ["Line: Type", ...LINE_COLUMNS, "Line: Fulfillable Quantity"];
 
 const TRANSACTION_COLUMNS = [
   "Transaction: ID",
@@ -274,6 +274,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
       taxLines { title rate priceSet ${BOTH} }
       ${groups.has("fulfillments") ? fulfillments : ""}
+      ${groups.has("shipping_lines") ? `shippingLines { edges { node { id title code isRemoved originalPriceSet ${MONEY} } } }` : ""}
       ${groups.has("transactions") ? transactions : ""}
       ${groups.has("metafields") ? metafields : ""}
       ${groups.has("line_items") ? lineItems : ""}
@@ -285,7 +286,9 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
   const lines: any[] = o.lineItems ?? [];
   const transactions: any[] = o.transactions ?? [];
   const fulfillments: any[] = groups.has("fulfillments") ? (o.fulfillments ?? []) : [];
-  const count = Math.max(1, lines.length, transactions.length, fulfillments.length);
+  // Shipping lines follow the line items as rows of their own ("Line: Type").
+  const shipping: any[] = groups.has("shipping_lines") ? (o.shippingLines ?? []).filter((l: any) => !l.isRemoved) : [];
+  const count = Math.max(1, lines.length + shipping.length, transactions.length, fulfillments.length);
   const rows: Row[] = [];
   for (let i = 0; i < count; i++) {
     const row: Row = { ID: gidToId(o.id), Name: o.name ?? "", "Row #": String(i + 1), "Top Row": boolCell(i === 0) };
@@ -391,7 +394,17 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
       if (groups.has("metafields")) metafieldsToRow(row, o.metafields);
     }
     const li = lines[i];
+    const ship = li ? undefined : shipping[i - lines.length];
+    if (ship) {
+      Object.assign(row, {
+        "Line: Type": "Shipping Line",
+        "Line: Title": ship.title ?? "",
+        "Line: SKU": ship.code ?? "",
+        "Line: Price": bagAmount(ship.originalPriceSet),
+      });
+    }
     if (li) {
+      row["Line: Type"] = "Line Item";
       lineToRow(row, li);
       row["Line: Fulfillable Quantity"] = str(li.unfulfilledQuantity);
       if (groups.has("line_product_data")) {
@@ -798,6 +811,7 @@ export const ordersEntity: Entity = {
     { key: "line_items", label: "Line items", default: true },
     { key: "line_product_data", label: "Line items product data", default: false },
     { key: "browser", label: "Browser", default: false },
+    { key: "shipping_lines", label: "Shipping lines as rows", default: true },
     { key: "fulfillments", label: "Fulfillments", default: true },
     { key: "transactions", label: "Transactions", default: true },
     { key: "metafields", label: "Order metafields", default: true },

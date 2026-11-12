@@ -5,6 +5,7 @@ import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { jobDir, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
+import { isValidTimeZone, nextRun } from "./schedule-time";
 
 /** Entity metadata safe to send to the browser. */
 export function entityCatalog() {
@@ -241,6 +242,10 @@ export interface ScheduleInput {
   format?: string;
   sourceUrl?: string;
   uploadUrl?: string;
+  /** Exact local time for daily / weekly schedules: "HH:MM", IANA zone, weekday (0 = Sunday, weekly only). */
+  runAt?: string;
+  timezone?: string;
+  weekday?: number | null;
   /** Export schedules: create the permanent link to the latest file. */
   publicLink?: boolean;
   intervalMinutes: number;
@@ -265,8 +270,20 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
   const sourceUrl = checkUrl(input.sourceUrl, ["http:", "https:", "ftp:", "ftps:"], "Source URL");
   const uploadUrl = checkUrl(input.uploadUrl, ["ftp:", "ftps:"], "Upload URL");
   if (input.type === "import" && !sourceUrl) throw new Error("Scheduled imports need a source URL");
-  const start = input.startAt ? new Date(input.startAt) : new Date();
+  let start = input.startAt ? new Date(input.startAt) : new Date();
   if (Number.isNaN(start.getTime())) throw new Error("Invalid start time");
+  // Exact time of day (daily and weekly schedules only).
+  let timing: { runAt: string; timezone: string; weekday: number | null } | null = null;
+  if (input.runAt?.trim()) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(input.runAt.trim());
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Error("Enter the time as HH:MM, for example 07:30");
+    if (interval < 1440) throw new Error("An exact time needs a daily or weekly schedule");
+    if (!input.timezone || !isValidTimeZone(input.timezone)) throw new Error("Unknown time zone");
+    const weekday = interval >= 10080 && input.weekday !== null && input.weekday !== undefined ? Number(input.weekday) : null;
+    if (weekday !== null && !(weekday >= 0 && weekday <= 6)) throw new Error("Invalid weekday");
+    timing = { runAt: `${m[1].padStart(2, "0")}:${m[2]}`, timezone: input.timezone, weekday };
+    start = nextRun({ intervalMinutes: interval, ...timing }, new Date());
+  }
   return prisma.schedule.create({
     data: {
       shop,
@@ -277,6 +294,7 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
       sourceUrl: sealSecret(sourceUrl),
       uploadUrl: sealSecret(uploadUrl),
       intervalMinutes: interval,
+      ...(timing ?? {}),
       nextRunAt: start,
       // The permanent link is chosen when the schedule is saved and can be
       // turned on or off later on the Schedules page.

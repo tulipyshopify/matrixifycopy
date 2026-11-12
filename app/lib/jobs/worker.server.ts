@@ -4,6 +4,7 @@ import { unauthenticated } from "../../shopify.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
 import { executeJob } from "./runner.server";
+import { nextRun } from "./schedule-time";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { downloadSource, redactUrl, uploadResult } from "./sources.server";
@@ -171,7 +172,8 @@ async function fireSchedules() {
     // Skip a run if the previous one is still going.
     const prev = s.lastJobId ? await prisma.job.findUnique({ where: { id: s.lastJobId } }) : null;
     const busy = prev && (prev.status === "queued" || prev.status === "running");
-    const nextRunAt = new Date(Date.now() + s.intervalMinutes * 60_000);
+    // Keeps the schedule's exact time, or its cadence, whatever time it is now.
+    const nextRunAt = nextRun(s, new Date(), s.nextRunAt);
     if (busy) {
       await prisma.schedule.update({ where: { id: s.id }, data: { nextRunAt } });
       continue;

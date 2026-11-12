@@ -143,6 +143,9 @@ export const LINE_COLUMNS = [
 export const LINE_SIGNAL_COLUMNS = ["Line: Title", "Line: Variant ID", "Line: SKU", "Line: Quantity", "Line: Price"];
 
 export function isLineRow(row: Row): boolean {
+  // Exports can list shipping lines as rows too; those are not line items.
+  const type = (cell(row, "Line: Type") ?? "").toLowerCase();
+  if (type && type !== "line item") return false;
   return LINE_SIGNAL_COLUMNS.some((c) => (cell(row, c) ?? "") !== "");
 }
 

@@ -36,6 +36,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           config: { options },
           sourceUrl: url,
           intervalMinutes: interval,
+          runAt: form.get("runAt") ? String(form.get("runAt")) : undefined,
+          timezone: form.get("timezone") ? String(form.get("timezone")) : undefined,
+          weekday: form.get("weekday") ? Number(form.get("weekday")) : undefined,
         });
         return redirect("/app/schedules");
       }

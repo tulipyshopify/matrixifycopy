@@ -78,6 +78,11 @@ model Schedule {
   /// export: optional ftp:// URL to upload the result to
   uploadUrl       String?
   intervalMinutes Int
+  /// Daily / weekly schedules: local time of day ("07:30"), IANA time zone and,
+  /// for weekly, the weekday (0 = Sunday). Null = every interval from the start.
+  runAt           String?
+  timezone        String?
+  weekday         Int?
   nextRunAt       DateTime
   enabled         Boolean   @default(true)
   lastJobId       String?

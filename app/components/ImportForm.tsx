@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useFetcher } from "react-router";
+import { ScheduleTimeFields, browserTimeZone } from "./ScheduleTime";
 
 /**
  * Import form: upload or URL source, default command and dry run. Used on the
@@ -12,6 +13,8 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
   const [url, setUrl] = useState("");
   const [defaultCommand, setDefaultCommand] = useState("MERGE");
   const [dryRun, setDryRun] = useState(false);
+  const [runAt, setRunAt] = useState("");
+  const [weekday, setWeekday] = useState(1);
   const [interval, setIntervalMinutes] = useState(0);
   const busy = fetcher.state !== "idle";
 
@@ -23,6 +26,11 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
     if (source === "url") {
       form.set("url", url);
       form.set("intervalMinutes", String(interval));
+      if (runAt.trim() && interval >= 1440) {
+        form.set("runAt", runAt.trim());
+        form.set("timezone", browserTimeZone());
+        if (interval >= 10080) form.set("weekday", String(weekday));
+      }
     }
     fetcher.submit(form, { method: "post", encType: "multipart/form-data", action: "/app/import" });
   };
@@ -73,6 +81,15 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
                 <s-option value="1440">Every day</s-option>
                 <s-option value="10080">Every week</s-option>
               </s-select>
+              <ScheduleTimeFields
+                intervalMinutes={interval}
+                runAt={runAt}
+                weekday={weekday}
+                onChange={(p) => {
+                  if (p.runAt !== undefined) setRunAt(p.runAt);
+                  if (p.weekday !== undefined) setWeekday(p.weekday);
+                }}
+              />
             </>
           )}
           {file && source === "file" ? <s-text>Selected: {file.name}</s-text> : null}

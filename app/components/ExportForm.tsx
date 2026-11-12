@@ -11,6 +11,7 @@ import {
   type FilterOp,
 } from "../lib/core/types";
 import { compileFilters } from "../lib/core/util";
+import { ScheduleTimeFields, browserTimeZone } from "./ScheduleTime";
 
 export interface ExportPayload {
   entities: Array<{ entity: string; options: Record<string, unknown> }>;
@@ -21,6 +22,9 @@ export interface ExportPayload {
     uploadUrl?: string;
     startAt?: string;
     publicLink?: boolean;
+    runAt?: string;
+    timezone?: string;
+    weekday?: number;
   };
 }
 
@@ -1122,6 +1126,8 @@ export function ExportForm({
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
   const [uploadUrl, setUploadUrl] = useState("");
   const [publicLink, setPublicLink] = useState(true);
+  const [runAt, setRunAt] = useState("");
+  const [weekday, setWeekday] = useState(1);
 
   const selected = useMemo(
     () => entities.filter((e) => state[e.key].enabled),
@@ -1209,6 +1215,13 @@ export function ExportForm({
               intervalMinutes,
               uploadUrl: uploadUrl || undefined,
               publicLink,
+              ...(runAt.trim() && intervalMinutes >= 1440
+                ? {
+                    runAt: runAt.trim(),
+                    timezone: browserTimeZone(),
+                    weekday: intervalMinutes >= 10080 ? weekday : undefined,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -1372,6 +1385,15 @@ export function ExportForm({
                   </s-option>
                 ))}
               </s-select>
+              <ScheduleTimeFields
+                intervalMinutes={intervalMinutes}
+                runAt={runAt}
+                weekday={weekday}
+                onChange={(p) => {
+                  if (p.runAt !== undefined) setRunAt(p.runAt);
+                  if (p.weekday !== undefined) setWeekday(p.weekday);
+                }}
+              />
               <s-switch
                 label="Permanent link (URL) to the latest file"
                 details="One fixed address for this export. Every run overwrites the file it serves."

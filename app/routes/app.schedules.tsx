@@ -17,6 +17,7 @@ import {
   updateSchedule,
 } from "../lib/jobs/jobs.server";
 import { openSecret } from "../lib/jobs/storage.server";
+import { describeSchedule } from "../lib/jobs/schedule-time";
 import { redactUrl } from "../lib/jobs/sources.server";
 import { formatDate } from "../components/jobs";
 
@@ -30,6 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       type: s.type,
       enabled: s.enabled,
       intervalMinutes: s.intervalMinutes,
+      repeats: describeSchedule(s),
       nextRunAt: s.nextRunAt,
       lastJobId: s.lastJobId,
       sourceUrl: s.sourceUrl ? redactUrl(openSecret(s.sourceUrl)!) : null,
@@ -60,16 +62,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "disableLink") await disablePublicLink(session.shop, id);
   return { ok: true };
 };
-
-function every(minutes: number): string {
-  if (minutes % 10080 === 0)
-    return minutes === 10080 ? "Weekly" : `Every ${minutes / 10080} weeks`;
-  if (minutes % 1440 === 0)
-    return minutes === 1440 ? "Daily" : `Every ${minutes / 1440} days`;
-  if (minutes % 60 === 0)
-    return minutes === 60 ? "Hourly" : `Every ${minutes / 60} hours`;
-  return `Every ${minutes} minutes`;
-}
 
 export default function Schedules() {
   const { schedules } = useLoaderData<typeof loader>();
@@ -208,7 +200,7 @@ export default function Schedules() {
                       ) : null}
                     </s-stack>
                   </s-table-cell>
-                  <s-table-cell>{every(s.intervalMinutes)}</s-table-cell>
+                  <s-table-cell>{s.repeats}</s-table-cell>
                   <s-table-cell>
                     {s.enabled ? (
                       formatDate(s.nextRunAt)
