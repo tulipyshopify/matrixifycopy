@@ -27,6 +27,8 @@ interface EntityState {
   filters: FilterCondition[];
   dateRange: DateRange | null;
   query: string;
+  /** Custom column order (all of the entity's columns); null = the standard order. */
+  order: string[] | null;
   /** Inventory locations to export; null = all. */
   locations: string[] | null;
   /** "namespace.key" lists, comma separated; blank = all. */
@@ -60,6 +62,7 @@ function blankState(
         filters: [],
         dateRange: null,
         query: "",
+        order: null,
         locations: null,
         metafields: "",
         variantMetafields: "",
@@ -87,6 +90,17 @@ function stateFromPreset(
       filters: o.filters ?? [],
       dateRange: o.dateRange ?? null,
       query: o.query ?? "",
+      // A saved order that differs from the standard one is restored; columns
+      // the preset left out go after it.
+      order:
+        o.columns &&
+        o.columns.join("|") !==
+          e.columns.filter((c: string) => o.columns.includes(c)).join("|")
+          ? [
+              ...o.columns.filter((c: string) => e.columns.includes(c)),
+              ...e.columns.filter((c) => !o.columns.includes(c)),
+            ]
+          : null,
       locations: o.locations ?? null,
       metafields: (o.metafields ?? []).join(", "),
       variantMetafields: (o.variantMetafields ?? []).join(", "),
@@ -470,7 +484,7 @@ function columnSections(
 
 /** Data groups that add API work per item and so make exports slower. */
 const isSlowGroup = (key: string) =>
-  /metafield|inventory|publication|transaction|item/.test(key);
+  /metafield|inventory|publication|transaction|item|browser/.test(key);
 
 function Section({
   title,
@@ -792,15 +806,107 @@ function useLocations(enabled: boolean): string[] | null {
   return list;
 }
 
+/**
+ * The selected columns as chips, in file order. Drag a chip (or focus it and
+ * press the left / right arrow keys) to move it.
+ */
+function ColumnOrder({
+  entity,
+  columns,
+  order,
+  onChange,
+}: {
+  entity: EntityInfo;
+  columns: string[];
+  order: string[] | null;
+  onChange: (order: string[] | null) => void;
+}) {
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const full = order ?? entity.columns;
+  const shown = full.filter((c) => columns.includes(c));
+  // Moves `col` to sit just before `before` (or to the end) within the full order.
+  const move = (col: string, before: string | null) => {
+    if (col === before) return;
+    const next = full.filter((c) => c !== col);
+    const at = before ? next.indexOf(before) : next.length;
+    next.splice(at < 0 ? next.length : at, 0, col);
+    onChange(next);
+  };
+  const nudge = (col: string, dir: -1 | 1) => {
+    const i = shown.indexOf(col);
+    const j = i + dir;
+    if (j < 0 || j >= shown.length) return;
+    // Moving right means landing after the neighbour, i.e. before the one after it.
+    move(col, dir === -1 ? shown[j] : (shown[j + 1] ?? null));
+  };
+  return (
+    <s-stack direction="block" gap="small">
+      <s-stack direction="inline" gap="small" alignItems="center">
+        <s-text tone="neutral">
+          Drag to change the order of the columns in the file.
+        </s-text>
+        {order ? (
+          <s-button variant="tertiary" onClick={() => onChange(null)}>
+            Reset order
+          </s-button>
+        ) : null}
+      </s-stack>
+      <div className="bp-chips" role="list">
+        {shown.map((c) => (
+          <div
+            key={c}
+            role="listitem"
+            tabIndex={0}
+            draggable
+            className={`bp-chip${dragging === c ? " bp-chip-dragging" : ""}${over === c && dragging !== c ? " bp-chip-over" : ""}`}
+            aria-label={`${c}. Use the left and right arrow keys to move.`}
+            onDragStart={(ev) => {
+              setDragging(c);
+              ev.dataTransfer.effectAllowed = "move";
+              ev.dataTransfer.setData("text/plain", c);
+            }}
+            onDragOver={(ev) => {
+              ev.preventDefault();
+              setOver(c);
+            }}
+            onDrop={(ev) => {
+              ev.preventDefault();
+              if (dragging) move(dragging, c);
+              setDragging(null);
+              setOver(null);
+            }}
+            onDragEnd={() => {
+              setDragging(null);
+              setOver(null);
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === "ArrowLeft") nudge(c, -1);
+              if (ev.key === "ArrowRight") nudge(c, 1);
+            }}
+          >
+            <span aria-hidden="true" className="bp-grip">
+              ⠿
+            </span>
+            {c}
+          </div>
+        ))}
+      </div>
+    </s-stack>
+  );
+}
+
 /** Export options for one entity panel, as sent to the server. */
 function panelOptions(e: EntityInfo, s: EntityState) {
-  const allColumns = e.columns.every((c) => s.columns.includes(c));
+  const allColumns = e.columns.every((c) => s.columns.includes(c)) && !s.order;
+  // Sent in display order: the custom order if there is one, else the standard order.
+  const ordered = (s.order ?? e.columns).filter((c) => s.columns.includes(c));
   const filters = s.filters.filter(
     (f) => f.value && (f.op !== "between" || f.value2),
   );
   return {
     groups: e.groups.length ? s.groups : undefined,
-    columns: allColumns ? undefined : s.columns,
+    columns: allColumns ? undefined : ordered,
     filters: filters.length ? filters : undefined,
     dateRange: s.dateRange ?? undefined,
     query: s.query || undefined,
@@ -950,6 +1056,13 @@ function EntityPanel({
                   groups={s.groups}
                   state={s}
                   onChange={(patch) => update(patch)}
+                />
+                <s-heading>Column order</s-heading>
+                <ColumnOrder
+                  entity={e}
+                  columns={s.columns}
+                  order={s.order}
+                  onChange={(order) => update({ order })}
                 />
               </s-stack>
             </>

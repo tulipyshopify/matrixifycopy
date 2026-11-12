@@ -55,6 +55,40 @@ describe("order export: extra columns", () => {
     expect(rows[1]["Fulfillment: ID"]).toBeUndefined();
   });
 
+  it("exports customer details, address names and where the buyer came from", () => {
+    const o = {
+      ...order,
+      clientIp: "203.0.113.9",
+      customer: {
+        id: "gid://shopify/Customer/7", firstName: "Ann", lastName: "Lee", note: "VIP", state: "ENABLED", tags: ["trade", "uk"], taxExempt: false,
+        numberOfOrders: "12", amountSpent: { amount: "840.50" },
+        defaultEmailAddress: { emailAddress: "ann@example.com", marketingState: "SUBSCRIBED" },
+        defaultPhoneNumber: { phoneNumber: "+447700900000", smsMarketingConsent: { state: "NOT_SUBSCRIBED" } },
+      },
+      billingAddress: { name: "Ann Lee", firstName: "Ann", city: "Leeds" },
+      shippingAddress: { name: "A. Lee (work)", city: "York" },
+      customerJourneySummary: {
+        firstVisit: { landingPage: "https://shop.test/first", referrerUrl: null, utmParameters: null },
+        lastVisit: { landingPage: "https://shop.test/sale", referrerUrl: "https://www.google.com/search?q=x", utmParameters: { source: "google", medium: "cpc", campaign: "autumn", term: "bins", content: "ad1" } },
+      },
+    };
+    const top = orderToRows(o, new Set(["line_items", "browser"]))[0];
+    expect(top).toMatchObject({
+      "Customer: ID": "7", "Customer: Email": "ann@example.com", "Customer: Phone": "+447700900000", "Customer: Note": "VIP",
+      "Customer: State": "enabled", "Customer: Tags": "trade, uk", "Customer: Email Marketing Status": "subscribed",
+      "Customer: SMS Marketing Status": "not_subscribed", "Customer: Tax Exempt": "FALSE", "Customer: Orders Count": "12", "Customer: Total Spent": "840.50",
+      "Billing: Name": "Ann Lee", "Billing: City": "Leeds", "Shipping: Name": "A. Lee (work)",
+      "Browser: IP": "203.0.113.9", "Browser: Landing Page": "https://shop.test/sale", "Browser: Referrer": "https://www.google.com/search?q=x",
+      "Browser: Referrer Domain": "www.google.com", "Browser: UTM Source": "google", "Browser: UTM Medium": "cpc", "Browser: UTM Campaign": "autumn",
+      "Browser: UTM Term": "bins", "Browser: UTM Content": "ad1",
+    });
+    // Browser data is only fetched and written when its section is ticked.
+    expect(orderToRows(o, new Set(["line_items"]))[0]["Browser: IP"]).toBeUndefined();
+    expect(ordersBulkQuery("", new Set(["line_items"]))).not.toMatch(/customerJourneySummary/);
+    // Guest orders leave the customer cells blank.
+    expect(orderToRows({ ...o, customer: null }, new Set())[0]).toMatchObject({ "Customer: Tax Exempt": "", "Customer: Tags": "" });
+  });
+
   it("only fetches the slower data when its group is on", () => {
     const off = ordersBulkQuery("", new Set(["line_items"]));
     expect(off).not.toMatch(/productType|fulfillments \{/);

@@ -53,9 +53,11 @@ function keepDynamic(options: ExportOptions, h: string): boolean {
 export function selectColumns(entity: Entity, options: ExportOptions, headers: string[]): string[] {
   headers = headers.filter((h) => keepDynamic(options, h));
   if (!options.columns) return headers;
-  const keep = new Set(options.columns);
+  // Chosen columns come out in the order given (the export form lets people
+  // arrange them), followed by the dynamic columns.
+  const present = new Set(headers);
   const known = new Set(entity.columns);
-  return headers.filter((h) => keep.has(h) || !known.has(h));
+  return [...options.columns.filter((c) => present.has(c)), ...headers.filter((h) => !known.has(h))];
 }
 
 export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {

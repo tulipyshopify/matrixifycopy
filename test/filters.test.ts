@@ -103,6 +103,16 @@ describe("column selection", () => {
     expect(selectColumns(products, {}, headers)).toEqual(headers);
   });
 
+  it("writes chosen columns in the order they were arranged", () => {
+    expect(selectColumns(products, { columns: ["Variant SKU", "Title", "ID", "Not exported"] }, headers)).toEqual([
+      "Variant SKU",
+      "Title",
+      "ID",
+      "Metafield: custom.fit [single_line_text_field]",
+      "Inventory Available: Shop",
+    ]);
+  });
+
   it("keeps exactly the chosen columns plus dynamic columns (key columns are optional)", () => {
     expect(selectColumns(products, { columns: ["Variant SKU"] }, headers)).toEqual([
       "Variant SKU",

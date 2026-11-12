@@ -79,6 +79,15 @@ const ORDER_COLUMNS = [
   "Customer: Email",
   "Customer: First Name",
   "Customer: Last Name",
+  "Customer: Phone",
+  "Customer: Note",
+  "Customer: State",
+  "Customer: Tags",
+  "Customer: Email Marketing Status",
+  "Customer: SMS Marketing Status",
+  "Customer: Tax Exempt",
+  "Customer: Orders Count",
+  "Customer: Total Spent",
   "Discount Codes",
   "Shipping Line: Title",
   "Shipping Line: Code",
@@ -155,6 +164,21 @@ const FULFILLMENT_COLUMNS = [
   "Fulfillment: Tracking Number",
   "Fulfillment: Tracking URL",
 ];
+
+/** Where the buyer came from (group "browser"). Export only. */
+const BROWSER_COLUMNS = [
+  "Browser: IP",
+  "Browser: Landing Page",
+  "Browser: Referrer",
+  "Browser: Referrer Domain",
+  "Browser: UTM Source",
+  "Browser: UTM Medium",
+  "Browser: UTM Campaign",
+  "Browser: UTM Term",
+  "Browser: UTM Content",
+];
+const VISIT = "{ landingPage referrerUrl utmParameters { source medium campaign term content } }";
+const BROWSER_SELECTION = `clientIp customerJourneySummary { firstVisit ${VISIT} lastVisit ${VISIT} }`;
 
 const WEIGHT_UNIT_CELL: Record<string, string> = { GRAMS: "g", KILOGRAMS: "kg", OUNCES: "oz", POUNDS: "lb" };
 const BOTH = "{ shopMoney { amount } presentmentMoney { amount } }";
@@ -236,9 +260,14 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       totalTaxSet ${MONEY}
       totalPriceSet ${MONEY}
       totalRefundedSet ${MONEY}
-      customer { id firstName lastName defaultEmailAddress { emailAddress } }
-      billingAddress { ${ADDRESS_SELECTION} }
-      shippingAddress { ${ADDRESS_SELECTION} }
+      customer {
+        id firstName lastName note state tags taxExempt numberOfOrders amountSpent { amount }
+        defaultEmailAddress { emailAddress marketingState }
+        defaultPhoneNumber { phoneNumber smsMarketingConsent { state } }
+      }
+      billingAddress { name ${ADDRESS_SELECTION} }
+      shippingAddress { name ${ADDRESS_SELECTION} }
+      ${groups.has("browser") ? BROWSER_SELECTION : ""}
       shippingLine { title code originalPriceSet ${MONEY} }
       presentmentCurrencyCode sourceIdentifier registeredSourceUrl cartToken checkoutToken statusPageUrl
       totalWeight poNumber retailLocation { name } customAttributes { key value }
@@ -290,6 +319,17 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         "Customer: Email": o.customer?.defaultEmailAddress?.emailAddress ?? "",
         "Customer: First Name": o.customer?.firstName ?? "",
         "Customer: Last Name": o.customer?.lastName ?? "",
+        "Customer: Phone": o.customer?.defaultPhoneNumber?.phoneNumber ?? "",
+        "Customer: Note": o.customer?.note ?? "",
+        "Customer: State": enumToCell(o.customer?.state),
+        "Customer: Tags": joinTags(o.customer?.tags),
+        "Customer: Email Marketing Status": enumToCell(o.customer?.defaultEmailAddress?.marketingState),
+        "Customer: SMS Marketing Status": enumToCell(o.customer?.defaultPhoneNumber?.smsMarketingConsent?.state),
+        "Customer: Tax Exempt": o.customer ? boolCell(o.customer.taxExempt) : "",
+        "Customer: Orders Count": str(o.customer?.numberOfOrders),
+        "Customer: Total Spent": o.customer?.amountSpent?.amount ?? "",
+        "Billing: Name": o.billingAddress?.name ?? "",
+        "Shipping: Name": o.shippingAddress?.name ?? "",
         "Discount Codes": (o.discountCodes ?? []).join(", "),
         "Shipping Line: Title": o.shippingLine?.title ?? "",
         "Shipping Line: Code": o.shippingLine?.code ?? "",
@@ -325,6 +365,27 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         row[`Tax ${n + 1}: Rate`] = str(t.rate);
         row[`Tax ${n + 1}: Price`] = t.priceSet?.presentmentMoney?.amount ?? "";
       });
+      if (groups.has("browser")) {
+        // The visit that led to the order (the last one before checkout).
+        const visit = o.customerJourneySummary?.lastVisit ?? o.customerJourneySummary?.firstVisit;
+        let referrerDomain = "";
+        try {
+          if (visit?.referrerUrl) referrerDomain = new URL(visit.referrerUrl).hostname;
+        } catch {
+          // not a URL
+        }
+        Object.assign(row, {
+          "Browser: IP": o.clientIp ?? "",
+          "Browser: Landing Page": visit?.landingPage ?? "",
+          "Browser: Referrer": visit?.referrerUrl ?? "",
+          "Browser: Referrer Domain": referrerDomain,
+          "Browser: UTM Source": visit?.utmParameters?.source ?? "",
+          "Browser: UTM Medium": visit?.utmParameters?.medium ?? "",
+          "Browser: UTM Campaign": visit?.utmParameters?.campaign ?? "",
+          "Browser: UTM Term": visit?.utmParameters?.term ?? "",
+          "Browser: UTM Content": visit?.utmParameters?.content ?? "",
+        });
+      }
       addressToRow(row, "Billing", o.billingAddress);
       addressToRow(row, "Shipping", o.shippingAddress);
       if (groups.has("metafields")) metafieldsToRow(row, o.metafields);
@@ -722,8 +783,11 @@ export const ordersEntity: Entity = {
     ...DETAIL_COLUMNS,
     ...PRICE_COLUMNS,
     ...TAX_COLUMNS,
+    "Billing: Name",
     ...addressColumns("Billing"),
+    "Shipping: Name",
     ...addressColumns("Shipping"),
+    ...BROWSER_COLUMNS,
     ...ORDER_LINE_COLUMNS,
     ...LINE_PRODUCT_COLUMNS,
     ...FULFILLMENT_COLUMNS,
@@ -733,6 +797,7 @@ export const ordersEntity: Entity = {
   groups: [
     { key: "line_items", label: "Line items", default: true },
     { key: "line_product_data", label: "Line items product data", default: false },
+    { key: "browser", label: "Browser", default: false },
     { key: "fulfillments", label: "Fulfillments", default: true },
     { key: "transactions", label: "Transactions", default: true },
     { key: "metafields", label: "Order metafields", default: true },
