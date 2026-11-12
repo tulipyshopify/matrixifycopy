@@ -27,6 +27,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         config,
         format: body.format,
         uploadUrl: body.schedule.uploadUrl,
+        publicLink: body.schedule.publicLink,
         intervalMinutes: body.schedule.intervalMinutes,
         startAt: body.schedule.startAt,
       });

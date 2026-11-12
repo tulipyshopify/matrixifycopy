@@ -241,6 +241,8 @@ export interface ScheduleInput {
   format?: string;
   sourceUrl?: string;
   uploadUrl?: string;
+  /** Export schedules: create the permanent link to the latest file. */
+  publicLink?: boolean;
   intervalMinutes: number;
   startAt?: string;
 }
@@ -276,8 +278,9 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
       uploadUrl: sealSecret(uploadUrl),
       intervalMinutes: interval,
       nextRunAt: start,
-      // Permanent links are opt-in per schedule (see enablePublicLink).
-      publicToken: null,
+      // The permanent link is chosen when the schedule is saved and can be
+      // turned on or off later on the Schedules page.
+      publicToken: input.type === "export" && input.publicLink ? newPublicToken() : null,
     },
   });
 }

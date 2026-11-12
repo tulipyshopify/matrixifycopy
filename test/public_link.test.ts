@@ -79,6 +79,16 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("permanent export link", ()
     expect(fresh!.publicToken).not.toBe(token);
     expect((await get(fresh!.publicToken!)).status).toBe(200);
 
+    // A schedule saved with the link option gets its link straight away.
+    const withLink = await jobs.createSchedule(shop, {
+      name: "With link",
+      type: "export",
+      config: { entities: [{ entity: "products", options: {} }] },
+      intervalMinutes: 60,
+      publicLink: true,
+    });
+    expect(withLink.publicToken).toMatch(/^[A-Za-z0-9_-]{32}$/);
+
     // Turning the link off stops it working.
     await jobs.disablePublicLink(shop, schedule.id);
     expect((await get(fresh!.publicToken!)).status).toBe(404);

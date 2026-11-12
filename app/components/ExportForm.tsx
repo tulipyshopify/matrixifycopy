@@ -16,7 +16,12 @@ export interface ExportPayload {
   entities: Array<{ entity: string; options: Record<string, unknown> }>;
   format: string;
   name: string;
-  schedule?: { intervalMinutes: number; uploadUrl?: string; startAt?: string };
+  schedule?: {
+    intervalMinutes: number;
+    uploadUrl?: string;
+    startAt?: string;
+    publicLink?: boolean;
+  };
 }
 
 interface EntityState {
@@ -40,6 +45,9 @@ export interface PresetData {
   entities: Array<{ entity: string; options: Record<string, any> }>;
   format: string;
 }
+
+/** Data types whose exports contain personal data (same list as the server's). */
+const PERSONAL_DATA = ["customers", "orders", "draft_orders", "companies"];
 
 const splitList = (v: string) =>
   v
@@ -1113,6 +1121,7 @@ export function ExportForm({
   const [scheduled, setScheduled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
   const [uploadUrl, setUploadUrl] = useState("");
+  const [publicLink, setPublicLink] = useState(true);
 
   const selected = useMemo(
     () => entities.filter((e) => state[e.key].enabled),
@@ -1195,7 +1204,13 @@ export function ExportForm({
         options: panelOptions(e, state[e.key]),
       })),
       ...(scheduled
-        ? { schedule: { intervalMinutes, uploadUrl: uploadUrl || undefined } }
+        ? {
+            schedule: {
+              intervalMinutes,
+              uploadUrl: uploadUrl || undefined,
+              publicLink,
+            },
+          }
         : {}),
     };
     fetcher.submit(payload as any, {
@@ -1357,6 +1372,25 @@ export function ExportForm({
                   </s-option>
                 ))}
               </s-select>
+              <s-switch
+                label="Permanent link (URL) to the latest file"
+                details="One fixed address for this export. Every run overwrites the file it serves."
+                checked={publicLink}
+                onChange={(ev: any) => setPublicLink(ev.currentTarget.checked)}
+              />
+              {publicLink ? (
+                <s-text
+                  tone={
+                    selected.some((e) => PERSONAL_DATA.includes(e.key))
+                      ? "critical"
+                      : "neutral"
+                  }
+                >
+                  {selected.some((e) => PERSONAL_DATA.includes(e.key))
+                    ? "This export contains customer data. Anyone who has the link can download names, emails and addresses without logging in. Turn the link off unless you need it."
+                    : "Anyone who has the link can download the file without logging in. You'll find the link on the Schedules page."}
+                </s-text>
+              ) : null}
               <s-url-field
                 label="Upload to FTP (optional)"
                 details="ftp://user:password@host/folder/ — the file is also kept in the app"
