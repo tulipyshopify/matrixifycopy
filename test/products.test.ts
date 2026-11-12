@@ -204,6 +204,29 @@ describe("product import", () => {
     expect(v.inventoryQuantities).toEqual([{ locationId: "gid://shopify/Location/1", name: "available", quantity: 4 }]);
   });
 
+  it("does not change alt text of images already hosted on Shopify (they may be shared)", async () => {
+    const logs: string[] = [];
+    const m = mockGql({
+      ImportProductByHandle: () => ({ productByIdentifier: null }),
+      ImportProductSet: () => ({ productSet: ok({ product: { id: "gid://shopify/Product/5", handle: "x", variants: { nodes: [] } } }) }),
+    });
+    const ctx = { ...ctxFor(m.gql), log: (l: string) => logs.push(l) };
+    await importProduct(
+      ctx,
+      [
+        { Handle: "x", Title: "X", "Image Src": "https://cdn.shopify.com/s/files/1/0001/files/bin.jpg?v=1", "Image Alt Text": "Test alt" },
+        { Handle: "x", "Image Src": "https://example.com/new.jpg", "Image Alt Text": "New image" },
+      ],
+      "NEW",
+    );
+    const files = m.calls.find((c) => c.op === "ImportProductSet")!.vars.input.files;
+    expect(files).toEqual([
+      { originalSource: "https://cdn.shopify.com/s/files/1/0001/files/bin.jpg?v=1", alt: undefined, contentType: "IMAGE" },
+      { originalSource: "https://example.com/new.jpg", alt: "New image", contentType: "IMAGE" },
+    ]);
+    expect(logs.join(" ")).toMatch(/Alt Text was not applied to images already hosted on Shopify/);
+  });
+
   it("fails NEW when the handle exists and UPDATE when missing", async () => {
     const existing = mockGql({
       ImportProductByHandle: () => ({ productByIdentifier: { id: "gid://shopify/Product/1", handle: "tee", options: [], media: { nodes: [] } } }),

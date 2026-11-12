@@ -4,7 +4,7 @@ import type { Command, DateRange, Entity, ExportOptions, FilterCondition, Import
 import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import type { ExportConfig, ImportConfig } from "./runner.server";
-import { jobDir, saveUpload, signedDownloadUrl } from "./storage.server";
+import { jobDir, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 
 /** Entity metadata safe to send to the browser. */
 export function entityCatalog() {
@@ -159,7 +159,7 @@ export async function createUrlImportJob(shop: string, url: string, options: Imp
       name: `Import from URL`,
       type: "import",
       config: JSON.stringify({ options }),
-      sourceUrl: url,
+      sourceUrl: sealSecret(url),
       intervalMinutes: 0,
       nextRunAt: new Date("9999-01-01T00:00:00Z"),
       enabled: false,
@@ -272,11 +272,12 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
       type: input.type,
       config: JSON.stringify(input.config),
       format: input.format === "csv" ? "csv" : "xlsx",
-      sourceUrl,
-      uploadUrl,
+      sourceUrl: sealSecret(sourceUrl),
+      uploadUrl: sealSecret(uploadUrl),
       intervalMinutes: interval,
       nextRunAt: start,
-      publicToken: input.type === "export" ? newPublicToken() : null,
+      // Permanent links are opt-in per schedule (see enablePublicLink).
+      publicToken: null,
     },
   });
 }
@@ -295,9 +296,34 @@ export function publicFileUrl(schedule: { publicToken: string | null; name: stri
   return `${base}/files/${schedule.publicToken}`;
 }
 
-/** Gives export schedules created before permanent links a token, or replaces it (revoking the old link). */
+/** Data types whose exports contain personal data. */
+const PERSONAL_DATA = new Set(["customers", "orders", "draft_orders", "companies"]);
+
+/** True when a schedule's export includes customer / order data. */
+export function hasPersonalData(config: string): boolean {
+  try {
+    return (JSON.parse(config) as ExportConfig).entities.some((e) => PERSONAL_DATA.has(e.entity));
+  } catch {
+    return false;
+  }
+}
+
+/** Turns the permanent link on, or replaces it (revoking the old address). */
 export async function resetPublicToken(shop: string, id: string) {
-  await prisma.schedule.updateMany({ where: { id, shop, type: "export" }, data: { publicToken: newPublicToken() } });
+  await prisma.schedule.updateMany({
+    where: { id, shop, type: "export" },
+    data: { publicToken: newPublicToken(), linkDownloads: 0, lastDownloadAt: null },
+  });
+}
+
+/** Turns the permanent link off; the old address stops working. */
+export async function disablePublicLink(shop: string, id: string) {
+  await prisma.schedule.updateMany({ where: { id, shop }, data: { publicToken: null } });
+}
+
+/** Records one download through a permanent link. */
+export async function recordLinkDownload(scheduleId: string) {
+  await prisma.schedule.update({ where: { id: scheduleId }, data: { linkDownloads: { increment: 1 }, lastDownloadAt: new Date() } });
 }
 
 /** Newest finished result file of the schedule behind a permanent link. */
@@ -313,10 +339,7 @@ export async function latestPublicFile(token: string) {
 }
 
 export async function listSchedules(shop: string) {
-  const where = { shop, intervalMinutes: { gt: 0 } };
-  const missing = await prisma.schedule.findMany({ where: { ...where, type: "export", publicToken: null }, select: { id: true } });
-  for (const m of missing) await resetPublicToken(shop, m.id);
-  return prisma.schedule.findMany({ where, orderBy: { createdAt: "desc" } });
+  return prisma.schedule.findMany({ where: { shop, intervalMinutes: { gt: 0 } }, orderBy: { createdAt: "desc" } });
 }
 
 export async function updateSchedule(shop: string, id: string, data: { enabled?: boolean; runNow?: boolean }) {

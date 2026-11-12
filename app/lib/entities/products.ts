@@ -615,6 +615,32 @@ function parseImages(rows: Row[]): ImageSpec[] {
   return images;
 }
 
+/** True for files already hosted by Shopify, which Shopify re-uses instead of copying. */
+export function isShopifyHosted(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.hostname === "cdn.shopify.com" || u.pathname.includes("/cdn/shop/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Alt text to send with an image. A Shopify-hosted URL attaches the existing
+ * file, which other products may share, so its alt text is left alone:
+ * setting it here would change it on those products too.
+ */
+function altFor(ctx: ImportContext, src: string, alt: string | undefined): string | undefined {
+  if (!alt || !isShopifyHosted(src)) return alt;
+  if (!ctx.cache.has("warnedSharedAlt")) {
+    ctx.cache.set("warnedSharedAlt", true);
+    ctx.log(
+      "Image Alt Text was not applied to images already hosted on Shopify: those files can be shared with other products, and changing the text would change it there too.",
+    );
+  }
+  return undefined;
+}
+
 /** Normalised file name used to decide whether an image is already on the product. */
 export function imageKey(url: string): string {
   let name = url;
@@ -992,7 +1018,7 @@ async function prepareCreate(
   const images = parseImages(rows).filter((im) => im.command !== "DELETE");
   const files = images.map((im) => ({
     originalSource: im.src,
-    alt: im.alt || undefined,
+    alt: altFor(ctx, im.src, im.alt) || undefined,
     contentType: "IMAGE",
   }));
   for (const src of variantImages) {
@@ -1132,7 +1158,7 @@ async function updateProduct(
         productId,
         media: toAdd.map((im) => ({
           originalSource: im.src,
-          alt: im.alt ?? "",
+          alt: altFor(ctx, im.src, im.alt) ?? "",
           mediaContentType: "IMAGE",
         })),
       });

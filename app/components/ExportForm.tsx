@@ -39,9 +39,16 @@ export interface PresetData {
   format: string;
 }
 
-const splitList = (v: string) => v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+const splitList = (v: string) =>
+  v
+    .split(/[,\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
 
-function blankState(entities: EntityInfo[], enabled: string[] = []): Record<string, EntityState> {
+function blankState(
+  entities: EntityInfo[],
+  enabled: string[] = [],
+): Record<string, EntityState> {
   return Object.fromEntries(
     entities.map((e) => [
       e.key,
@@ -62,7 +69,10 @@ function blankState(entities: EntityInfo[], enabled: string[] = []): Record<stri
 }
 
 /** Form state for a saved set-up; data types it doesn't mention stay blank. */
-function stateFromPreset(entities: EntityInfo[], preset: PresetData): Record<string, EntityState> {
+function stateFromPreset(
+  entities: EntityInfo[],
+  preset: PresetData,
+): Record<string, EntityState> {
   const state = blankState(entities);
   for (const { entity, options: o } of preset.entities) {
     const e = entities.find((x) => x.key === entity);
@@ -71,7 +81,9 @@ function stateFromPreset(entities: EntityInfo[], preset: PresetData): Record<str
       enabled: true,
       open: preset.entities.length === 1,
       groups: o.groups ?? state[entity].groups,
-      columns: o.columns ? e.columns.filter((c) => o.columns.includes(c)) : [...e.columns],
+      columns: o.columns
+        ? e.columns.filter((c) => o.columns.includes(c))
+        : [...e.columns],
       filters: o.filters ?? [],
       dateRange: o.dateRange ?? null,
       query: o.query ?? "",
@@ -435,7 +447,9 @@ function columnSections(
       /^(Variant|Image|Option\d|Address|Line|Location|Contact|Item|Rule|Transaction)\b/.exec(
         c,
       );
-    const prefix = m ? m[1].replace(/^Option\d$/, "Variant").replace(/^Tax \d+$/, "Tax") : "";
+    const prefix = m
+      ? m[1].replace(/^Option\d$/, "Variant").replace(/^Tax \d+$/, "Tax")
+      : "";
     // Current product/variant data of order lines is its own (slower) section.
     const name = /^Line: (Product (Type|Tags)|Variant (?!ID$|Title$))/.test(c)
       ? "Line items product data"
@@ -546,7 +560,10 @@ function ColumnPicker({
   const required = new Set<string>();
   const keyColumns = ["ID", ...entity.keyColumns];
   const missingKeys = keyColumns.every((c) => !columns.includes(c));
-  const storeLocations = useLocations(entity.groups.some((g) => g.key === "inventory") && groups.includes("inventory"));
+  const storeLocations = useLocations(
+    entity.groups.some((g) => g.key === "inventory") &&
+      groups.includes("inventory"),
+  );
   // A data group ("Variants & options") that matches a column section ("Variants")
   // is merged into it: the section's checkbox then also controls fetching that data.
   const sections = useMemo(() => {
@@ -557,7 +574,9 @@ function ColumnPicker({
     const extra: Array<{ key: string; label: string }> = [];
     for (const g of entity.groups) {
       const sec =
-        secs.find((x) => !x.group && x.name.toLowerCase() === g.label.toLowerCase()) ??
+        secs.find(
+          (x) => !x.group && x.name.toLowerCase() === g.label.toLowerCase(),
+        ) ??
         secs.find((x) => !x.group && firstWord(x.name) === firstWord(g.label));
       if (sec) sec.group = g;
       else extra.push(g);
@@ -579,7 +598,9 @@ function ColumnPicker({
         <s-checkbox
           label={`${selected} of ${entity.columns.length} columns selected`}
           checked={all}
-          indeterminate={!all && (selected > required.size || groups.length > 0)}
+          indeterminate={
+            !all && (selected > required.size || groups.length > 0)
+          }
           onChange={(ev: any) => {
             const on = ev.currentTarget.checked;
             onChange({
@@ -668,7 +689,8 @@ function ColumnPicker({
                   ? `${state.locations.length} of ${storeLocations?.length ?? "?"} locations`
                   : g.key === "metafields" && splitList(state.metafields).length
                     ? `${splitList(state.metafields).length} metafields`
-                    : g.key === "variant_metafields" && splitList(state.variantMetafields).length
+                    : g.key === "variant_metafields" &&
+                        splitList(state.variantMetafields).length
                       ? `${splitList(state.variantMetafields).length} metafields`
                       : undefined
             }
@@ -678,11 +700,18 @@ function ColumnPicker({
               storeLocations === null ? (
                 <s-text tone="neutral">Loading locations…</s-text>
               ) : storeLocations.length === 0 ? (
-                <s-text tone="neutral">Could not load locations; all locations will be exported.</s-text>
+                <s-text tone="neutral">
+                  Could not load locations; all locations will be exported.
+                </s-text>
               ) : (
                 <s-stack direction="block" gap="small">
-                  <s-text tone="neutral">Locations to include as stock columns:</s-text>
-                  <s-grid gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))" gap="small base">
+                  <s-text tone="neutral">
+                    Locations to include as stock columns:
+                  </s-text>
+                  <s-grid
+                    gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))"
+                    gap="small base"
+                  >
                     {storeLocations.map((l) => {
                       const chosen = state.locations ?? storeLocations;
                       return (
@@ -691,9 +720,14 @@ function ColumnPicker({
                           label={l}
                           checked={chosen.includes(l)}
                           onChange={(ev: any) => {
-                            const next = ev.currentTarget.checked ? [...chosen, l] : chosen.filter((x) => x !== l);
+                            const next = ev.currentTarget.checked
+                              ? [...chosen, l]
+                              : chosen.filter((x) => x !== l);
                             onChange({
-                              locations: next.length === storeLocations.length ? null : next,
+                              locations:
+                                next.length === storeLocations.length
+                                  ? null
+                                  : next,
                               groups: setGroup(groups, g.key, true),
                             });
                           }}
@@ -707,9 +741,17 @@ function ColumnPicker({
               <s-text-field
                 label="Only these metafields (optional)"
                 details="namespace.key, separated by commas, e.g. custom.material, custom.care. Leave empty for all."
-                value={g.key === "metafields" ? state.metafields : state.variantMetafields}
+                value={
+                  g.key === "metafields"
+                    ? state.metafields
+                    : state.variantMetafields
+                }
                 onInput={(ev: any) =>
-                  onChange(g.key === "metafields" ? { metafields: ev.currentTarget.value } : { variantMetafields: ev.currentTarget.value })
+                  onChange(
+                    g.key === "metafields"
+                      ? { metafields: ev.currentTarget.value }
+                      : { variantMetafields: ev.currentTarget.value },
+                  )
                 }
               />
             ) : undefined}
@@ -762,9 +804,14 @@ function panelOptions(e: EntityInfo, s: EntityState) {
     filters: filters.length ? filters : undefined,
     dateRange: s.dateRange ?? undefined,
     query: s.query || undefined,
-    locations: s.groups.includes("inventory") && s.locations ? s.locations : undefined,
-    metafields: splitList(s.metafields).length ? splitList(s.metafields) : undefined,
-    variantMetafields: splitList(s.variantMetafields).length ? splitList(s.variantMetafields) : undefined,
+    locations:
+      s.groups.includes("inventory") && s.locations ? s.locations : undefined,
+    metafields: splitList(s.metafields).length
+      ? splitList(s.metafields)
+      : undefined,
+    variantMetafields: splitList(s.variantMetafields).length
+      ? splitList(s.variantMetafields)
+      : undefined,
   };
 }
 
@@ -937,11 +984,18 @@ export function ExportForm({
   // "latest" | "blank" | preset id
   const [presetId, setPresetId] = useState(latest ? "latest" : "blank");
   const [presetName, setPresetName] = useState("");
-  const [presetMsg, setPresetMsg] = useState<{ tone: "success" | "critical"; text: string } | null>(null);
+  const [presetMsg, setPresetMsg] = useState<{
+    tone: "success" | "critical";
+    text: string;
+  } | null>(null);
   const [state, setState] = useState<Record<string, EntityState>>(() =>
-    latest ? stateFromPreset(entities, latest) : blankState(entities, ["products"]),
+    latest
+      ? stateFromPreset(entities, latest)
+      : blankState(entities, ["products"]),
   );
-  const [format, setFormat] = useState(latest?.format === "csv" ? "csv" : "xlsx");
+  const [format, setFormat] = useState(
+    latest?.format === "csv" ? "csv" : "xlsx",
+  );
   const [name, setName] = useState("");
   const [scheduled, setScheduled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
@@ -960,7 +1014,8 @@ export function ExportForm({
   const loadPreset = (id: string) => {
     setPresetId(id);
     setPresetMsg(null);
-    const data = id === "latest" ? latest : presets.find((p) => p.id === id)?.data;
+    const data =
+      id === "latest" ? latest : presets.find((p) => p.id === id)?.data;
     setState(data ? stateFromPreset(entities, data) : blankState(entities));
     if (data) setFormat(data.format === "csv" ? "csv" : "xlsx");
     setPresetName(presets.find((p) => p.id === id)?.name ?? "");
@@ -974,11 +1029,15 @@ export function ExportForm({
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (data.error) return setPresetMsg({ tone: "critical", text: data.error });
+      if (data.error)
+        return setPresetMsg({ tone: "critical", text: data.error });
       setPresets(data.presets);
       return data as { savedId?: string };
     } catch {
-      setPresetMsg({ tone: "critical", text: "Could not reach the server. Try again." });
+      setPresetMsg({
+        tone: "critical",
+        text: "Could not reach the server. Try again.",
+      });
     }
   };
 
@@ -986,7 +1045,10 @@ export function ExportForm({
     const name = presetName.trim();
     const data = {
       format,
-      entities: selected.map((e) => ({ entity: e.key, options: panelOptions(e, state[e.key]) })),
+      entities: selected.map((e) => ({
+        entity: e.key,
+        options: panelOptions(e, state[e.key]),
+      })),
     };
     const result = await presetRequest({ intent: "save", name, data });
     if (result?.savedId) {
@@ -997,9 +1059,15 @@ export function ExportForm({
 
   const deleteCurrentPreset = async () => {
     if (!currentPreset) return;
-    const result = await presetRequest({ intent: "delete", id: currentPreset.id });
+    const result = await presetRequest({
+      intent: "delete",
+      id: currentPreset.id,
+    });
     if (result) {
-      setPresetMsg({ tone: "success", text: `Deleted preset "${currentPreset.name}".` });
+      setPresetMsg({
+        tone: "success",
+        text: `Deleted preset "${currentPreset.name}".`,
+      });
       setPresetId("blank");
       setPresetName("");
     }
@@ -1034,9 +1102,19 @@ export function ExportForm({
 
       <s-section heading="Preset">
         <s-stack direction="block" gap="base">
-          <s-grid gridTemplateColumns="1fr 1fr auto auto" gap="base" alignItems="end">
-            <s-select label="Start from" value={presetId} onChange={(ev: any) => loadPreset(ev.currentTarget.value)}>
-              {latest ? <s-option value="latest">Latest export</s-option> : null}
+          <s-grid
+            gridTemplateColumns="1fr 1fr auto auto"
+            gap="base"
+            alignItems="end"
+          >
+            <s-select
+              label="Start from"
+              value={presetId}
+              onChange={(ev: any) => loadPreset(ev.currentTarget.value)}
+            >
+              {latest ? (
+                <s-option value="latest">Latest export</s-option>
+              ) : null}
               <s-option value="blank">New blank export</s-option>
               {presets.length ? (
                 <s-option-group label="Saved">
@@ -1054,18 +1132,29 @@ export function ExportForm({
               value={presetName}
               onInput={(ev: any) => setPresetName(ev.currentTarget.value)}
             />
-            <s-button onClick={savePreset} disabled={!presetName.trim() || !selected.length}>
-              {presets.some((p) => p.name === presetName.trim()) ? "Update preset" : "Save preset"}
+            <s-button
+              onClick={savePreset}
+              disabled={!presetName.trim() || !selected.length}
+            >
+              {presets.some((p) => p.name === presetName.trim())
+                ? "Update preset"
+                : "Save preset"}
             </s-button>
             {currentPreset ? (
-              <s-button variant="tertiary" tone="critical" onClick={deleteCurrentPreset}>
+              <s-button
+                variant="tertiary"
+                tone="critical"
+                onClick={deleteCurrentPreset}
+              >
                 Delete
               </s-button>
             ) : (
               <span />
             )}
           </s-grid>
-          {presetMsg ? <s-text tone={presetMsg.tone}>{presetMsg.text}</s-text> : null}
+          {presetMsg ? (
+            <s-text tone={presetMsg.tone}>{presetMsg.text}</s-text>
+          ) : null}
         </s-stack>
       </s-section>
 
@@ -1078,6 +1167,7 @@ export function ExportForm({
           <s-heading>Data to export</s-heading>
           {available.length ? (
             <s-select
+              key={available.map((e) => e.key).join(",")}
               label="Add data type"
               labelAccessibilityVisibility="exclusive"
               placeholder="+ Add data type…"
@@ -1131,7 +1221,7 @@ export function ExportForm({
           <s-text-field
             label="File name (optional)"
             value={name}
-            placeholder="Export_2026-11-10"
+            placeholder={`Export_${new Date().toISOString().slice(0, 10)}`}
             onInput={(ev: any) => setName(ev.currentTarget.value)}
           />
           <s-switch

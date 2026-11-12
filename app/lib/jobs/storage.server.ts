@@ -100,3 +100,31 @@ export async function cleanupOldFiles(): Promise<number> {
   }
   return removed;
 }
+
+// --- Secrets at rest ------------------------------------------------------------
+// Source / upload URLs can carry FTP passwords, so they are stored encrypted
+// (AES-256-GCM, key derived from the app secret).
+
+const SEALED = "enc:v1:";
+
+function sealKey() {
+  return crypto.createHash("sha256").update(`bulkport-seal:${secret()}`).digest();
+}
+
+export function sealSecret(plain: string | null | undefined): string | null {
+  if (!plain) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", sealKey(), iv);
+  const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  return SEALED + Buffer.concat([iv, cipher.getAuthTag(), body]).toString("base64url");
+}
+
+/** Decrypts a sealed value; values stored before encryption pass through unchanged. */
+export function openSecret(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  if (!stored.startsWith(SEALED)) return stored;
+  const raw = Buffer.from(stored.slice(SEALED.length), "base64url");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", sealKey(), raw.subarray(0, 12));
+  decipher.setAuthTag(raw.subarray(12, 28));
+  return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8");
+}

@@ -83,6 +83,8 @@ model Schedule {
   lastJobId       String?
   /// export: secret token of the permanent link that serves the latest result
   publicToken     String?   @unique
+  linkDownloads   Int       @default(0)
+  lastDownloadAt  DateTime?
   createdAt       DateTime  @default(now())
 
   @@index([enabled, nextRunAt])

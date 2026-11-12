@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { LoaderFunctionArgs } from "react-router";
-import { latestPublicFile } from "../lib/jobs/jobs.server";
+import { latestPublicFile, recordLinkDownload } from "../lib/jobs/jobs.server";
 import { resolveStored } from "../lib/jobs/storage.server";
 
 const TYPES: Record<string, string> = {
@@ -16,7 +16,7 @@ const TYPES: Record<string, string> = {
  * the schedule replaces what it serves. Access is by the secret token only.
  * An optional extension (/files/<token>.csv) is accepted for tools that need one.
  */
-export const loader = async ({ params }: LoaderFunctionArgs) => {
+export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const token = (params.token ?? "").replace(/\.(xlsx|csv|zip)$/i, "");
   const found = await latestPublicFile(token);
   if (!found) return new Response("Not found", { status: 404 });
@@ -26,6 +26,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
   const file = resolveStored(found.job.resultFile);
   if (!fs.existsSync(file)) return new Response("File no longer available", { status: 410 });
   const stat = await fs.promises.stat(file);
+  // Every download is counted and logged, so an unexpected reader shows up.
+  await recordLinkDownload(found.schedule.id);
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  console.log(`[files] schedule ${found.schedule.id} (${found.schedule.shop}) downloaded by ${ip}`);
   const ext = path.extname(file).toLowerCase();
   // Stable file name (no timestamp) so downloads overwrite the previous copy.
   const name = `${(found.schedule.name || "Export").replace(/[^\w.-]+/g, "_")}${ext}`;

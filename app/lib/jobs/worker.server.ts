@@ -5,7 +5,7 @@ import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
 import { executeJob } from "./runner.server";
 import { countItems } from "./counts.server";
-import { cleanupOldFiles, jobDir } from "./storage.server";
+import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { downloadSource, redactUrl, uploadResult } from "./sources.server";
 
 /**
@@ -101,9 +101,10 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     // Imports scheduled from a URL fetch their file at run time.
     if (job.type === "import" && !job.inputFile) {
       const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId } }) : null;
-      if (!schedule?.sourceUrl) throw new Error("No input file");
-      log(`Downloading ${redactUrl(schedule.sourceUrl)}`);
-      const { file, name } = await downloadSource(schedule.sourceUrl, jobDir(job.shop, job.id));
+      const sourceUrl = openSecret(schedule?.sourceUrl);
+      if (!sourceUrl) throw new Error("No input file");
+      log(`Downloading ${redactUrl(sourceUrl)}`);
+      const { file, name } = await downloadSource(sourceUrl, jobDir(job.shop, job.id));
       job.inputFile = file;
       job.inputName = name;
       await prisma.job.update({ where: { id: job.id }, data: { inputFile: file, inputName: name } });
@@ -127,9 +128,10 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
 
     if (job.type === "export" && job.scheduleId) {
       const schedule = await prisma.schedule.findUnique({ where: { id: job.scheduleId } });
-      if (schedule?.uploadUrl) {
-        log(`Uploading to ${redactUrl(schedule.uploadUrl)}`);
-        const remote = await uploadResult(resultFile, schedule.uploadUrl);
+      const uploadUrl = openSecret(schedule?.uploadUrl);
+      if (uploadUrl) {
+        log(`Uploading to ${redactUrl(uploadUrl)}`);
+        const remote = await uploadResult(resultFile, uploadUrl);
         log(`Uploaded ${path.basename(resultFile)} to ${remote}`);
       }
     }
