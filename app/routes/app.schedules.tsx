@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -73,6 +74,7 @@ function every(minutes: number): string {
 export default function Schedules() {
   const { schedules } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const navigate = useNavigate();
   const post = (data: Record<string, string>) =>
     fetcher.submit(data, { method: "post" });
@@ -238,16 +240,15 @@ export default function Schedules() {
                         variant="tertiary"
                         tone="critical"
                         onClick={() => {
-                          if (
-                            window.confirm(
-                              `Delete the schedule "${s.name}"? Its permanent link stops working too.`,
-                            )
-                          ) {
+                          // Two clicks instead of a browser dialog, which embedded app frames can block.
+                          if (confirmDelete === s.id)
                             post({ intent: "delete", id: s.id });
-                          }
+                          else setConfirmDelete(s.id);
                         }}
                       >
-                        Delete
+                        {confirmDelete === s.id
+                          ? "Click again to delete"
+                          : "Delete"}
                       </s-button>
                     </s-stack>
                   </s-table-cell>

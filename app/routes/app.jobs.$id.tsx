@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -57,7 +57,15 @@ export default function JobDetail() {
     return () => clearInterval(t);
   }, [active, revalidator]);
 
-  const timing = jobTiming(job);
+  // Timing depends on the current time, so it is computed in the browser only
+  // (rendering it on the server would not match) and refreshed every second.
+  const [timing, setTiming] = useState("");
+  useEffect(() => {
+    setTiming(jobTiming(job));
+    if (!active) return;
+    const t = setInterval(() => setTiming(jobTiming(job)), 1000);
+    return () => clearInterval(t);
+  }, [job, active]);
   const pct = job.total ? Math.min(100, Math.floor((job.progress / job.total) * 100)) : null;
   const heading = `${job.type === "export" ? "Export" : "Import"}: ${jobSummary(job)}`;
 
