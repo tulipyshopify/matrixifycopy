@@ -13,6 +13,13 @@ import { safeName } from "./storage.server";
  */
 export function directDownloadUrl(url: string): string {
   const u = new URL(url);
+  // "Publish to web" links (/spreadsheets/d/e/<id>/pub?output=csv) already
+  // download a file; only the web-page form needs an output format.
+  if (u.hostname === "docs.google.com" && u.pathname.startsWith("/spreadsheets/d/e/")) {
+    if (u.pathname.endsWith("/pubhtml")) u.pathname = u.pathname.replace(/\/pubhtml$/, "/pub");
+    if (!u.searchParams.get("output")) u.searchParams.set("output", "xlsx");
+    return u.toString();
+  }
   const sheet = /^\/spreadsheets\/d\/([^/]+)/.exec(u.pathname);
   if (u.hostname === "docs.google.com" && sheet) {
     return `https://docs.google.com/spreadsheets/d/${sheet[1]}/export?format=xlsx`;

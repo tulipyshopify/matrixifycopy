@@ -123,6 +123,8 @@ const VARIANT_SIGNAL_COLUMNS = VARIANT_COLUMNS.filter(
 );
 
 const INVENTORY_PREFIX = "Inventory Available: ";
+/** Adds to (or with a negative number, subtracts from) the stock at a location. */
+const INVENTORY_ADJUST_PREFIX = "Inventory Available Adjust: ";
 
 const WEIGHT_UNITS: Record<string, string> = {
   g: "GRAMS",
@@ -444,6 +446,8 @@ interface VariantSpec {
   inventory: Array<{ locationName: string; quantity: number }>;
   totalQty?: number;
   adjust?: number;
+  /** Per-location stock adjustments ("Inventory Available Adjust: <Location>"). */
+  adjustments: Array<{ locationName: string; delta: number }>;
   metafields: ReturnType<typeof metafieldsFromRow>;
 }
 
@@ -460,7 +464,7 @@ function isVariantRow(row: Row): boolean {
     return true;
   return Object.keys(row).some(
     (k) =>
-      (k.startsWith(INVENTORY_PREFIX) || k.startsWith("Variant Metafield:")) &&
+      (k.startsWith(INVENTORY_PREFIX) || k.startsWith(INVENTORY_ADJUST_PREFIX) || k.startsWith("Variant Metafield:")) &&
       (row[k] ?? "").trim() !== "",
   );
 }
@@ -568,8 +572,15 @@ function parseVariants(rows: Row[]): {
           quantity: q,
         });
     }
+    const adjustments: VariantSpec["adjustments"] = [];
+    for (const k of Object.keys(row)) {
+      if (!k.startsWith(INVENTORY_ADJUST_PREFIX)) continue;
+      const delta = parseInt10(row[k]);
+      if (delta) adjustments.push({ locationName: k.slice(INVENTORY_ADJUST_PREFIX.length).trim(), delta });
+    }
     variants.push({
       rowIndex,
+      adjustments,
       id: toGid("ProductVariant", cell(row, "Variant ID")),
       command:
         parseSubCommand(
@@ -873,6 +884,11 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
         locs.push(locationId);
       }
     }
+    for (const a of w.spec.adjustments) {
+      const loc = await locationByName(ctx.gql, ctx.cache, a.locationName);
+      changes.push({ inventoryItemId: w.inventoryItemId, locationId: loc.id, delta: a.delta, changeFromQuantity: null });
+      locs.push(loc.id);
+    }
     for (const locationId of new Set(locs)) {
       if (w.activeLocations.has(locationId)) continue;
       const d = await ctx.gql(INVENTORY_ACTIVATE, {
@@ -959,6 +975,7 @@ async function prepareCreate(
       optionValues: [],
       input: {},
       inventory: [],
+      adjustments: [],
       metafields: { set: [], blank: [] },
     });
   if (names.length === 0 && live.length > 1)
@@ -1405,8 +1422,7 @@ async function updateProduct(
   }
 
   const needsInventory = inventoryWork.filter(
-    (w) =>
-      w.spec.inventory.length || w.spec.totalQty !== undefined || w.spec.adjust,
+    (w) => w.spec.inventory.length || w.spec.totalQty !== undefined || w.spec.adjust || w.spec.adjustments.length,
   );
   if (needsInventory.length) await applyInventory(ctx, needsInventory);
 
@@ -1418,6 +1434,37 @@ async function deleteProduct(gql: Gql, id: string) {
   assertNoUserErrors(d.productDelete, "Delete product");
 }
 
+const VARIANT_PRODUCT = `#graphql
+  query ImportVariantProduct($id: ID!) { productVariant(id: $id) { id product { id } } }
+`;
+
+const VARIANTS_BY_SKU = `#graphql
+  query ImportVariantsBySku($query: String!, $after: String) {
+    productVariants(first: 50, query: $query, after: $after) {
+      nodes { id sku product { id } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+/** Product that owns a variant, looked up by Variant ID, else by exact SKU. */
+async function productIdForVariant(gql: Gql, variantId: string | undefined, sku: string | undefined): Promise<string | null> {
+  if (variantId) {
+    const v = (await gql(VARIANT_PRODUCT, { id: toGid("ProductVariant", variantId) })).productVariant;
+    return v?.product?.id ?? null;
+  }
+  if (!sku) return null;
+  const products = new Set<string>();
+  let after: string | null = null;
+  do {
+    const d: any = await gql(VARIANTS_BY_SKU, { query: `sku:"${sku.replace(/["\\]/g, "\\$&")}"`, after });
+    for (const v of d.productVariants.nodes) if (v.sku === sku) products.add(v.product.id);
+    after = d.productVariants.pageInfo.hasNextPage ? d.productVariants.pageInfo.endCursor : null;
+  } while (after && products.size < 2);
+  if (products.size > 1) throw new ImportError(`Variant SKU "${sku}" is used by several products; add the Variant ID`);
+  return [...products][0] ?? null;
+}
+
 export async function importProduct(
   ctx: ImportContext,
   rows: Row[],
@@ -1426,8 +1473,20 @@ export async function importProduct(
   const top = rows[0];
   const id = toGid("Product", cell(top, "ID"));
   const handle = cell(top, "Handle");
-  let existing =
-    id || handle ? await fetchProduct(ctx.gql, { id, handle }) : null;
+  let existing = id || handle ? await fetchProduct(ctx.gql, { id, handle }) : null;
+  // Variant-only sheets (no product ID or Handle): find the product through
+  // the row's Variant ID or Variant SKU.
+  if (!id && !handle) {
+    const productId = await productIdForVariant(ctx.gql, cell(top, "Variant ID"), cell(top, "Variant SKU"));
+    if (productId) existing = await fetchProduct(ctx.gql, { id: productId });
+    else if (cell(top, "Variant ID") || cell(top, "Variant SKU")) {
+      return {
+        status: "Failed",
+        command,
+        message: `No variant found with ${cell(top, "Variant ID") ? `Variant ID ${cell(top, "Variant ID")}` : `Variant SKU "${cell(top, "Variant SKU")}"`}`,
+      };
+    }
+  }
 
   switch (command) {
     case "DELETE": {
@@ -1530,7 +1589,8 @@ export const productsEntity: Entity = {
     { key: "seo", label: "SEO", default: true },
   ],
   export: exportProducts,
-  import: { keyColumns: ["ID", "Handle"], apply: importProduct },
+  // Variant ID / SKU come last: they only identify rows that have no product ID or Handle.
+  import: { keyColumns: ["ID", "Handle", "Variant ID", "Variant SKU"], apply: importProduct },
 };
 
 // Exported for tests.
