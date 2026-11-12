@@ -21,21 +21,29 @@ const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 3);
 const POLL_MS = 2000;
 const MAX_LOG_CHARS = 200_000;
 
+/** Jobs running longer than this are stopped and marked failed. */
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_HOURS ?? 12) * 3600_000;
+/** An export interrupted by this many server restarts is not started again. */
+const MAX_ATTEMPTS = 2;
+
 const running = new Set<string>(); // job ids
+// One export and one import may run per shop at a time, so an import never
+// waits behind a long export. Keys are "<shop>:<type>".
 const runningShops = new Set<string>();
+const slot = (job: { shop: string; type: string }) => `${job.shop}:${job.type}`;
 
 async function claimNext() {
   const candidates = await prisma.job.findMany({
-    where: { status: "queued", shop: { notIn: [...runningShops] } },
+    where: { status: "queued" },
     orderBy: { createdAt: "asc" },
-    take: 10,
+    take: 50,
   });
   for (const job of candidates) {
-    if (runningShops.has(job.shop)) continue;
+    if (runningShops.has(slot(job))) continue;
     // Atomic claim: only one worker flips queued -> running.
     const { count } = await prisma.job.updateMany({
       where: { id: job.id, status: "queued" },
-      data: { status: "running", startedAt: new Date() },
+      data: { status: "running", startedAt: new Date(), attempts: { increment: 1 } },
     });
     if (count === 1) return job;
   }
@@ -44,7 +52,9 @@ async function claimNext() {
 
 async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   running.add(job.id);
-  runningShops.add(job.shop);
+  runningShops.add(slot(job));
+  const startedAt = Date.now();
+  let timedOut = false;
 
   let logBuf = "";
   let progress = { done: 0, total: 0 };
@@ -69,6 +79,11 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   const timer = setInterval(() => flush().catch(() => {}), 2000);
   const isCancelled = async () => {
     if (cancelled) return true;
+    if (Date.now() - startedAt > JOB_TIMEOUT_MS) {
+      timedOut = true;
+      cancelled = true;
+      return true;
+    }
     const j = await prisma.job.findUnique({ where: { id: job.id }, select: { cancelRequested: true } });
     cancelled = !!j?.cancelRequested;
     return cancelled;
@@ -137,12 +152,14 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     await flush().catch(() => {});
     await prisma.job.update({
       where: { id: job.id },
-      data: { status: message === "Cancelled" ? "cancelled" : "failed", error: message, finishedAt: new Date() },
+      data: timedOut
+        ? { status: "failed", error: `Stopped after ${JOB_TIMEOUT_MS / 3600_000} hours (time limit).`, finishedAt: new Date() }
+        : { status: message === "Cancelled" ? "cancelled" : "failed", error: message, finishedAt: new Date() },
     });
   } finally {
     clearInterval(timer);
     running.delete(job.id);
-    runningShops.delete(job.shop);
+    runningShops.delete(slot(job));
   }
 }
 
@@ -166,6 +183,16 @@ async function fireSchedules() {
 
 async function recoverInterrupted() {
   // Exports are safe to retry; imports may have partially applied, so fail them.
+  // …but only so often: an export that was running at several restarts is
+  // probably what brought the server down, so it is not started again.
+  await prisma.job.updateMany({
+    where: { status: "running", type: "export", attempts: { gte: MAX_ATTEMPTS } },
+    data: {
+      status: "failed",
+      error: "Stopped: the server restarted while this export was running, more than once. Narrow it with filters, or export fewer data types at a time.",
+      finishedAt: new Date(),
+    },
+  });
   await prisma.job.updateMany({ where: { status: "running", type: "export" }, data: { status: "queued" } });
   await prisma.job.updateMany({
     where: { status: "running", type: "import" },

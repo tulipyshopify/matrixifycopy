@@ -8,6 +8,10 @@ services:
     env_file: .env.production
     environment:
       PORT: "3000"
+      # Node's own heap limit sits below the container limit, so a runaway job
+      # fails with an error instead of freezing the whole server.
+      NODE_OPTIONS: "--max-old-space-size=1536"
+    mem_limit: 2g
     volumes:
       - ./data:/data
     expose:

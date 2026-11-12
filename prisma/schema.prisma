@@ -54,6 +54,8 @@ model Job {
   log         String    @default("")
   error       String?
   cancelRequested Boolean @default(false)
+  /// Times the worker started this job (restarts re-queue exports).
+  attempts    Int       @default(0)
   scheduleId  String?
   createdAt   DateTime  @default(now())
   startedAt   DateTime?

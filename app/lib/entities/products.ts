@@ -297,7 +297,7 @@ export function productToRows(p: any, groups: Set<string>): Row[] {
         row[`Option${j + 1} Name`] = o.name;
         row[`Option${j + 1} Value`] = o.value;
       });
-      for (const lvl of inv.inventoryLevels ?? []) {
+      for (const lvl of inv.inventoryLevels ?? v.inventoryLevels ?? []) {
         const q = (lvl.quantities ?? []).find(
           (x: any) => x.name === "available",
         );

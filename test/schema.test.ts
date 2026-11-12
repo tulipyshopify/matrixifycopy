@@ -73,9 +73,11 @@ describe.skipIf(!hasSchema)("GraphQL operations match the Admin API schema", () 
     it(`bulk export query: ${entity.key}`, async () => {
       const queries: string[] = [];
       const ctx: ExportContext = {
-        gql: async () => {
+        gql: (async (q: string) => {
+          // The discounts export counts codes before it starts its bulk query.
+          if (/query DiscountCodeCounts/.test(q)) return { discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } };
           throw new Error("STOP");
-        },
+        }) as any,
         bulk: (q) => {
           queries.push(q);
           return (async function* () {})();

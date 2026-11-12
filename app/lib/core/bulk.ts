@@ -76,31 +76,61 @@ async function* httpLines(url: string): AsyncIterable<string> {
  * Reassembles JSONL lines (with __parentId references) into nested objects.
  * Requires groupObjects:true so that descendants follow their root.
  */
+/**
+ * Most child records kept in memory for one root item. A discount can hold
+ * millions of codes; without a cap one such item exhausts the server's memory.
+ */
+export const MAX_CHILDREN_PER_ROOT = Number(process.env.MAX_CHILDREN_PER_ROOT ?? 50_000);
+
+/** Indexes an object and any nested objects that have an id (e.g. a variant's inventoryItem). */
+function indexObject(index: Map<string, any>, obj: any, depth = 0) {
+  if (obj.id) index.set(obj.id, obj);
+  if (depth >= 3) return;
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) indexObject(index, v, depth + 1);
+  }
+}
+
 export async function* assemble(
   lines: AsyncIterable<string>,
   childKeys: Record<string, string> = DEFAULT_CHILD_KEYS,
+  onTruncated?: (rootId: string, dropped: number) => void,
+  maxChildren = MAX_CHILDREN_PER_ROOT,
 ): AsyncGenerator<any> {
   let root: any = null;
   let index = new Map<string, any>();
+  let kept = 0;
+  let dropped = 0;
+  const finish = () => {
+    if (dropped) onTruncated?.(root.id ?? "", dropped);
+    kept = 0;
+    dropped = 0;
+    return root;
+  };
   for await (const line of lines) {
     const obj = JSON.parse(line);
     const parentId: string | undefined = obj.__parentId;
     if (!parentId) {
-      if (root) yield root;
+      if (root) yield finish();
       root = obj;
       index = new Map();
-      if (obj.id) index.set(obj.id, obj);
+      indexObject(index, obj);
       continue;
     }
+    if (kept >= maxChildren) {
+      dropped++;
+      continue;
+    }
+    kept++;
     delete obj.__parentId;
     const parent = index.get(parentId);
     if (!parent) continue; // orphan (should not happen with groupObjects)
     const type = obj.__typename ?? (obj.id ? gidType(obj.id) : "");
     const key = childKeys[type] ?? DEFAULT_CHILD_KEYS[type] ?? (type ? type[0].toLowerCase() + type.slice(1) + "s" : "children");
     (parent[key] ??= []).push(obj);
-    if (obj.id) index.set(obj.id, obj);
+    indexObject(index, obj);
   }
-  if (root) yield root;
+  if (root) yield finish();
 }
 
 export function createBulkRunner(gql: Gql, opts: BulkOptions = {}): BulkRunner {
@@ -144,6 +174,10 @@ export function createBulkRunner(gql: Gql, opts: BulkOptions = {}): BulkRunner {
     }
     if (!op.url) return; // no results
     const lines = (opts.fetchLines ?? httpLines)(op.url);
-    yield* assemble(lines, opts.childKeys);
+    yield* assemble(lines, opts.childKeys, (rootId, dropped) =>
+      log(
+        `Warning: ${rootId} has more than ${MAX_CHILDREN_PER_ROOT.toLocaleString()} linked records; ${dropped.toLocaleString()} were left out to protect the server.`,
+      ),
+    );
   };
 }

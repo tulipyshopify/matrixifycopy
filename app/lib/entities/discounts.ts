@@ -411,9 +411,54 @@ export function discountToRows(node: any, groups: Set<string>, items?: any): Row
   return rows;
 }
 
+const CODE_COUNTS = `#graphql
+  query DiscountCodeCounts($query: String, $after: String) {
+    discountNodes(first: 250, query: $query, after: $after) {
+      nodes {
+        discount {
+          ... on DiscountCodeBasic { codesCount { count } }
+          ... on DiscountCodeFreeShipping { codesCount { count } }
+          ... on DiscountCodeBxgy { codesCount { count } }
+          ... on DiscountCodeApp { codesCount { count } }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+/** Above this many codes in total, an export leaves the codes out (set DISCOUNT_CODES_LIMIT to change). */
+export const DISCOUNT_CODES_LIMIT = Number(process.env.DISCOUNT_CODES_LIMIT ?? 200_000);
+
+/** Total number of codes across the discounts an export would include. */
+export async function countDiscountCodes(gql: Gql, search: string): Promise<number> {
+  let total = 0;
+  let after: string | null = null;
+  do {
+    const d: any = await gql(CODE_COUNTS, { query: search || null, after });
+    for (const n of d.discountNodes.nodes) total += n.discount?.codesCount?.count ?? 0;
+    after = d.discountNodes.pageInfo.hasNextPage ? d.discountNodes.pageInfo.endCursor : null;
+  } while (after);
+  return total;
+}
+
 async function exportDiscounts(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
   const groups = new Set(ctx.options.groups ?? discountsEntity.groups!.filter((g) => g.default).map((g) => g.key));
   const search = buildSearchQuery(ctx.options);
+  // Stores can hold millions of generated codes. Check the volume first: an
+  // export of that size takes hours and has taken the server down before.
+  if (groups.has("codes")) {
+    const codes = await countDiscountCodes(ctx.gql, search);
+    if (codes > DISCOUNT_CODES_LIMIT) {
+      groups.delete("codes");
+      ctx.log(
+        `Warning: these discounts hold ${codes.toLocaleString()} codes, more than the limit of ${DISCOUNT_CODES_LIMIT.toLocaleString()}. ` +
+          `Exporting the discounts without their codes. Filter to fewer discounts (for example by title, status or date) to include codes.`,
+      );
+    } else {
+      ctx.log(`${codes.toLocaleString()} codes to export`);
+    }
+  }
   let n = 0;
   const nodeMetafields = new Map<string, any[]>();
   if (groups.has("metafields") && groups.has("codes")) {

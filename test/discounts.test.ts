@@ -120,6 +120,7 @@ describe("discounts export", () => {
 
   it("fetches product lists separately during export", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: (v) => {
         expect(v.id).toBe("gid://shopify/DiscountCodeNode/100");
         return {
@@ -152,7 +153,7 @@ describe("discounts export", () => {
     await discountsEntity.export!(ctx, async (rows) => {
       out.push(rows);
     });
-    expect(m.ops()).toEqual(["DiscountDetail"]);
+    expect(m.ops()).toEqual(["DiscountCodeCounts", "DiscountDetail"]);
     expect(out[0][0]["Applies To: Product IDs"]).toBe("9");
     expect(out[1][0].Type).toBe("Free Shipping");
     expect(queries[0]).toContain("discountNodes");
@@ -246,6 +247,7 @@ describe("discounts import", () => {
   it("updates an existing code discount found by code, diffing products", async () => {
     const m = mockGql({
       ImportDiscountByCode: () => ({ codeDiscountNodeByCode: { id: "gid://shopify/DiscountCodeNode/100" } }),
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: () => ({
         discountNode: {
           id: "gid://shopify/DiscountCodeNode/100",
@@ -293,6 +295,7 @@ describe("discounts import", () => {
 
   it("finds by ID with Method and refuses changing the type", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: (v) => {
         expect(v.id).toBe("gid://shopify/DiscountAutomaticNode/200");
         return { discountNode: { id: v.id, discount: { __typename: "DiscountAutomaticFreeShipping", title: "Free" } } };
@@ -305,6 +308,7 @@ describe("discounts import", () => {
 
   it("skips BxGy discounts with a message", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: () => ({ discountNode: { id: "gid://shopify/DiscountCodeNode/5", discount: { __typename: "DiscountCodeBxgy", title: "B", codes: { nodes: [] } } } }),
     });
     const r = await importDiscount(importCtx(m.gql), [{ ID: "5", Title: "B" }], "MERGE");
@@ -313,6 +317,7 @@ describe("discounts import", () => {
 
   it("deletes an automatic discount, trying both node types when Method is blank", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: (v) =>
         v.id.includes("DiscountCodeNode")
           ? { discountNode: null }
@@ -328,6 +333,7 @@ describe("discounts import", () => {
   it("deletes a code discount found by code", async () => {
     const m = mockGql({
       ImportDiscountByCode: () => ({ codeDiscountNodeByCode: { id: "gid://shopify/DiscountCodeNode/7" } }),
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: (v) => ({ discountNode: { id: v.id, discount: { __typename: "DiscountCodeFreeShipping", title: "F", codes: { nodes: [{ code: "SHIP" }] } } } }),
       ImportDiscountCodeDelete: () => ({ discountCodeDelete: { ...ok, deletedCodeDiscountId: "x" } }),
     });
@@ -364,6 +370,7 @@ describe("discounts import", () => {
     ];
     for (const row of bad) {
       const m = mockGql({
+        DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
         DiscountDetail: () => fixedNode(),
         ImportDiscountCodeDelete: () => ({ discountCodeDelete: { ...ok, deletedCodeDiscountId: "x" } }),
       });
@@ -374,6 +381,7 @@ describe("discounts import", () => {
 
   it("REPLACE builds the input, then deletes and creates", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: () => fixedNode(),
       ImportDiscountCodeDelete: () => ({ discountCodeDelete: { ...ok, deletedCodeDiscountId: "x" } }),
       ImportDiscountCodeBasicCreate: () => ({ discountCodeBasicCreate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/101" } } }),
@@ -385,6 +393,7 @@ describe("discounts import", () => {
 
   it("partial sheet (ID + Value) keeps a fixed amount discount fixed", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: () => fixedNode(),
       ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
     });
@@ -397,6 +406,7 @@ describe("discounts import", () => {
     const pct = () =>
       fixedNode({ customerGets: { value: { __typename: "DiscountPercentage", percentage: 0.1 }, items: { __typename: "AllDiscountItems", allItems: true } } });
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: pct,
       ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
     });
@@ -410,6 +420,7 @@ describe("discounts import", () => {
 
   it("changing only Applies On Each Item re-sends the existing amount", async () => {
     const m = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: () => fixedNode(),
       ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/100" } } }),
     });
@@ -474,6 +485,7 @@ describe("discounts import", () => {
                 pageInfo: { hasNextPage: true, endCursor: "c1" },
               },
             },
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: (v) => ({ discountNode: { id: v.id, discount: { __typename: "DiscountAutomaticBasic", title: "Sale" } } }),
       ImportDiscountAutomaticDelete: () => ({ discountAutomaticDelete: { ...ok, deletedAutomaticDiscountId: "x" } }),
     });
@@ -517,7 +529,7 @@ describe("discounts import", () => {
     };
 
     // Export: all 251 products.
-    const m = mockGql({ DiscountDetail: detail, DiscountItemsPage: itemsPage });
+    const m = mockGql({ DiscountDetail: detail, DiscountItemsPage: itemsPage, DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }) });
     const out: Row[][] = [];
     const ctx: ExportContext = {
       gql: m.gql,
@@ -537,6 +549,7 @@ describe("discounts import", () => {
 
     // Update: product 251 is already there, so nothing is added or removed.
     const m2 = mockGql({
+      DiscountCodeCounts: () => ({ discountNodes: { nodes: [], pageInfo: { hasNextPage: false } } }),
       DiscountDetail: detail,
       DiscountItemsPage: itemsPage,
       ImportDiscountCodeBasicUpdate: () => ({ discountCodeBasicUpdate: { ...ok, codeDiscountNode: { id: "x" } } }),
