@@ -113,6 +113,35 @@ cd /opt/bulkport && git pull && docker compose up -d --build
 Jobs that are running during an update: exports restart automatically, imports are marked failed (check the store
 before re-running).
 
+## Running it for another Shopify organisation
+
+A Shopify app belongs to one organisation and can only be installed on that organisation's stores. For stores in
+another organisation, create a second app there and run a second copy of Bulkport beside the first: same server, same
+code, but its own address, credentials and data.
+
+1. **Address**: add a DNS A record for a new name (for example `bulk2.tulipy.app`) pointing at this server.
+2. **App**: in the other organisation's Dev Dashboard (`dev.shopify.com`), create an app and release a version with
+   * App URL: `https://<the new address>`, embedded in Shopify admin: yes
+   * Redirect URLs: `https://<the new address>/auth/callback`, `/auth/shopify/callback` and `/api/auth/callback`
+   * Scopes: the `scopes` line from `shopify.app.toml`
+   * Webhooks API version: `2026-10`
+
+   Copy the **Client ID** from the app's Settings page; keep the **Client secret** page open.
+3. **Server**:
+
+   ```shell
+   cd /opt/bulkport && git pull
+   scripts/add-instance.sh <name> <the new address> <client id>     # asks for the Client secret
+   docker compose run --rm caddy caddy validate --config /etc/caddy/Caddyfile   # must say "Valid configuration"
+   docker compose up -d --build && docker compose restart caddy
+   ```
+
+4. **Install** it on the store from the app's page in that Dev Dashboard.
+
+Updating stays the same command and updates every copy. The second copy's data is in `/opt/bulkport/data-<name>`
+(add it to the backup). Each copy may use up to about 1.5 GB of memory while a big job runs, so on a 4 GB server avoid
+running very large exports in both at the same time.
+
 ## Backups
 
 Everything the app stores is in `/opt/bulkport/data`: the database (job history, schedules, Shopify sessions) and job

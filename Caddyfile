@@ -5,3 +5,6 @@
 	}
 	reverse_proxy app:3000
 }
+
+# Extra instances of the app (another Shopify organisation), one file each.
+import extra/*.caddy

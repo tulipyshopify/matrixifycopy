@@ -35,3 +35,10 @@ pnpm-lock.yaml
 /bulkport.bundle
 !.env.production.example
 /data
+
+# Extra app instances on the server (scripts/add-instance.sh): local to each server
+/instances/*
+!/instances/.gitkeep
+/caddy-extra/*
+!/caddy-extra/.gitkeep
+/data-*/

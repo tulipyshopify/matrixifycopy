@@ -4,6 +4,8 @@
 services:
   app:
     build: .
+    # Extra instances (scripts/add-instance.sh) run this same image.
+    image: bulkport-app:latest
     restart: unless-stopped
     env_file: .env.production
     environment:
@@ -27,6 +29,8 @@ services:
       APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env (e.g. bulkport.example.com)}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # One small file per extra instance (scripts/add-instance.sh)
+      - ./caddy-extra:/etc/caddy/extra:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
