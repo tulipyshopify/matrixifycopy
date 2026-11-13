@@ -61,6 +61,28 @@ const splitList = (v: string) =>
     .map((x) => x.trim())
     .filter(Boolean);
 
+type PrefixGroup = { key: string; default: boolean; columnPrefix?: string };
+const prefixGroups = (e: EntityInfo) =>
+  (e.groups as PrefixGroup[]).filter((g) => g.columnPrefix);
+
+/** Columns whose data group (e.g. Browser) is switched off are not selected. */
+function withoutOffGroups(e: EntityInfo, columns: string[], groups: string[]) {
+  const off = prefixGroups(e).filter((g) => !groups.includes(g.key));
+  return off.length
+    ? columns.filter((c) => !off.some((g) => c.startsWith(g.columnPrefix!)))
+    : columns;
+}
+
+/** A data group tied to columns is on exactly when one of its columns is ticked. */
+function syncPrefixGroups(e: EntityInfo, columns: string[], groups: string[]) {
+  let out = groups;
+  for (const g of prefixGroups(e)) {
+    const on = columns.some((c) => c.startsWith(g.columnPrefix!));
+    out = on ? [...new Set([...out, g.key])] : out.filter((k) => k !== g.key);
+  }
+  return out;
+}
+
 function blankState(
   entities: EntityInfo[],
   enabled: string[] = [],
@@ -72,7 +94,11 @@ function blankState(
         enabled: enabled.includes(e.key),
         open: true,
         groups: e.groups.filter((g) => g.default).map((g) => g.key),
-        columns: [...e.columns],
+        columns: withoutOffGroups(
+          e,
+          [...e.columns],
+          e.groups.filter((g) => g.default).map((g) => g.key),
+        ),
         filters: [],
         dateRange: null,
         query: "",
@@ -132,6 +158,11 @@ function stateFromPreset(
       metafields: (o.metafields ?? []).join(", "),
       variantMetafields: (o.variantMetafields ?? []).join(", "),
     };
+    state[entity].columns = withoutOffGroups(
+      e,
+      state[entity].columns,
+      state[entity].groups,
+    );
   }
   return state;
 }
@@ -494,6 +525,9 @@ export function columnSections(
     // Current product/variant data of order lines is its own (slower) section.
     const name = /^Line: (Product (Type|Tags)|Variant (?!ID$|Title$))/.test(c)
       ? "Line items product data"
+      : entity.key === "orders" && /^(Billing|Shipping|Browser)$/.test(prefix)
+        ? // Who bought, where it goes and where they came from: one section.
+          "Customer"
       : prefix
         ? (SECTION_NAMES[prefix] ?? prefix)
         : "Basic columns";
@@ -508,6 +542,9 @@ export function columnSections(
   );
   return sections;
 }
+
+/** Columns fetched order by order from an older Shopify API. */
+const SLOW_COLUMNS = /^Browser: (Width|Height|User Agent)$/;
 
 /** Data groups that add API work per item and so make exports slower. */
 const isSlowGroup = (key: string) =>
@@ -588,7 +625,7 @@ function ColumnPicker({
   entity,
   columns,
   groups,
-  onChange,
+  onChange: rawChange,
   state,
 }: {
   entity: EntityInfo;
@@ -597,6 +634,20 @@ function ColumnPicker({
   onChange: (patch: Partial<EntityState>) => void;
   state: EntityState;
 }) {
+  // Data that belongs to columns (Browser) follows the ticked columns.
+  const onChange = (patch: Partial<EntityState>) =>
+    rawChange(
+      patch.columns
+        ? {
+            ...patch,
+            groups: syncPrefixGroups(
+              entity,
+              patch.columns,
+              patch.groups ?? groups,
+            ),
+          }
+        : patch,
+    );
   // Nothing is forced: key columns can be left out for report-style exports.
   const required = new Set<string>();
   const keyColumns = ["ID", ...entity.keyColumns];
@@ -614,6 +665,8 @@ function ColumnPicker({
     }));
     const extra: Array<{ key: string; label: string }> = [];
     for (const g of entity.groups) {
+      // Switched on by ticking its columns; no row of its own.
+      if ((g as { columnPrefix?: string }).columnPrefix) continue;
       const sec =
         secs.find(
           (x) => !x.group && x.name.toLowerCase() === g.label.toLowerCase(),
@@ -702,7 +755,7 @@ function ColumnPicker({
                 {sec.columns.map((c) => (
                   <s-checkbox
                     key={c}
-                    label={c}
+                    label={SLOW_COLUMNS.test(c) ? `${c} (slow)` : c}
                     checked={
                       required.has(c) || (groupOn && columns.includes(c))
                     }

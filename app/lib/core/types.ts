@@ -140,6 +140,8 @@ export interface ExportContext {
   options: ExportOptions;
   log: Logger;
   cache: Map<string, unknown>;
+  /** GET on the store's REST Admin API, for the few fields GraphQL lacks. Path is relative, e.g. `orders.json?ids=1`. */
+  rest?: (path: string) => Promise<any>;
   /** Report progress (number of root items processed so far). */
   progress: (done: number) => void;
 }
@@ -178,6 +180,11 @@ export interface ColumnGroup {
   default: boolean;
   /** Shown as its own row in the export form, never merged into a column section. */
   standalone?: boolean;
+  /**
+   * Columns starting with this prefix need this group's data. The export form
+   * then has no row for the group: ticking one of its columns switches it on.
+   */
+  columnPrefix?: string;
 }
 
 export interface EntityImporter {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import prisma from "../../db.server";
-import { unauthenticated } from "../../shopify.server";
+import { apiVersion, unauthenticated } from "../../shopify.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
 import { shopTimezone } from "../core/lookups";
@@ -8,6 +8,7 @@ import { executeJob } from "./runner.server";
 import { nextRun } from "./schedule-time";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
+import { clearOldExports } from "./jobs.server";
 import { downloadSource, redactUrl, uploadResult } from "./sources.server";
 
 /**
@@ -92,7 +93,16 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   };
 
   try {
-    const { admin } = await unauthenticated.admin(job.shop);
+    const { admin, session } = await unauthenticated.admin(job.shop);
+    // A few order fields (browser size, user agent) only exist in the REST API.
+    const rest = async (p: string) => {
+      const res = await fetch(`https://${job.shop}/admin/api/${apiVersion}/${p}`, {
+        headers: { "X-Shopify-Access-Token": session.accessToken ?? "", Accept: "application/json" },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) throw new Error(`REST ${res.status}`);
+      return res.json();
+    };
     const gql = createGql(async (query, variables) => {
       const res = await admin.graphql(query, { variables, tries: 3 });
       return res.json();
@@ -115,6 +125,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     const { resultFile, stats } = await executeJob(job, {
       gql,
       bulk,
+      rest,
       log,
       progress: (done, total) => {
         progress = { done, total };
@@ -224,6 +235,8 @@ export function startWorker() {
         lastCleanup = Date.now();
         const n = await cleanupOldFiles();
         if (n) console.log(`[worker] removed ${n} old job folders`);
+        const cleared = await clearOldExports();
+        if (cleared) console.log(`[worker] cleared ${cleared} exports from the history`);
       }
     } catch (e) {
       console.error("[worker] tick failed", e);

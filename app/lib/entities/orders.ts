@@ -49,6 +49,33 @@ import {
 
 // --- Columns --------------------------------------------------------------------
 
+/** Where the buyer came from (group "browser"). Export only. */
+const BROWSER_COLUMNS = [
+  "Browser: IP",
+  "Browser: Width",
+  "Browser: Height",
+  "Browser: User Agent",
+  "Browser: Landing Page",
+  "Browser: Referrer",
+  "Browser: Referrer Domain",
+  "Browser: Search Keywords",
+  "Browser: Ad URL",
+  "Browser: UTM Source",
+  "Browser: UTM Medium",
+  "Browser: UTM Campaign",
+  "Browser: UTM Term",
+  "Browser: UTM Content",
+];
+/** Only in the REST API, fetched per batch of orders: slower. */
+const CLIENT_DETAIL_COLUMNS = ["Browser: Width", "Browser: Height", "Browser: User Agent"];
+
+/** Address columns in the order they appear in the Customer section. */
+function ORDER_ADDRESS_COLUMNS(prefix: string): string[] {
+  return ["First Name", "Last Name", "Name", "Company", "Phone", "Address 1", "Address 2", "Zip", "City", "Province", "Province Code", "Country", "Country Code"].map(
+    (f) => `${prefix}: ${f}`,
+  );
+}
+
 const ORDER_COLUMNS = [
   "ID",
   "Name",
@@ -77,9 +104,9 @@ const ORDER_COLUMNS = [
   "Source",
   "Customer: ID",
   "Customer: Email",
+  "Customer: Phone",
   "Customer: First Name",
   "Customer: Last Name",
-  "Customer: Phone",
   "Customer: Note",
   "Customer: State",
   "Customer: Tags",
@@ -88,6 +115,9 @@ const ORDER_COLUMNS = [
   "Customer: Tax Exempt",
   "Customer: Orders Count",
   "Customer: Total Spent",
+  ...ORDER_ADDRESS_COLUMNS("Billing"),
+  ...ORDER_ADDRESS_COLUMNS("Shipping"),
+  ...BROWSER_COLUMNS,
   "Discount Codes",
   "Shipping Line: Title",
   "Shipping Line: Code",
@@ -165,18 +195,6 @@ const FULFILLMENT_COLUMNS = [
   "Fulfillment: Tracking URL",
 ];
 
-/** Where the buyer came from (group "browser"). Export only. */
-const BROWSER_COLUMNS = [
-  "Browser: IP",
-  "Browser: Landing Page",
-  "Browser: Referrer",
-  "Browser: Referrer Domain",
-  "Browser: UTM Source",
-  "Browser: UTM Medium",
-  "Browser: UTM Campaign",
-  "Browser: UTM Term",
-  "Browser: UTM Content",
-];
 const VISIT = "{ landingPage referrerUrl utmParameters { source medium campaign term content } }";
 const BROWSER_SELECTION = `clientIp customerJourneySummary { firstVisit ${VISIT} lastVisit ${VISIT} }`;
 
@@ -282,6 +300,28 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
   }`;
 }
 
+/** What the buyer searched for, when the referrer is a search results page. */
+function searchKeywords(referrer: string | null | undefined): string {
+  try {
+    const p = new URL(referrer ?? "").searchParams;
+    return p.get("q") ?? p.get("query") ?? p.get("p") ?? p.get("text") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+const AD_CLICK_IDS = ["gclid", "gbraid", "wbraid", "fbclid", "msclkid", "ttclid", "twclid", "li_fat_id", "epik"];
+
+/** The landing page, when it carries an ad platform's click ID. */
+function adUrl(landingPage: string | null | undefined): string {
+  try {
+    const u = new URL(landingPage ?? "", "https://x.invalid");
+    return AD_CLICK_IDS.some((k) => u.searchParams.has(k)) ? (landingPage ?? "") : "";
+  } catch {
+    return "";
+  }
+}
+
 export function orderToRows(o: any, groups: Set<string>): Row[] {
   const lines: any[] = o.lineItems ?? [];
   const transactions: any[] = o.transactions ?? [];
@@ -379,9 +419,14 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         }
         Object.assign(row, {
           "Browser: IP": o.clientIp ?? "",
+          "Browser: Width": str(o.clientDetails?.browser_width),
+          "Browser: Height": str(o.clientDetails?.browser_height),
+          "Browser: User Agent": o.clientDetails?.user_agent ?? "",
           "Browser: Landing Page": visit?.landingPage ?? "",
           "Browser: Referrer": visit?.referrerUrl ?? "",
           "Browser: Referrer Domain": referrerDomain,
+          "Browser: Search Keywords": searchKeywords(visit?.referrerUrl),
+          "Browser: Ad URL": adUrl(visit?.landingPage),
           "Browser: UTM Source": visit?.utmParameters?.source ?? "",
           "Browser: UTM Medium": visit?.utmParameters?.medium ?? "",
           "Browser: UTM Campaign": visit?.utmParameters?.campaign ?? "",
@@ -495,19 +540,54 @@ async function shippingLinesFor(ctx: ExportContext, o: any): Promise<any[]> {
   return main ? [main] : [];
 }
 
+/**
+ * Browser size and user agent exist only in the REST API. Fetched for a batch
+ * of orders at a time; if the store refuses, the columns are left empty.
+ */
+async function addClientDetails(ctx: ExportContext, orders: any[]) {
+  if (!ctx.rest || !orders.length || ctx.cache.get("orders:clientDetailsOff")) return;
+  try {
+    const ids = orders.map((o) => gidToId(o.id)).join(",");
+    const data = await ctx.rest(`orders.json?status=any&limit=250&fields=id,client_details&ids=${ids}`);
+    const byId = new Map<string, any>((data?.orders ?? []).map((x: any) => [String(x.id), x.client_details]));
+    for (const o of orders) o.clientDetails = byId.get(gidToId(o.id)) ?? null;
+  } catch (e: any) {
+    ctx.cache.set("orders:clientDetailsOff", true);
+    ctx.log(`Browser width, height and user agent could not be read (${e?.message ?? e}); those columns are left empty`);
+  }
+}
+
+const CLIENT_DETAILS_BATCH = 100;
+
 async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
   const groups = new Set(ctx.options.groups ?? ordersEntity.groups!.filter((g) => g.default).map((g) => g.key));
   // Settings saved before shipping rows existed (old presets, schedules, "Run
   // again") never mention them: include them whenever line items are exported.
   if ((ctx.options.v ?? 1) < 2 && groups.has("line_items")) groups.add("shipping_lines");
+  // Browser data is skipped when none of its columns is wanted.
+  const wanted = (cols: string[]) => !ctx.options.columns || cols.some((c) => ctx.options.columns!.includes(c));
+  if (groups.has("browser") && !wanted(BROWSER_COLUMNS)) groups.delete("browser");
+  const clientDetails = groups.has("browser") && wanted(CLIENT_DETAIL_COLUMNS);
   const search = buildSearchQuery(ctx.options);
   let n = 0;
+  let batch: any[] = [];
+  const flush = async () => {
+    if (clientDetails) await addClientDetails(ctx, batch);
+    for (const o of batch) {
+      await emit(orderToRows(o, groups));
+      ctx.progress(++n);
+    }
+    batch = [];
+  };
+  let seen = 0;
   for await (const o of ctx.bulk(ordersBulkQuery(search, groups))) {
     if (groups.has("shipping_lines")) o.shippingLines = await shippingLinesFor(ctx, o);
-    await emit(orderToRows(o, groups));
-    ctx.progress(++n);
-    if (ctx.options.limit && n >= ctx.options.limit) break;
+    batch.push(o);
+    seen++;
+    if (batch.length >= (clientDetails ? CLIENT_DETAILS_BATCH : 1)) await flush();
+    if (ctx.options.limit && seen >= ctx.options.limit) break;
   }
+  await flush();
 }
 
 // --- Import: lookups --------------------------------------------------------------------
@@ -674,6 +754,14 @@ export async function orderCreateInput(
     const last = cell(top, "Customer: Last Name");
     if (first) upsert.firstName = first;
     if (last) upsert.lastName = last;
+    const phone = cell(top, "Customer: Phone");
+    if (phone) upsert.phone = phone;
+    const note = cell(top, "Customer: Note");
+    if (note) upsert.note = note;
+    const tags = splitTags(cell(top, "Customer: Tags"));
+    if (tags.length) upsert.tags = tags;
+    const exempt = parseBool(cell(top, "Customer: Tax Exempt"));
+    if (exempt !== undefined) upsert.taxExempt = exempt;
     order.customer = { toUpsert: upsert };
   }
 
@@ -831,11 +919,6 @@ export const ordersEntity: Entity = {
     ...DETAIL_COLUMNS,
     ...PRICE_COLUMNS,
     ...TAX_COLUMNS,
-    "Billing: Name",
-    ...addressColumns("Billing"),
-    "Shipping: Name",
-    ...addressColumns("Shipping"),
-    ...BROWSER_COLUMNS,
     ...ORDER_LINE_COLUMNS,
     ...LINE_PRODUCT_COLUMNS,
     ...FULFILLMENT_COLUMNS,
@@ -845,7 +928,8 @@ export const ordersEntity: Entity = {
   groups: [
     { key: "line_items", label: "Line items", default: true },
     { key: "line_product_data", label: "Line items product data", default: false },
-    { key: "browser", label: "Browser", default: false },
+    // No row of its own: its columns sit in the Customer section.
+    { key: "browser", label: "Browser", default: false, columnPrefix: "Browser:" },
     // Standalone: these are extra rows, not the Shipping address columns.
     { key: "shipping_lines", label: "Shipping lines as rows", default: true, standalone: true },
     { key: "fulfillments", label: "Fulfillments", default: true },

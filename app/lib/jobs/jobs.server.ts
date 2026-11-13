@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
@@ -199,6 +200,41 @@ export function listJobs(shop: string, take = 50) {
       scheduleId: true,
     },
   });
+}
+
+/** Days an export stays in the history (and its file on the server). */
+export const EXPORT_HISTORY_DAYS = Number(process.env.EXPORT_HISTORY_DAYS ?? 7);
+
+/**
+ * Removes exports older than the history period, with their files. The newest
+ * finished run of each schedule is kept, so its permanent link keeps working
+ * even when the schedule runs less often than the period.
+ */
+export async function clearOldExports(days = EXPORT_HISTORY_DAYS, now = new Date()): Promise<number> {
+  if (!(days > 0)) return 0;
+  const cutoff = new Date(now.getTime() - days * 86400_000);
+  const old = await prisma.job.findMany({
+    where: { type: "export", status: { in: ["finished", "failed", "cancelled"] }, createdAt: { lt: cutoff } },
+    select: { id: true, shop: true, scheduleId: true },
+    take: 1000,
+  });
+  const keep = new Set<string>();
+  for (const scheduleId of new Set(old.map((j) => j.scheduleId).filter((x): x is string => !!x))) {
+    const newest = await prisma.job.findFirst({
+      where: { scheduleId, status: "finished", resultFile: { not: null } },
+      orderBy: { finishedAt: "desc" },
+      select: { id: true },
+    });
+    if (newest) keep.add(newest.id);
+  }
+  let removed = 0;
+  for (const j of old) {
+    if (keep.has(j.id)) continue;
+    await fs.promises.rm(jobDir(j.shop, j.id), { recursive: true, force: true }).catch(() => {});
+    await prisma.job.deleteMany({ where: { id: j.id } });
+    removed++;
+  }
+  return removed;
 }
 
 export async function getJob(shop: string, id: string) {

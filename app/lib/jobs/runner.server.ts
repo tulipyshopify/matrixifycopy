@@ -28,6 +28,8 @@ export interface JobRecord {
 export interface RunnerDeps {
   gql: Gql;
   bulk: BulkRunner;
+  /** GET on the store's REST Admin API (relative path). */
+  rest?: (path: string) => Promise<any>;
   log: Logger;
   progress: (done: number, total: number) => void;
   isCancelled: () => Promise<boolean>;
@@ -95,6 +97,7 @@ export async function executeJob(
     const stats = await runExport({
       gql: deps.gql,
       bulk: deps.bulk,
+      rest: deps.rest,
       requests,
       out,
       tmpDir: tmpDir(),

@@ -4,7 +4,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, listJobs, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
+import { EXPORT_HISTORY_DAYS, cancelJob, downloadLinks, listJobs, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
 import { describeSchedule } from "../lib/jobs/schedule-time";
 import { StatusBadge, formatDate, isActive, jobRow } from "../components/jobs";
 import { ImportForm } from "../components/ImportForm";
@@ -24,6 +24,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     })),
     scheduleCount: schedules.filter((s) => s.enabled).length,
     maxUploadMb: MAX_UPLOAD_MB,
+    historyDays: EXPORT_HISTORY_DAYS,
   };
 };
 
@@ -37,7 +38,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Home() {
-  const { jobs, scheduleCount, maxUploadMb } = useLoaderData<typeof loader>();
+  const { jobs, scheduleCount, maxUploadMb, historyDays } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   // The job whose button was just pressed, until the list has refreshed.
@@ -157,6 +158,11 @@ export default function Home() {
             </div>
           </s-section>
         )}
+        {historyDays > 0 ? (
+          <s-text tone="neutral">
+            Exports stay in this list for {historyDays} days, then they and their files are cleared. A schedule's latest file is kept for its permanent link.
+          </s-text>
+        ) : null}
       </div>
     </s-page>
   );

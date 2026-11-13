@@ -15,6 +15,7 @@ export interface ExportSummary {
 
 export interface RunExportArgs {
   gql: Gql;
+  rest?: (path: string) => Promise<any>;
   bulk: BulkRunner;
   requests: ExportRequest[];
   out: WorkbookOut;
@@ -76,6 +77,7 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
     const ctx: ExportContext = {
       gql,
       bulk,
+      rest: args.rest,
       options,
       log: (m) => log(`${entity.sheet}: ${m}`),
       cache,
