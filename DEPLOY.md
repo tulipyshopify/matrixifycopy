@@ -138,6 +138,12 @@ code, but its own address, credentials and data.
 
 4. **Install** it on the store from the app's page in that Dev Dashboard.
 
+**From a Partner organisation instead** (when you can't create apps in the store's own organisation): create the app
+in your Partner organisation, then on its Distribution card choose **Custom distribution** (this can't be changed
+later), enter the store's `myshopify.com` domain and generate the install link for the store owner. One such app
+serves one store, or one Plus organisation. Shopify requires an **IP allowlist** on the app before it can be installed
+outside your organisation: add this server's public IP address in the app's settings first. Steps 1 and 3 are the same.
+
 Updating stays the same command and updates every copy. The second copy's data is in `/opt/bulkport/data-<name>`
 (add it to the backup). Each copy may use up to about 1.5 GB of memory while a big job runs, so on a 4 GB server avoid
 running very large exports in both at the same time.
