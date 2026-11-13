@@ -17,9 +17,18 @@ if [[ ! "$domain" =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]]; then echo "Domain: like bulk.e
 if [[ ! "$client_id" =~ ^[0-9a-f]{32}$ ]]; then echo "Client ID: the 32-character value from the app's Settings page" >&2; exit 1; fi
 if [[ "$name" == "app" || "$name" == "caddy" ]]; then echo "Choose another name" >&2; exit 1; fi
 
-secret="${SHOPIFY_API_SECRET:-}"
-if [[ -z "$secret" ]]; then read -r -s -p "Client secret for $domain: " secret; echo; fi
+# Always asked for, so a secret already set in this shell (the first app's) is never reused by mistake.
+# INSTANCE_SECRET is only for scripted set-ups.
+secret="${INSTANCE_SECRET:-}"
+if [[ -z "$secret" ]]; then
+  echo "Paste the Client secret of the app for $domain and press Enter (it is not shown):"
+  read -r -s secret </dev/tty
+  echo
+fi
 if [[ -z "$secret" ]]; then echo "No secret given" >&2; exit 1; fi
+if [[ -f .env.production ]] && grep -qxF "SHOPIFY_API_SECRET=$secret" .env.production; then
+  echo "That is the secret of the first app. Use the one from the new app's Settings page." >&2; exit 1
+fi
 
 scopes="$(grep -m1 '^scopes' shopify.app.toml | sed -E 's/^scopes *= *"(.*)"$/\1/')"
 mkdir -p instances caddy-extra "data-$name"
