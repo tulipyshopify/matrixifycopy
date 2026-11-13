@@ -40,6 +40,8 @@ export default function Home() {
   const { jobs, scheduleCount, maxUploadMb } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
+  // The job whose button was just pressed, until the list has refreshed.
+  const pendingId = fetcher.state !== "idle" ? String(fetcher.formData?.get("id") ?? "") || null : null;
   const anyActive = jobs.some((j) => isActive(j.status));
 
   // Poll while jobs are running.
@@ -127,15 +129,21 @@ export default function Home() {
                         ) : null}
                         {isActive(job.status) ? (
                           <s-button
-                            variant="tertiary"
+                            variant="secondary"
                             tone="critical"
+                            icon="stop-circle"
+                            loading={pendingId === job.id}
                             onClick={() => fetcher.submit({ intent: "cancel", id: job.id }, { method: "post" })}
                           >
                             Stop
                           </s-button>
                         ) : (
                           <s-button
-                            variant="tertiary"
+                            variant="secondary"
+                            icon="refresh"
+                            loading={pendingId === job.id}
+                            disabled={pendingId !== null && pendingId !== job.id}
+                            accessibilityLabel={`Run ${row.kind.toLowerCase()} ${row.number} again`}
                             onClick={() => fetcher.submit({ intent: "rerun", id: job.id }, { method: "post" })}
                           >
                             Run again
