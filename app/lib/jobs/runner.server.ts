@@ -31,6 +31,8 @@ export interface RunnerDeps {
   log: Logger;
   progress: (done: number, total: number) => void;
   isCancelled: () => Promise<boolean>;
+  /** The shop's IANA time zone. */
+  timezone?: () => Promise<string>;
   /** Expected number of items for an entity's export, or null when unknown. */
   count?: (entity: string, options: ExportOptions) => Promise<number | null>;
   /** The worker's bulk runner reports prepared root items through this hook. */
@@ -53,10 +55,12 @@ export async function executeJob(
 
   if (job.type === "export") {
     const config = JSON.parse(job.config) as ExportConfig;
+    // Date ranges ("Last month") are worked out in the shop's own time zone.
+    const timezone = deps.timezone ? await deps.timezone() : "UTC";
     const requests = config.entities.map(({ entity, options }) => {
       const e = getEntity(entity);
       if (!e) throw new Error(`Unknown entity "${entity}"`);
-      return { entity: e, options };
+      return { entity: e, options: { ...options, timezone } };
     });
     const base = job.name ? job.name.replace(/[^\w.-]+/g, "_") : `Export_${timestamp()}`;
     const out = createWorkbookOut(format, path.join(dir, base), deps.log);

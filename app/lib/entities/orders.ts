@@ -811,7 +811,8 @@ export const ordersEntity: Entity = {
     { key: "line_items", label: "Line items", default: true },
     { key: "line_product_data", label: "Line items product data", default: false },
     { key: "browser", label: "Browser", default: false },
-    { key: "shipping_lines", label: "Shipping lines as rows", default: true },
+    // Standalone: these are extra rows, not the Shipping address columns.
+    { key: "shipping_lines", label: "Shipping lines as rows", default: true, standalone: true },
     { key: "fulfillments", label: "Fulfillments", default: true },
     { key: "transactions", label: "Transactions", default: true },
     { key: "metafields", label: "Order metafields", default: true },

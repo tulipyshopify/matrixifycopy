@@ -104,6 +104,8 @@ export interface DateRange {
 }
 
 export interface ExportOptions {
+  /** The shop's IANA time zone; set by the server when the export runs. */
+  timezone?: string;
   /** Date range filter, resolved at run time. */
   dateRange?: DateRange;
   /** Raw Shopify search syntax, e.g. `status:active vendor:Acme` (advanced). */
@@ -169,6 +171,8 @@ export interface ColumnGroup {
   key: string;
   label: string;
   default: boolean;
+  /** Shown as its own row in the export form, never merged into a column section. */
+  standalone?: boolean;
 }
 
 export interface EntityImporter {

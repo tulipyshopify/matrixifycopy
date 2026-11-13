@@ -1,4 +1,5 @@
 import type { Command, DateRange, FilterCondition, Row } from "./types";
+import { isValidTimeZone, localParts, zonedTimeToUtc } from "./time";
 import { COMMANDS, ImportError } from "./types";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -281,9 +282,14 @@ export function compileFilters(filters: FilterCondition[] | undefined): string {
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
-/** Resolves a date range (preset or custom) to inclusive YYYY-MM-DD bounds. */
-export function resolveDateRange(r: DateRange, now = new Date()): { from?: string; to?: string } {
-  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+/**
+ * Resolves a date range (preset or custom) to inclusive YYYY-MM-DD bounds.
+ * "Today" is the current date in `timeZone` (the shop's), not in UTC.
+ */
+export function resolveDateRange(r: DateRange, now = new Date(), timeZone = "UTC"): { from?: string; to?: string } {
+  const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
+  const local = localParts(now, tz);
+  const day = new Date(Date.UTC(local.year, local.month - 1, local.day));
   const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400_000);
   const y = day.getUTCFullYear();
   const m = day.getUTCMonth();
@@ -311,16 +317,28 @@ export function resolveDateRange(r: DateRange, now = new Date()): { from?: strin
   }
 }
 
-/** Date range as search syntax. The upper bound is exclusive of the next day. */
-export function compileDateRange(r: DateRange | undefined, now = new Date()): string {
+/** Midnight at the start of a YYYY-MM-DD date in a time zone, as a UTC timestamp for search. */
+function startOfDay(date: string, timeZone: string, plusDays = 0): string {
+  const [y, m, d] = date.slice(0, 10).split("-").map(Number);
+  // Date.UTC normalises day overflow, giving the right calendar date.
+  const cal = new Date(Date.UTC(y, m - 1, d + plusDays));
+  return zonedTimeToUtc(cal.getUTCFullYear(), cal.getUTCMonth() + 1, cal.getUTCDate(), 0, 0, timeZone)
+    .toISOString()
+    .replace(".000Z", "Z");
+}
+
+/**
+ * Date range as search syntax. Bounds are exact instants (shop-local
+ * midnights): with a bare date Shopify takes "<2026-11-01" to include all of
+ * 1 November, which made "Last month" pull in the first day of this month.
+ */
+export function compileDateRange(r: DateRange | undefined, now = new Date(), timeZone = "UTC"): string {
   if (!r) return "";
-  const { from, to } = resolveDateRange(r, now);
+  const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
+  const { from, to } = resolveDateRange(r, now, tz);
   const parts: string[] = [];
-  if (from) parts.push(`${r.field}:>='${from}'`);
-  if (to) {
-    const next = new Date(Date.parse(`${to}T00:00:00Z`) + 86400_000);
-    parts.push(`${r.field}:<'${ymd(next)}'`);
-  }
+  if (from) parts.push(`${r.field}:>='${startOfDay(from, tz)}'`);
+  if (to) parts.push(`${r.field}:<'${startOfDay(to, tz, 1)}'`);
   return parts.join(" AND ");
 }
 
@@ -329,13 +347,15 @@ export function buildSearchQuery(opts: {
   query?: string;
   filters?: FilterCondition[];
   dateRange?: DateRange;
+  /** The shop's time zone, used for date ranges. */
+  timezone?: string;
   createdAfter?: string;
   createdBefore?: string;
   updatedAfter?: string;
   updatedBefore?: string;
 }): string {
   const parts: string[] = [];
-  const dates = compileDateRange(opts.dateRange);
+  const dates = compileDateRange(opts.dateRange, new Date(), opts.timezone);
   if (dates) parts.push(dates);
   const compiled = compileFilters(opts.filters);
   if (compiled) parts.push(compiled);

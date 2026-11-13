@@ -40,6 +40,19 @@ export async function locationByName(gql: Gql, cache: Map<string, unknown>, name
   return loc;
 }
 
+const SHOP_TIMEZONE = `#graphql
+  query ShopTimezone { shop { ianaTimezone } }
+`;
+
+/** The shop's IANA time zone (e.g. "Europe/London"); "UTC" if it can't be read. */
+export async function shopTimezone(gql: Gql): Promise<string> {
+  try {
+    return (await gql(SHOP_TIMEZONE)).shop.ianaTimezone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
 const PUBLICATIONS = `#graphql
   query Publications {
     publications(first: 100) {

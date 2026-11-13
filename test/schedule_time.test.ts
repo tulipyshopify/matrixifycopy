@@ -73,6 +73,12 @@ describe("shipping lines as rows", () => {
     expect(ordersBulkQuery("", new Set(["line_items"]))).not.toMatch(/shippingLines/);
   });
 
+  it("is its own option, not tied to the Shipping address columns", async () => {
+    const { getEntity } = await import("../app/lib/entities");
+    const g = getEntity("orders")!.groups!.find((x) => x.key === "shipping_lines")!;
+    expect(g).toMatchObject({ default: true, standalone: true });
+  });
+
   it("shipping rows are not mistaken for line items on import", () => {
     expect(isLineRow({ "Line: Type": "Shipping Line", "Line: Title": "DHL", "Line: Price": "7.99" })).toBe(false);
     expect(isLineRow({ "Line: Type": "Line Item", "Line: Title": "Tee", "Line: Price": "10" })).toBe(true);

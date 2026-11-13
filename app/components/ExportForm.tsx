@@ -603,7 +603,11 @@ function ColumnPicker({
         secs.find(
           (x) => !x.group && x.name.toLowerCase() === g.label.toLowerCase(),
         ) ??
-        secs.find((x) => !x.group && firstWord(x.name) === firstWord(g.label));
+        (g.standalone
+          ? undefined
+          : secs.find(
+              (x) => !x.group && firstWord(x.name) === firstWord(g.label),
+            ));
       if (sec) sec.group = g;
       else extra.push(g);
     }

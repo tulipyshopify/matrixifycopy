@@ -132,9 +132,29 @@ describe("date range", async () => {
     expect(resolveDateRange({ field: "created_at", preset: "last_month" }, now)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
     expect(resolveDateRange({ field: "created_at", preset: "last_year" }, now)).toEqual({ from: "2025-01-01", to: "2025-12-31" });
   });
-  it("compiles with an inclusive end day", () => {
-    expect(compileDateRange({ field: "updated_at", preset: "yesterday" }, now)).toBe("updated_at:>='2026-11-09' AND updated_at:<'2026-11-10'");
-    expect(compileDateRange({ field: "processed_at", preset: "custom", from: "2026-01-01" }, now)).toBe("processed_at:>='2026-01-01'");
+  it("compiles to exact instants, so the end day stops at midnight", () => {
+    expect(compileDateRange({ field: "updated_at", preset: "yesterday" }, now)).toBe(
+      "updated_at:>='2026-11-09T00:00:00Z' AND updated_at:<'2026-11-10T00:00:00Z'",
+    );
+    expect(compileDateRange({ field: "processed_at", preset: "custom", from: "2026-01-01" }, now)).toBe("processed_at:>='2026-01-01T00:00:00Z'");
+  });
+
+  it("'Last month' ends at the first midnight of this month, in the shop's time zone", () => {
+    // Was: created_at:<'2026-11-01', which Shopify read as "up to the end of 1 November".
+    expect(compileDateRange({ field: "created_at", preset: "last_month" }, now, "Europe/London")).toBe(
+      "created_at:>='2026-09-30T23:00:00Z' AND created_at:<'2026-11-01T00:00:00Z'",
+    );
+    // 1 October is still in British Summer Time (UTC+1); 1 November is not.
+    expect(compileDateRange({ field: "created_at", preset: "last_month" }, now, "America/New_York")).toBe(
+      "created_at:>='2026-10-01T04:00:00Z' AND created_at:<'2026-11-01T04:00:00Z'",
+    );
+  });
+
+  it("'Today' is the shop's date, not the UTC date", () => {
+    const lateEvening = new Date("2026-11-10T23:30:00Z"); // already 11 Nov in Auckland, still 10 Nov in London
+    expect(resolveDateRange({ field: "created_at", preset: "today" }, lateEvening, "Europe/London")).toEqual({ from: "2026-11-10", to: "2026-11-10" });
+    expect(resolveDateRange({ field: "created_at", preset: "today" }, lateEvening, "Pacific/Auckland")).toEqual({ from: "2026-11-11", to: "2026-11-11" });
+    expect(resolveDateRange({ field: "created_at", preset: "today" }, lateEvening, "Not/AZone")).toEqual({ from: "2026-11-10", to: "2026-11-10" });
   });
   it("is validated against the entity's date fields", () => {
     const orders = getEntity("orders")!;

@@ -3,6 +3,7 @@ import prisma from "../../db.server";
 import { unauthenticated } from "../../shopify.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
+import { shopTimezone } from "../core/lookups";
 import { executeJob } from "./runner.server";
 import { nextRun } from "./schedule-time";
 import { countItems } from "./counts.server";
@@ -121,6 +122,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       },
       isCancelled,
       bulkEvents,
+      timezone: () => shopTimezone(gql),
       count: async (entity, options) => {
         const r = await countItems(gql, entity, options);
         return r && !r.unfiltered && r.precision === "EXACT" ? r.count : null;
