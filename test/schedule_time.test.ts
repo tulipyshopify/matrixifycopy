@@ -70,7 +70,33 @@ describe("shipping lines as rows", () => {
 
   it("is left out when the section is unticked", () => {
     expect(orderToRows(order, new Set(["line_items"]))).toHaveLength(1);
-    expect(ordersBulkQuery("", new Set(["line_items"]))).not.toMatch(/shippingLines/);
+    // Shipping lines have no ID, so they are never requested as a bulk connection.
+    expect(ordersBulkQuery("", new Set(["line_items", "shipping_lines"]))).not.toMatch(/shippingLines/);
+  });
+
+  it("the export adds the order's shipping line, and looks up the lines only when the totals differ", async () => {
+    const { ordersEntity } = await import("../app/lib/entities/orders");
+    const lookups: string[] = [];
+    const rows: any[] = [];
+    const simple = { id: "gid://shopify/Order/1", name: "#1", totalShippingPriceSet: bag("7.99"), shippingLine: { title: "DHL", code: "dhl", originalPriceSet: bag("7.99") }, lineItems: [{ id: "gid://shopify/LineItem/1", title: "Tee", quantity: 1, originalUnitPriceSet: bag("10.00") }] };
+    const multi = { id: "gid://shopify/Order/2", name: "#2", totalShippingPriceSet: bag("12.98"), shippingLine: { title: "DHL", code: "dhl", originalPriceSet: bag("7.99") }, lineItems: [] };
+    const free = { id: "gid://shopify/Order/3", name: "#3", totalShippingPriceSet: bag("0.0"), shippingLine: null, lineItems: [] };
+    await ordersEntity.export!(
+      {
+        gql: (async (_q: string, v: any) => {
+          lookups.push(v.id);
+          return { order: { shippingLines: { nodes: [{ title: "DHL", code: "dhl", isRemoved: false, originalPriceSet: bag("7.99") }, { title: "Pallet", code: "pal", isRemoved: false, originalPriceSet: bag("4.99") }] } } };
+        }) as any,
+        bulk: async function* () { yield simple; yield multi; yield free; },
+        options: { groups: ["line_items", "shipping_lines"] },
+        log: () => {}, cache: new Map(), progress: () => {},
+      },
+      async (r) => void rows.push(...r),
+    );
+    const ship = rows.filter((r) => r["Line: Type"] === "Shipping Line").map((r) => `${r.Name} ${r["Line: Title"]} ${r["Line: Price"]}`);
+    expect(ship).toEqual(["#1 DHL 7.99", "#2 DHL 7.99", "#2 Pallet 4.99"]);
+    expect(lookups).toEqual(["gid://shopify/Order/2"]); // only the order whose totals differed
+    expect(rows.filter((r) => r.Name === "#3")).toHaveLength(1); // no shipping, no extra row
   });
 
   it("is its own option, not tied to the Shipping address columns", async () => {

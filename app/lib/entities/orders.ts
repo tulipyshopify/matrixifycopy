@@ -274,7 +274,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
       taxLines { title rate priceSet ${BOTH} }
       ${groups.has("fulfillments") ? fulfillments : ""}
-      ${groups.has("shipping_lines") ? `shippingLines { edges { node { id title code isRemoved originalPriceSet ${MONEY} } } }` : ""}
+
       ${groups.has("transactions") ? transactions : ""}
       ${groups.has("metafields") ? metafields : ""}
       ${groups.has("line_items") ? lineItems : ""}
@@ -464,11 +464,42 @@ function sumLines(lines: any[], money: "shopMoney" | "presentmentMoney"): string
   return total.toFixed(2);
 }
 
+const ORDER_SHIPPING_LINES = `#graphql
+  query OrderShippingLines($id: ID!) {
+    order(id: $id) {
+      shippingLines(first: 50) { nodes { title code isRemoved originalPriceSet { shopMoney { amount } } } }
+    }
+  }
+`;
+
+/**
+ * Shipping lines of one order. Shipping lines have no ID, so Shopify's bulk
+ * export can't link them to their order; the order's main shipping line
+ * (already in the bulk data) is used instead. Only when the order's shipping
+ * total doesn't match that one line (several shipping lines, a removed one, a
+ * shipping discount) are the lines fetched for that order.
+ */
+async function shippingLinesFor(ctx: ExportContext, o: any): Promise<any[]> {
+  const main = o.shippingLine;
+  const total = Number(o.totalShippingPriceSet?.shopMoney?.amount ?? 0);
+  const mainPrice = Number(main?.originalPriceSet?.shopMoney?.amount ?? 0);
+  if (Math.abs(total - mainPrice) < 0.005) return main ? [main] : [];
+  try {
+    const d = await ctx.gql(ORDER_SHIPPING_LINES, { id: o.id });
+    const lines = d.order?.shippingLines?.nodes;
+    if (Array.isArray(lines)) return lines;
+  } catch {
+    // fall back to the main line below
+  }
+  return main ? [main] : [];
+}
+
 async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
   const groups = new Set(ctx.options.groups ?? ordersEntity.groups!.filter((g) => g.default).map((g) => g.key));
   const search = buildSearchQuery(ctx.options);
   let n = 0;
   for await (const o of ctx.bulk(ordersBulkQuery(search, groups))) {
+    if (groups.has("shipping_lines")) o.shippingLines = await shippingLinesFor(ctx, o);
     await emit(orderToRows(o, groups));
     ctx.progress(++n);
     if (ctx.options.limit && n >= ctx.options.limit) break;
