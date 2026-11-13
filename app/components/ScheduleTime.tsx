@@ -19,16 +19,20 @@ export function ScheduleTimeFields({
   intervalMinutes,
   runAt,
   weekday,
+  keepZone,
   onChange,
 }: {
   intervalMinutes: number;
   runAt: string;
   weekday: number;
+  /** The zone a saved time was set in; shown instead of the browser's zone. */
+  keepZone?: string;
   onChange: (patch: { runAt?: string; weekday?: number }) => void;
 }) {
   // Read in the browser only, so the server-rendered page matches.
-  const [zone, setZone] = useState("");
+  const [browserZone, setZone] = useState("");
   useEffect(() => setZone(browserTimeZone()), []);
+  const zone = keepZone || browserZone;
   if (intervalMinutes < 1440) return null;
   const valid = !runAt || /^([01]?\d|2[0-3]):[0-5]\d$/.test(runAt.trim());
   return (

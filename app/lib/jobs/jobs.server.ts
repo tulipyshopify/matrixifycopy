@@ -4,7 +4,8 @@ import type { Command, DateRange, Entity, ExportOptions, FilterCondition, Import
 import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import type { ExportConfig, ImportConfig } from "./runner.server";
-import { jobDir, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
+import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
+import { redactUrl } from "./sources.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
 
 /** Entity metadata safe to send to the browser. */
@@ -270,14 +271,12 @@ function checkUrl(u: string | undefined, protocols: string[], what: string): str
   return url.toString();
 }
 
-export async function createSchedule(shop: string, input: ScheduleInput) {
+/** Checks a schedule's settings and works out its exact run time, if it has one. */
+function scheduleSettings(input: ScheduleInput) {
   const interval = Math.floor(Number(input.intervalMinutes));
   if (!(interval >= 15)) throw new Error("Interval must be at least 15 minutes");
   const sourceUrl = checkUrl(input.sourceUrl, ["http:", "https:", "ftp:", "ftps:"], "Source URL");
   const uploadUrl = checkUrl(input.uploadUrl, ["ftp:", "ftps:"], "Upload URL");
-  if (input.type === "import" && !sourceUrl) throw new Error("Scheduled imports need a source URL");
-  let start = input.startAt ? new Date(input.startAt) : new Date();
-  if (Number.isNaN(start.getTime())) throw new Error("Invalid start time");
   // Exact time of day (daily and weekly schedules only).
   let timing: { runAt: string; timezone: string; weekday: number | null } | null = null;
   if (input.runAt?.trim()) {
@@ -288,8 +287,16 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
     const weekday = interval >= 10080 && input.weekday !== null && input.weekday !== undefined ? Number(input.weekday) : null;
     if (weekday !== null && !(weekday >= 0 && weekday <= 6)) throw new Error("Invalid weekday");
     timing = { runAt: `${m[1].padStart(2, "0")}:${m[2]}`, timezone: input.timezone, weekday };
-    start = nextRun({ intervalMinutes: interval, ...timing }, new Date());
   }
+  return { interval, sourceUrl, uploadUrl, timing };
+}
+
+export async function createSchedule(shop: string, input: ScheduleInput) {
+  const { interval, sourceUrl, uploadUrl, timing } = scheduleSettings(input);
+  if (input.type === "import" && !sourceUrl) throw new Error("Scheduled imports need a source URL");
+  let start = input.startAt ? new Date(input.startAt) : new Date();
+  if (Number.isNaN(start.getTime())) throw new Error("Invalid start time");
+  if (timing) start = nextRun({ intervalMinutes: interval, ...timing }, new Date());
   return prisma.schedule.create({
     data: {
       shop,
@@ -307,6 +314,78 @@ export async function createSchedule(shop: string, input: ScheduleInput) {
       publicToken: input.type === "export" && input.publicLink ? newPublicToken() : null,
     },
   });
+}
+
+/**
+ * Changes an existing schedule in place: its permanent link, run history and
+ * paused state stay as they are. A URL sent back exactly as it was shown
+ * (password hidden) means "keep the saved one".
+ */
+export async function editSchedule(shop: string, id: string, input: ScheduleInput) {
+  const s = await prisma.schedule.findFirst({ where: { id, shop } });
+  if (!s) throw new Response("Not found", { status: 404 });
+  if (s.type !== input.type) throw new Error(`This schedule is an ${s.type}, not an ${input.type}`);
+  const kept = (sealed: string | null, sent: string | undefined) => {
+    const current = openSecret(sealed);
+    return current && sent?.trim() === redactUrl(current) ? current : sent;
+  };
+  const { interval, sourceUrl, uploadUrl, timing } = scheduleSettings({
+    ...input,
+    sourceUrl: kept(s.sourceUrl, input.sourceUrl),
+    uploadUrl: kept(s.uploadUrl, input.uploadUrl),
+  });
+  if (s.type === "import" && !sourceUrl) throw new Error("Scheduled imports need a source URL");
+  // The next run only moves when the timing itself was changed.
+  const sameTiming =
+    s.intervalMinutes === interval &&
+    (s.runAt ?? null) === (timing?.runAt ?? null) &&
+    (s.weekday ?? null) === (timing?.weekday ?? null) &&
+    (!timing || s.timezone === timing.timezone);
+  const now = new Date();
+  const nextRunAt = sameTiming ? s.nextRunAt : nextRun({ intervalMinutes: interval, ...(timing ?? {}) }, now, timing ? undefined : now);
+  return prisma.schedule.update({
+    where: { id },
+    data: {
+      name: input.name.slice(0, 100) || s.name,
+      config: JSON.stringify(input.config),
+      format: input.format === "csv" ? "csv" : "xlsx",
+      sourceUrl: sealSecret(sourceUrl),
+      uploadUrl: sealSecret(uploadUrl),
+      intervalMinutes: interval,
+      runAt: timing?.runAt ?? null,
+      timezone: timing?.timezone ?? null,
+      weekday: timing?.weekday ?? null,
+      nextRunAt,
+    },
+  });
+}
+
+/** A schedule's settings for the edit form. Passwords in URLs are hidden. */
+export async function scheduleForEdit(shop: string, id: string, type: "export" | "import") {
+  const s = await prisma.schedule.findFirst({ where: { id, shop, type } });
+  if (!s) return null;
+  const url = (sealed: string | null) => {
+    const u = openSecret(sealed);
+    return u ? redactUrl(u) : "";
+  };
+  let config: any = {};
+  try {
+    config = JSON.parse(s.config);
+  } catch {
+    // Edit from a blank set-up.
+  }
+  return {
+    id: s.id,
+    name: s.name,
+    format: s.format,
+    intervalMinutes: s.intervalMinutes,
+    runAt: s.runAt ?? "",
+    timezone: s.timezone ?? "",
+    weekday: s.weekday ?? 1,
+    sourceUrl: url(s.sourceUrl),
+    uploadUrl: url(s.uploadUrl),
+    config,
+  };
 }
 
 function newPublicToken(): string {

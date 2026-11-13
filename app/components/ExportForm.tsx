@@ -17,6 +17,8 @@ export interface ExportPayload {
   entities: Array<{ entity: string; options: Record<string, unknown> }>;
   format: string;
   name: string;
+  /** Set when saving changes to an existing schedule. */
+  scheduleId?: string;
   schedule?: {
     intervalMinutes: number;
     uploadUrl?: string;
@@ -1118,14 +1120,27 @@ interface SavedPreset {
   data: PresetData;
 }
 
+export interface ScheduleBeingEdited {
+  id: string;
+  name: string;
+  intervalMinutes: number;
+  runAt: string;
+  timezone: string;
+  weekday: number;
+  uploadUrl: string;
+}
+
 export function ExportForm({
   entities,
   presets: initialPresets = [],
   latest = null,
+  editing = null,
 }: {
   entities: EntityInfo[];
   presets?: SavedPreset[];
   latest?: PresetData | null;
+  /** An existing schedule being changed; `latest` then holds its set-up. */
+  editing?: ScheduleBeingEdited | null;
 }) {
   const fetcher = useFetcher<{ error?: string }>();
   const [presets, setPresets] = useState(initialPresets);
@@ -1144,13 +1159,13 @@ export function ExportForm({
   const [format, setFormat] = useState(
     latest?.format === "csv" ? "csv" : "xlsx",
   );
-  const [name, setName] = useState("");
-  const [scheduled, setScheduled] = useState(false);
-  const [intervalMinutes, setIntervalMinutes] = useState(1440);
-  const [uploadUrl, setUploadUrl] = useState("");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [scheduled, setScheduled] = useState(!!editing);
+  const [intervalMinutes, setIntervalMinutes] = useState(editing?.intervalMinutes ?? 1440);
+  const [uploadUrl, setUploadUrl] = useState(editing?.uploadUrl ?? "");
   const [publicLink, setPublicLink] = useState(true);
-  const [runAt, setRunAt] = useState("");
-  const [weekday, setWeekday] = useState(1);
+  const [runAt, setRunAt] = useState(editing?.runAt ?? "");
+  const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
 
   const selected = useMemo(
     () => entities.filter((e) => state[e.key].enabled),
@@ -1232,6 +1247,7 @@ export function ExportForm({
         entity: e.key,
         options: panelOptions(e, state[e.key]),
       })),
+      ...(editing ? { scheduleId: editing.id } : {}),
       ...(scheduled
         ? {
             schedule: {
@@ -1241,7 +1257,8 @@ export function ExportForm({
               ...(runAt.trim() && intervalMinutes >= 1440
                 ? {
                     runAt: runAt.trim(),
-                    timezone: browserTimeZone(),
+                    // An unchanged time keeps the zone it was set in.
+                    timezone: editing?.timezone && runAt.trim() === editing.runAt ? editing.timezone : browserTimeZone(),
                     weekday: intervalMinutes >= 10080 ? weekday : undefined,
                   }
                 : {}),
@@ -1259,7 +1276,7 @@ export function ExportForm({
   return (
     <>
       {fetcher.data?.error ? (
-        <s-banner tone="critical" heading="Could not start export">
+        <s-banner tone="critical" heading={editing ? "Could not save the schedule" : "Could not start export"}>
           {fetcher.data.error}
         </s-banner>
       ) : null}
@@ -1277,7 +1294,7 @@ export function ExportForm({
               onChange={(ev: any) => loadPreset(ev.currentTarget.value)}
             >
               {latest ? (
-                <s-option value="latest">Latest export</s-option>
+                <s-option value="latest">{editing ? "This schedule" : "Latest export"}</s-option>
               ) : null}
               <s-option value="blank">New blank export</s-option>
               {presets.length ? (
@@ -1383,16 +1400,18 @@ export function ExportForm({
             </s-option>
           </s-select>
           <s-text-field
-            label="File name (optional)"
+            label={editing ? "Schedule and file name" : "File name (optional)"}
             value={name}
             placeholder={`Export_${new Date().toISOString().slice(0, 10)}`}
             onInput={(ev: any) => setName(ev.currentTarget.value)}
           />
-          <s-switch
-            label="Repeat this export on a schedule"
-            checked={scheduled}
-            onChange={(ev: any) => setScheduled(ev.currentTarget.checked)}
-          />
+          {editing ? null : (
+            <s-switch
+              label="Repeat this export on a schedule"
+              checked={scheduled}
+              onChange={(ev: any) => setScheduled(ev.currentTarget.checked)}
+            />
+          )}
           {scheduled ? (
             <>
               <s-select
@@ -1412,11 +1431,16 @@ export function ExportForm({
                 intervalMinutes={intervalMinutes}
                 runAt={runAt}
                 weekday={weekday}
+                keepZone={editing?.timezone && runAt.trim() === editing.runAt ? editing.timezone : undefined}
                 onChange={(p) => {
                   if (p.runAt !== undefined) setRunAt(p.runAt);
                   if (p.weekday !== undefined) setWeekday(p.weekday);
                 }}
               />
+              {editing ? (
+                <s-text tone="neutral">The permanent link stays the same. Turn it on or off on the Schedules page.</s-text>
+              ) : (
+                <>
               <s-switch
                 label="Permanent link (URL) to the latest file"
                 details="One fixed address for this export. Every run overwrites the file it serves."
@@ -1436,6 +1460,8 @@ export function ExportForm({
                     : "Anyone who has the link can download the file without logging in. You'll find the link on the Schedules page."}
                 </s-text>
               ) : null}
+                </>
+              )}
               <s-url-field
                 label="Upload to FTP (optional)"
                 details="ftp://user:password@host/folder/ — the file is also kept in the app"
@@ -1451,7 +1477,9 @@ export function ExportForm({
               disabled={!selected.length || busy}
               loading={busy}
             >
-              {scheduled
+              {editing
+                ? "Save changes"
+                : scheduled
                 ? "Save schedule"
                 : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
             </s-button>

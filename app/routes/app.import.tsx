@@ -6,6 +6,8 @@ import {
   createImportJob,
   createSchedule,
   createUrlImportJob,
+  editSchedule,
+  scheduleForEdit,
   entityCatalog,
   parseImportOptions,
 } from "../lib/jobs/jobs.server";
@@ -14,8 +16,24 @@ import { ImportForm } from "../components/ImportForm";
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return { entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };
+  const { session } = await authenticate.admin(request);
+  const editId = new URL(request.url).searchParams.get("schedule");
+  const found = editId ? await scheduleForEdit(session.shop, editId, "import") : null;
+  if (editId && !found) throw new Response("Schedule not found", { status: 404 });
+  const editing = found
+    ? {
+        id: found.id,
+        name: found.name,
+        intervalMinutes: found.intervalMinutes,
+        runAt: found.runAt,
+        timezone: found.timezone,
+        weekday: found.weekday,
+        sourceUrl: found.sourceUrl,
+        defaultCommand: String(found.config?.options?.defaultCommand ?? "MERGE"),
+        dryRun: !!found.config?.options?.dryRun,
+      }
+    : null;
+  return { editing, entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -29,8 +47,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (source === "url") {
       const url = String(form.get("url") ?? "").trim();
       const interval = Number(form.get("intervalMinutes") ?? 0);
+      const scheduleId = form.get("scheduleId") ? String(form.get("scheduleId")) : null;
+      if (scheduleId && !(interval > 0)) throw new Error("Choose how often the import repeats");
       if (interval > 0) {
-        await createSchedule(session.shop, {
+        const save = (input: Parameters<typeof createSchedule>[1]) =>
+          scheduleId ? editSchedule(session.shop, scheduleId, input) : createSchedule(session.shop, input);
+        await save({
           name: String(form.get("name") ?? ""),
           type: "import",
           config: { options },
@@ -58,13 +80,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewImport() {
-  const { entities, maxUploadMb } = useLoaderData<typeof loader>();
+  const { entities, maxUploadMb, editing } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="New import" inlineSize="base">
-      <s-link slot="breadcrumb-actions" href="/app">
-        Home
+    <s-page heading={editing ? `Edit schedule: ${editing.name}` : "New import"} inlineSize="base">
+      <s-link slot="breadcrumb-actions" href={editing ? "/app/schedules" : "/app"}>
+        {editing ? "Schedules" : "Home"}
       </s-link>
-      <ImportForm maxUploadMb={maxUploadMb} />
+      <ImportForm key={editing?.id ?? "new"} maxUploadMb={maxUploadMb} editing={editing} />
       <s-section heading="Recognised sheets" slot="aside">
         <s-paragraph>
           Sheet (or CSV file) names decide what is imported. Export first to get a file in the right layout.

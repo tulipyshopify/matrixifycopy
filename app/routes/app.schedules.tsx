@@ -73,12 +73,12 @@ export default function Schedules() {
 
   return (
     <s-page heading="Schedules">
-      <s-button slot="primary-action" onClick={() => navigate("/app")}>
+      <s-button slot="primary-action" onClick={() => navigate("/app/export")}>
         New scheduled export
       </s-button>
       <s-button
         slot="secondary-actions"
-        onClick={() => navigate("/app?tab=import")}
+        onClick={() => navigate("/app/import")}
       >
         New scheduled import
       </s-button>
@@ -215,6 +215,13 @@ export default function Schedules() {
                         onClick={() => post({ intent: "run", id: s.id })}
                       >
                         Run now
+                      </s-button>
+                      <s-button
+                        variant="secondary"
+                        icon="edit"
+                        href={`/app/${s.type === "export" ? "export" : "import"}?schedule=${s.id}`}
+                      >
+                        Edit
                       </s-button>
                       <s-button
                         variant="tertiary"

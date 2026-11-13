@@ -2,16 +2,30 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { createExportJob, createSchedule, entityCatalog, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
+import { createExportJob, createSchedule, editSchedule, entityCatalog, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
+  const params = new URL(request.url).searchParams;
+  const editId = params.get("schedule");
+  const editing = editId ? await scheduleForEdit(session.shop, editId, "export") : null;
+  if (editId && !editing) throw new Response("Schedule not found", { status: 404 });
+  if (editing) {
+    const { config, ...schedule } = editing;
+    return {
+      entities: entityCatalog().filter((e) => e.canExport),
+      presets: await listPresets(session.shop),
+      latest: { entities: config.entities ?? [], format: schedule.format },
+      editing: schedule,
+    };
+  }
   return {
+    editing: null,
     entities: entityCatalog().filter((e) => e.canExport),
     presets: await listPresets(session.shop),
     // "Edit and export again" on a job page opens the form with that job's set-up.
-    latest: await latestExportPreset(session.shop, new URL(request.url).searchParams.get("from") ?? undefined),
+    latest: await latestExportPreset(session.shop, params.get("from") ?? undefined),
   };
 };
 
@@ -22,7 +36,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const config = parseExportConfig(body);
     if (body.schedule) {
-      await createSchedule(session.shop, {
+      const save = (input: Parameters<typeof createSchedule>[1]) =>
+        body.scheduleId ? editSchedule(session.shop, body.scheduleId, input) : createSchedule(session.shop, input);
+      await save({
         name: body.name,
         type: "export",
         config,
@@ -46,14 +62,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewExport() {
-  const { entities, presets, latest } = useLoaderData<typeof loader>();
+  const { entities, presets, latest, editing } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="New export" inlineSize="large">
-      <s-link slot="breadcrumb-actions" href="/app">
-        Home
+    <s-page heading={editing ? `Edit schedule: ${editing.name}` : "New export"} inlineSize="large">
+      <s-link slot="breadcrumb-actions" href={editing ? "/app/schedules" : "/app"}>
+        {editing ? "Schedules" : "Home"}
       </s-link>
       <div className="bp-column">
-        <ExportForm entities={entities} presets={presets} latest={latest} />
+        <ExportForm key={editing?.id ?? "new"} entities={entities} presets={presets} latest={latest} editing={editing} />
       </div>
     </s-page>
   );

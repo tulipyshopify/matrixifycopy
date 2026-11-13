@@ -7,22 +7,35 @@ import { ScheduleTimeFields, browserTimeZone } from "./ScheduleTime";
  * command, dry run and schedule. Used on the
  * home page and on /app/import; posts to the /app/import action.
  */
-export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
+export interface ImportScheduleBeingEdited {
+  id: string;
+  name: string;
+  intervalMinutes: number;
+  runAt: string;
+  timezone: string;
+  weekday: number;
+  /** Shown with any password hidden; sent back unchanged it keeps the saved link. */
+  sourceUrl: string;
+  defaultCommand: string;
+  dryRun: boolean;
+}
+
+export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: number; editing?: ImportScheduleBeingEdited | null }) {
   const fetcher = useFetcher<{ error?: string }>();
-  const [source, setSource] = useState<"file" | "url" | null>(null);
+  const [source, setSource] = useState<"file" | "url" | null>(editing ? "url" : null);
   const [file, setFile] = useState<File | null>(null);
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(editing?.sourceUrl ?? "");
   const pickFile = (f: File | null) => {
     setFile(f);
     setSource(f ? "file" : url.trim() ? "url" : null);
   };
-  const [defaultCommand, setDefaultCommand] = useState("MERGE");
-  const [dryRun, setDryRun] = useState(false);
-  const [runAt, setRunAt] = useState("");
-  const [weekday, setWeekday] = useState(1);
-  const [scheduled, setScheduled] = useState(false);
-  const [interval, setIntervalMinutes] = useState(1440);
-  const [name, setName] = useState("");
+  const [defaultCommand, setDefaultCommand] = useState(editing?.defaultCommand ?? "MERGE");
+  const [dryRun, setDryRun] = useState(editing?.dryRun ?? false);
+  const [runAt, setRunAt] = useState(editing?.runAt ?? "");
+  const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
+  const [scheduled, setScheduled] = useState(!!editing);
+  const [interval, setIntervalMinutes] = useState(editing?.intervalMinutes ?? 1440);
+  const [name, setName] = useState(editing?.name ?? "");
   // Only a URL can be fetched again later; an uploaded file is imported once.
   const repeating = scheduled && source === "url";
   const busy = fetcher.state !== "idle";
@@ -35,11 +48,13 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
+      if (editing) form.set("scheduleId", editing.id);
       form.set("intervalMinutes", String(repeating ? interval : 0));
       if (repeating && name.trim()) form.set("name", name.trim());
       if (repeating && runAt.trim() && interval >= 1440) {
         form.set("runAt", runAt.trim());
-        form.set("timezone", browserTimeZone());
+        // An unchanged time keeps the zone it was set in.
+        form.set("timezone", editing?.timezone && runAt.trim() === editing.runAt ? editing.timezone : browserTimeZone());
         if (interval >= 10080) form.set("weekday", String(weekday));
       }
     }
@@ -51,13 +66,22 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
   return (
     <>
       {fetcher.data?.error ? (
-        <s-banner tone="critical" heading="Could not start import">
+        <s-banner tone="critical" heading={editing ? "Could not save the schedule" : "Could not start import"}>
           {fetcher.data.error}
         </s-banner>
       ) : null}
 
-      <s-section heading="Import">
+      <s-section heading={editing ? "File" : "Import"}>
         <s-stack direction="block" gap="base">
+          {editing ? (
+            <s-url-field
+              label="Link to the file"
+              details="Downloaded again at every run. A saved password is shown as ****; leave it like that to keep it."
+              value={url}
+              onInput={(ev: any) => setUrl(ev.currentTarget.value)}
+            />
+          ) : (
+            <>
           <s-drop-zone
             label={`Add an Excel, CSV or ZIP file, up to ${maxUploadMb} MB`}
             accept=".xlsx,.csv,.zip"
@@ -78,6 +102,8 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
           <s-text tone="neutral">Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.</s-text>
           {source === "file" && file ? <s-text>Selected file: {file.name}</s-text> : null}
           {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}</s-text> : null}
+            </>
+          )}
         </s-stack>
       </s-section>
 
@@ -101,6 +127,7 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
             checked={dryRun}
             onChange={(ev: any) => setDryRun(ev.currentTarget.checked)}
           />
+          {editing ? null : (
           <s-switch
             label="Repeat this import on a schedule"
             details={
@@ -112,6 +139,7 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
             disabled={source !== "url"}
             onChange={(ev: any) => setScheduled(ev.currentTarget.checked)}
           />
+          )}
           {repeating ? (
             <>
               <s-select label="How often" value={String(interval)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
@@ -124,13 +152,14 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
                 intervalMinutes={interval}
                 runAt={runAt}
                 weekday={weekday}
+                keepZone={editing?.timezone && runAt.trim() === editing.runAt ? editing.timezone : undefined}
                 onChange={(p) => {
                   if (p.runAt !== undefined) setRunAt(p.runAt);
                   if (p.weekday !== undefined) setWeekday(p.weekday);
                 }}
               />
               <s-text-field
-                label="Schedule name (optional)"
+                label={editing ? "Schedule name" : "Schedule name (optional)"}
                 placeholder="Scheduled import"
                 value={name}
                 onInput={(ev: any) => setName(ev.currentTarget.value)}
@@ -144,7 +173,7 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
           ) : null}
           <s-stack direction="inline" justifyContent="end">
             <s-button variant="primary" onClick={submit} disabled={!ready || busy} loading={busy}>
-              {repeating ? "Save schedule" : dryRun ? "Check file" : "Import"}
+              {editing ? "Save changes" : repeating ? "Save schedule" : dryRun ? "Check file" : "Import"}
             </s-button>
           </s-stack>
         </s-stack>
