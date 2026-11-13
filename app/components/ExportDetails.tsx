@@ -18,6 +18,7 @@ interface ExportedEntity {
 
 function dateRangeText(e: EntityInfo, r: DateRange): string {
   const field = e.filters.find((f) => f.key === r.field)?.label ?? r.field;
+  if (r.preset === "last_n_days") return `${field}: last ${r.days ?? "?"} days`;
   if (r.preset !== "custom") return `${field}: ${DATE_PRESETS.find((p) => p.value === r.preset)?.label ?? r.preset}`;
   return `${field}: ${r.from ? `from ${r.from}` : ""}${r.from && r.to ? " " : ""}${r.to ? `to ${r.to}` : ""}`;
 }

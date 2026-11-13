@@ -316,7 +316,12 @@ function FilterBuilder({
   filters: FilterCondition[];
   onChange: (filters: FilterCondition[]) => void;
 }) {
-  const byKey = new Map(entity.filters.map((f) => [f.key, f]));
+  const fields = entity.filters;
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  const isLocal = (f: FilterCondition) =>
+    !!(byKey.get(f.field) as { local?: boolean } | undefined)?.local;
+  const searchable = filters.filter((f) => !isLocal(f));
+  const checkedHere = filters.length - searchable.length;
   const update = (i: number, patch: Partial<FilterCondition>) =>
     onChange(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)));
   return (
@@ -341,7 +346,7 @@ function FilterBuilder({
                 );
               }}
             >
-              {entity.filters.map((f) => (
+              {fields.map((f) => (
                 <s-option key={f.key} value={f.key}>
                   {f.label}
                 </s-option>
@@ -386,21 +391,28 @@ function FilterBuilder({
         <s-button
           icon="plus"
           onClick={() =>
-            onChange([...filters, newCondition(entity.filters[0])])
+            onChange([...filters, newCondition(fields[0])])
           }
         >
           Add filter
         </s-button>
-        {filters.some((f) => f.value) ? (
+        {searchable.some((f) => f.value) ? (
           <s-text tone="neutral">
             Shopify search:{" "}
             <code>
               {compileFilters(
-                filters.filter(
+                searchable.filter(
                   (f) => f.value && (f.op !== "between" || f.value2),
                 ),
               )}
             </code>
+          </s-text>
+        ) : null}
+        {checkedHere ? (
+          <s-text tone="neutral">
+            {checkedHere === 1 ? "1 filter is" : `${checkedHere} filters are`}{" "}
+            checked order by order during the export (Shopify can't search by
+            them), so no total is shown beforehand.
           </s-text>
         ) : null}
       </s-stack>
@@ -426,7 +438,11 @@ function DateRangeFilter({
   return (
     <s-grid
       gridTemplateColumns={
-        value?.preset === "custom" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 2fr"
+        value?.preset === "custom"
+          ? "1fr 1fr 1fr 1fr"
+          : value?.preset === "last_n_days"
+            ? "1fr 1fr 1fr 1fr"
+            : "1fr 1fr 2fr"
       }
       gap="base"
       alignItems="end"
@@ -450,7 +466,15 @@ function DateRangeFilter({
         onChange={(ev: any) => {
           const preset = ev.currentTarget.value as DatePreset | "";
           onChange(
-            preset ? { field, preset, from: value?.from, to: value?.to } : null,
+            preset
+              ? {
+                  field,
+                  preset,
+                  from: value?.from,
+                  to: value?.to,
+                  days: value?.days ?? 21,
+                }
+              : null,
           );
         }}
       >
@@ -477,6 +501,23 @@ function DateRangeFilter({
               onChange({ ...value, to: ev.currentTarget.value })
             }
           />
+        </>
+      ) : value?.preset === "last_n_days" ? (
+        <>
+          <s-number-field
+            label="Days"
+            min={1}
+            max={3650}
+            step={1}
+            value={String(value.days ?? 21)}
+            onInput={(ev: any) =>
+              onChange({
+                ...value,
+                days: Math.max(1, Math.floor(Number(ev.currentTarget.value)) || 1),
+              })
+            }
+          />
+          <span />
         </>
       ) : (
         <span />

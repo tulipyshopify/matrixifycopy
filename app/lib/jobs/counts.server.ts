@@ -56,6 +56,8 @@ export async function countItems(gql: Gql, entity: string, options: ExportOption
   const spec = COUNTS[entity];
   if (!spec) return null;
   const [query, extra, filterable] = spec;
+  // Checked item by item during the export: Shopify can't count it.
+  if (options.dateRange?.searchBy || options.filters?.some((f) => f.local)) return null;
   const search = [extra, buildSearchQuery(options)].filter(Boolean).join(" AND ");
   const data = await gql(query, filterable ? { query: search || null } : {});
   const c = Object.values(data)[0] as { count: number; precision: string };

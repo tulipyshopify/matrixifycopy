@@ -4,6 +4,8 @@ import {
   assertNoUserErrors,
   boolCell,
   buildSearchQuery,
+  dateRangeInstants,
+  startOfDay,
   cell,
   gidToId,
   gqlString,
@@ -249,22 +251,22 @@ const FULFILLMENT_STATUS_IN: Record<string, { status: string | null; noteIfOmitt
 
 const MONEY = "{ shopMoney { amount } }";
 
-export function ordersBulkQuery(search: string, groups: Set<string>): string {
+export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set<string> = new Set()): string {
   const args = search ? `(query: ${gqlString(search)})` : "";
   const metafields = `metafields { edges { node { id namespace key type value } } }`;
   const transactions = `transactions { id kind gateway status processedAt amountSet { shopMoney { amount currencyCode } } }`;
   const lineItems = `lineItems { edges { node {
-      id title variantTitle sku quantity unfulfilledQuantity vendor requiresShipping taxable
+      id title ${extras.has("line_name") ? "name" : ""} variantTitle sku quantity unfulfilledQuantity vendor requiresShipping taxable
       originalUnitPriceSet ${MONEY}
       totalDiscountSet ${MONEY}
-      variant { id ${
+      variant { id ${extras.has("line_inventory") && !groups.has("line_product_data") ? "inventoryQuantity" : ""} ${
         groups.has("line_product_data")
           ? `sku barcode price compareAtPrice inventoryQuantity inventoryItem {
               unitCost { amount } countryCodeOfOrigin provinceCodeOfOrigin harmonizedSystemCode
               measurement { weight { value unit } } }`
           : ""
       } }
-      product { id ${groups.has("line_product_data") ? "productType tags" : ""} }
+      product { id ${extras.has("line_handle") ? "handle" : ""} ${groups.has("line_product_data") ? "productType tags" : ""} }
   } } }`;
   // fulfillments is a plain list (not a connection), so it comes inline.
   const fulfillments = `fulfillments { id status displayStatus createdAt updatedAt location { name } trackingInfo { company number url } }`;
@@ -292,6 +294,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>): string {
       ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
       taxLines { title rate priceSet ${BOTH} }
       ${groups.has("fulfillments") ? fulfillments : ""}
+      ${extras.has("refunds") ? "refunds { createdAt }" : ""}
 
       ${groups.has("transactions") ? transactions : ""}
       ${groups.has("metafields") ? metafields : ""}
@@ -540,6 +543,115 @@ async function shippingLinesFor(ctx: ExportContext, o: any): Promise<any[]> {
   return main ? [main] : [];
 }
 
+// --- Filters checked by the export itself -------------------------------------
+
+/** What each such filter reads from an order, and what the bulk query must fetch for it. */
+const LOCAL_FILTERS: Record<string, { values: (o: any) => unknown[]; group?: string; extra?: string }> = {
+  fulfillment_created_at: { values: (o) => (o.fulfillments ?? []).map((f: any) => f.createdAt), group: "fulfillments" },
+  fulfillment_updated_at: { values: (o) => (o.fulfillments ?? []).map((f: any) => f.updatedAt), group: "fulfillments" },
+  refund_created_at: { values: (o) => (o.refunds ?? []).map((r: any) => r.createdAt), extra: "refunds" },
+  customer_tax_exempt: { values: (o) => [String(!!o.customer?.taxExempt)] },
+  billing_country_code: { values: (o) => [o.billingAddress?.countryCodeV2 ?? ""] },
+  shipping_country_code: { values: (o) => [o.shippingAddress?.countryCodeV2 ?? ""] },
+  line_type: {
+    values: (o) => [...((o.lineItems ?? []).length ? ["Line Item"] : []), ...(o.shippingLine ? ["Shipping Line"] : [])],
+    group: "line_items",
+  },
+  line_product_handle: { values: (o) => (o.lineItems ?? []).map((l: any) => l.product?.handle ?? ""), group: "line_items", extra: "line_handle" },
+  line_title: { values: (o) => (o.lineItems ?? []).map((l: any) => l.title ?? ""), group: "line_items" },
+  line_name: { values: (o) => (o.lineItems ?? []).map((l: any) => l.name ?? ""), group: "line_items", extra: "line_name" },
+  line_variant_id: { values: (o) => (o.lineItems ?? []).map((l: any) => gidToId(l.variant?.id)), group: "line_items" },
+  line_variant_title: { values: (o) => (o.lineItems ?? []).map((l: any) => l.variantTitle ?? ""), group: "line_items" },
+  line_vendor: { values: (o) => (o.lineItems ?? []).map((l: any) => l.vendor ?? ""), group: "line_items" },
+  line_variant_inventory_qty: {
+    values: (o) => (o.lineItems ?? []).map((l: any) => l.variant?.inventoryQuantity).filter((q: unknown) => q !== null && q !== undefined),
+    group: "line_items",
+    extra: "line_inventory",
+  },
+};
+
+const lower = (v: unknown) => String(v ?? "").trim().toLowerCase();
+
+/**
+ * The export's own filters as one test. An order passes a condition when any
+ * of its lines / fulfillments / refunds matches ("is not": when none does).
+ */
+export function localOrderFilters(options: ExportContext["options"], now = new Date()) {
+  const tz = options.timezone ?? "UTC";
+  const groups = new Set<string>();
+  const extras = new Set<string>();
+  const narrow: string[] = [];
+  const tests: Array<(o: any) => boolean> = [];
+  const use = (key: string) => {
+    const spec = LOCAL_FILTERS[key];
+    if (spec?.group) groups.add(spec.group);
+    if (spec?.extra) extras.add(spec.extra);
+    return spec;
+  };
+  const inRange = (spec: { values: (o: any) => unknown[] }, from?: Date, to?: Date) => (o: any) =>
+    spec.values(o).some((v) => {
+      const t = new Date(String(v)).getTime();
+      return !Number.isNaN(t) && (!from || t >= from.getTime()) && (!to || t < to.getTime());
+    });
+
+  const r = options.dateRange;
+  if (r && LOCAL_FILTERS[r.field]) {
+    // The search is already narrowed by compileDateRange (searchBy).
+    const { from, to } = dateRangeInstants(r, now, tz);
+    tests.push(inRange(use(r.field), from, to));
+  }
+  for (const f of options.filters ?? []) {
+    if (!f.local) continue;
+    const spec = use(f.field);
+    if (!spec) throw new Error(`Unknown filter "${f.field}"`);
+    const day = (d: string, plus = 0) => new Date(startOfDay(d, tz, plus));
+    if (f.field.endsWith("_at")) {
+      // Whole days in the shop's time zone, like the searchable dates.
+      const from = f.op === "lte" ? undefined : day(f.value);
+      const to = f.op === "gte" ? undefined : day(f.op === "between" ? (f.value2 ?? f.value) : f.value, 1);
+      tests.push(inRange(spec, from, to));
+      if (from && f.searchBy) narrow.push(`${f.searchBy}:>='${from.toISOString().replace(".000Z", "Z")}'`);
+      continue;
+    }
+    const want = lower(f.value);
+    const num = Number(f.value);
+    const num2 = Number(f.value2);
+    const some = (p: (v: unknown) => boolean) => (o: any) => spec.values(o).some(p);
+    switch (f.op) {
+      case "is":
+        tests.push(some((v) => (typeof v === "number" ? v === num : lower(v) === want)));
+        break;
+      case "is_not":
+        tests.push((o) => !spec.values(o).some((v) => lower(v) === want));
+        break;
+      case "starts_with":
+        tests.push(some((v) => lower(v).startsWith(want)));
+        break;
+      case "any_of": {
+        const set = new Set(f.value.split(",").map(lower).filter(Boolean));
+        tests.push(some((v) => set.has(lower(v))));
+        break;
+      }
+      case "gt":
+        tests.push(some((v) => Number(v) > num));
+        break;
+      case "gte":
+        tests.push(some((v) => Number(v) >= num));
+        break;
+      case "lt":
+        tests.push(some((v) => Number(v) < num));
+        break;
+      case "lte":
+        tests.push(some((v) => Number(v) <= num));
+        break;
+      case "between":
+        tests.push(some((v) => Number(v) >= num && Number(v) <= num2));
+        break;
+    }
+  }
+  return { groups, extras, narrow, test: (o: any) => tests.every((t) => t(o)) };
+}
+
 /**
  * Browser size and user agent exist only in the REST API. Fetched for a batch
  * of orders at a time; if the store refuses, the columns are left empty.
@@ -579,8 +691,16 @@ async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<v
     }
     batch = [];
   };
+  // Filters Shopify can't search by are checked here, order by order.
+  const local = localOrderFilters(ctx.options);
+  const queryGroups = new Set(groups);
+  for (const g of local.groups) queryGroups.add(g);
+  const fullSearch = [search, ...local.narrow].filter(Boolean).join(" AND ");
   let seen = 0;
-  for await (const o of ctx.bulk(ordersBulkQuery(search, groups))) {
+  for await (const o of ctx.bulk(ordersBulkQuery(fullSearch, queryGroups, local.extras))) {
+    if (!local.test(o)) continue;
+    // Fetched only to check a filter, not asked for in the file.
+    if (!groups.has("line_items")) delete o.lineItems;
     if (groups.has("shipping_lines")) o.shippingLines = await shippingLinesFor(ctx, o);
     batch.push(o);
     seen++;

@@ -109,6 +109,7 @@ export const FILTERS: Record<string, FilterField[]> = {
     updated,
   ],
   orders: [
+    { key: "id", label: "ID", type: "id" },
     { key: "name", label: "Order name", type: "text", help: "e.g. #1001" },
     { key: "email", label: "Customer email", type: "text" },
     {
@@ -125,7 +126,8 @@ export const FILTERS: Record<string, FilterField[]> = {
     },
     { key: "status", label: "Order status", type: "enum", options: opts("open", "closed", "cancelled", "not_closed") },
     tag,
-    { key: "sku", label: "Contains SKU", type: "text" },
+    { key: "sku", label: "Line: SKU", type: "text" },
+    { key: "metafield", label: "Metafield", type: "text", help: "namespace.key=value, e.g. custom.batch=A12" },
     { key: "discount_code", label: "Discount code", type: "text" },
     { key: "gateway", label: "Payment gateway", type: "text" },
     { key: "sales_channel", label: "Sales channel", type: "text" },
@@ -150,6 +152,22 @@ export const FILTERS: Record<string, FilterField[]> = {
     created,
     { key: "processed_at", label: "Processed", type: "date" },
     updated,
+    // Below: not searchable in Shopify, so the export checks each order itself.
+    // Dates are narrowed by updated_at first (a fulfillment or refund updates its order).
+    { key: "fulfillment_created_at", label: "Fulfillment: Created At", type: "date", local: true, searchBy: "updated_at" },
+    { key: "fulfillment_updated_at", label: "Fulfillment: Updated At", type: "date", local: true, searchBy: "updated_at" },
+    { key: "refund_created_at", label: "Refund: Created At", type: "date", local: true, searchBy: "updated_at" },
+    { key: "customer_tax_exempt", label: "Customer: Tax Exempt", type: "boolean", local: true },
+    { key: "billing_country_code", label: "Billing: Country Code", type: "text", local: true, help: "e.g. GB" },
+    { key: "shipping_country_code", label: "Shipping: Country Code", type: "text", local: true, help: "e.g. GB" },
+    { key: "line_type", label: "Line: Type", type: "enum", local: true, options: [{ value: "Line Item", label: "Line Item" }, { value: "Shipping Line", label: "Shipping Line" }] },
+    { key: "line_product_handle", label: "Line: Product Handle", type: "text", local: true },
+    { key: "line_title", label: "Line: Title", type: "text", local: true },
+    { key: "line_name", label: "Line: Name", type: "text", local: true, help: "Title and variant, e.g. Shirt - Blue / M" },
+    { key: "line_variant_id", label: "Line: Variant ID", type: "id", local: true },
+    { key: "line_variant_title", label: "Line: Variant Title", type: "text", local: true },
+    { key: "line_vendor", label: "Line: Vendor", type: "text", local: true },
+    { key: "line_variant_inventory_qty", label: "Line: Variant Inventory Qty", type: "number", local: true },
   ],
   files: [
     { key: "filename", label: "File name", type: "text" },

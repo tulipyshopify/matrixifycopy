@@ -240,11 +240,23 @@ function searchDate(v: string): string {
  * Compiles structured filters to Shopify search syntax. Conditions are AND-ed;
  * values are quoted so user input can't change the query structure.
  */
+/** `namespace.key=value` (or `namespace.key: value`). */
+export const METAFIELD_FILTER = /^([\w-]+)\.([\w-]+)\s*[=:]\s*(.+)$/;
+
 export function compileFilters(filters: FilterCondition[] | undefined): string {
   const parts: string[] = [];
   for (const f of filters ?? []) {
-    const k = f.field;
-    const v = (f.value ?? "").trim();
+    // Checked by the export itself (see FilterField.local).
+    if (f.local) continue;
+    let k = f.field;
+    let v = (f.value ?? "").trim();
+    // "namespace.key=value" searches a metafield.
+    if (k === "metafield") {
+      const m = METAFIELD_FILTER.exec(v);
+      if (!m) continue;
+      k = `metafields.${m[1]}.${m[2]}`;
+      v = m[3].trim();
+    }
     switch (f.op) {
       case "is":
         parts.push(/^(true|false)$/.test(v) || /^-?\d+(\.\d+)?$/.test(v) ? `${k}:${v}` : `${k}:${searchValue(v)}`);
@@ -304,6 +316,8 @@ export function resolveDateRange(r: DateRange, now = new Date(), timeZone = "UTC
       return { from: ymd(addDays(day, -29)), to: ymd(day) };
     case "last_90_days":
       return { from: ymd(addDays(day, -89)), to: ymd(day) };
+    case "last_n_days":
+      return { from: ymd(addDays(day, -(Math.max(1, Math.floor(r.days ?? 1)) - 1))), to: ymd(day) };
     case "this_month":
       return { from: ymd(new Date(Date.UTC(y, m, 1))), to: ymd(day) };
     case "last_month":
@@ -318,7 +332,7 @@ export function resolveDateRange(r: DateRange, now = new Date(), timeZone = "UTC
 }
 
 /** Midnight at the start of a YYYY-MM-DD date in a time zone, as a UTC timestamp for search. */
-function startOfDay(date: string, timeZone: string, plusDays = 0): string {
+export function startOfDay(date: string, timeZone: string, plusDays = 0): string {
   const [y, m, d] = date.slice(0, 10).split("-").map(Number);
   // Date.UTC normalises day overflow, giving the right calendar date.
   const cal = new Date(Date.UTC(y, m - 1, d + plusDays));
@@ -336,10 +350,21 @@ export function compileDateRange(r: DateRange | undefined, now = new Date(), tim
   if (!r) return "";
   const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
   const { from, to } = resolveDateRange(r, now, tz);
+  // A date Shopify can't search by (e.g. when a fulfillment was created):
+  // anything that happened to the item since `from` also updated it, so the
+  // search is narrowed by that and the export checks the real date itself.
+  if (r.searchBy) return from ? `${r.searchBy}:>='${startOfDay(from, tz)}'` : "";
   const parts: string[] = [];
   if (from) parts.push(`${r.field}:>='${startOfDay(from, tz)}'`);
   if (to) parts.push(`${r.field}:<'${startOfDay(to, tz, 1)}'`);
   return parts.join(" AND ");
+}
+
+/** The range as instants: `from` inclusive, `to` exclusive. */
+export function dateRangeInstants(r: DateRange, now = new Date(), timeZone = "UTC"): { from?: Date; to?: Date } {
+  const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
+  const { from, to } = resolveDateRange(r, now, tz);
+  return { from: from ? new Date(startOfDay(from, tz)) : undefined, to: to ? new Date(startOfDay(to, tz, 1)) : undefined };
 }
 
 /** Builds a Shopify search query string from export options. */

@@ -34,6 +34,13 @@ export interface FilterField {
   /** Allowed values for enum fields. */
   options?: Array<{ value: string; label: string }>;
   help?: string;
+  /**
+   * Shopify can't search by this field: the export fetches the items and
+   * checks each one itself. `searchBy` (dates only) is a searchable date that
+   * is never earlier, used to narrow what is fetched.
+   */
+  local?: boolean;
+  searchBy?: string;
 }
 
 export type FilterOp =
@@ -54,6 +61,9 @@ export interface FilterCondition {
   value: string;
   /** Upper bound for `between`; extra values for `any_of` are comma separated in `value`. */
   value2?: string;
+  /** Set by the server: checked by the export itself, not sent to Shopify's search. */
+  local?: boolean;
+  searchBy?: string;
 }
 
 /** Operators offered for each filter type. */
@@ -72,6 +82,7 @@ export type DatePreset =
   | "last_7_days"
   | "last_30_days"
   | "last_90_days"
+  | "last_n_days"
   | "this_month"
   | "last_month"
   | "this_year"
@@ -84,6 +95,7 @@ export const DATE_PRESETS: Array<{ value: DatePreset; label: string }> = [
   { value: "last_7_days", label: "Last 7 days" },
   { value: "last_30_days", label: "Last 30 days" },
   { value: "last_90_days", label: "Last 90 days" },
+  { value: "last_n_days", label: "Last … days (choose)" },
   { value: "this_month", label: "This month" },
   { value: "last_month", label: "Last month" },
   { value: "this_year", label: "This year" },
@@ -101,6 +113,10 @@ export interface DateRange {
   /** Custom range bounds (YYYY-MM-DD); either may be empty. */
   from?: string;
   to?: string;
+  /** Number of days for `last_n_days`, today included. */
+  days?: number;
+  /** Set by the server for dates Shopify can't search by: the field to narrow the search with. */
+  searchBy?: string;
 }
 
 export interface ExportOptions {

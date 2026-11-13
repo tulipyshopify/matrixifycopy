@@ -4,6 +4,7 @@ import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
+import { METAFIELD_FILTER } from "../core/util";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 import { redactUrl } from "./sources.server";
@@ -86,13 +87,20 @@ export function parseDateRange(e: Entity, r: DateRange): DateRange | undefined {
   const field = (e.filters ?? []).find((f) => f.key === r.field && f.type === "date");
   if (!field) throw new Error(`${e.sheet}: can't filter by date "${r.field}"`);
   if (!DATE_PRESETS.some((p) => p.value === r.preset)) throw new Error(`${e.sheet}: unknown date range`);
-  if (r.preset !== "custom") return { field: r.field, preset: r.preset };
+  // Taken from the field's definition, never from the request.
+  const searchBy = field.searchBy ? { searchBy: field.searchBy } : {};
+  if (r.preset === "last_n_days") {
+    const days = Math.floor(Number(r.days));
+    if (!(days >= 1 && days <= 3650)) throw new Error(`${field.label}: enter a number of days between 1 and 3650`);
+    return { field: r.field, preset: r.preset, days, ...searchBy };
+  }
+  if (r.preset !== "custom") return { field: r.field, preset: r.preset, ...searchBy };
   const from = r.from?.trim() || undefined;
   const to = r.to?.trim() || undefined;
   for (const d of [from, to]) if (d && !DATE.test(d)) throw new Error(`${field.label}: "${d}" is not a date`);
   if (!from && !to) return undefined;
   if (from && to && from > to) throw new Error(`${field.label}: the start date is after the end date`);
-  return { field: r.field, preset: "custom", from, to };
+  return { field: r.field, preset: "custom", from, to, ...searchBy };
 }
 
 /** Validates filter rows against the entity's filter fields. */
@@ -120,8 +128,17 @@ export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition
       check(value);
     }
     if (value2 !== undefined) check(value2);
+    if (field.key === "metafield" && !METAFIELD_FILTER.test(value)) throw new Error(`${field.label}: write it as namespace.key=value`);
     const id = field.type === "id" ? value.replace(/^gid:\/\/shopify\/\w+\//, "") : value;
-    return { field: field.key, op: f.op, value: id, ...(value2 !== undefined ? { value2 } : {}) };
+    return {
+      field: field.key,
+      op: f.op,
+      value: id,
+      ...(value2 !== undefined ? { value2 } : {}),
+      // Taken from the field's definition, never from the request.
+      ...(field.local ? { local: true } : {}),
+      ...(field.local && field.searchBy ? { searchBy: field.searchBy } : {}),
+    };
   });
 }
 
