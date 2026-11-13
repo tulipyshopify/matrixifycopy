@@ -51,6 +51,68 @@ function keepDynamic(options: ExportOptions, h: string): boolean {
   return true;
 }
 
+/** Which metafields each data type exports: [data group, column prefix, Shopify owner type]. */
+const METAFIELD_OWNERS: Record<string, Array<[string, string, string]>> = {
+  products: [
+    ["metafields", "Metafield", "PRODUCT"],
+    ["variant_metafields", "Variant Metafield", "PRODUCTVARIANT"],
+  ],
+  smart_collections: [["metafields", "Metafield", "COLLECTION"]],
+  custom_collections: [["metafields", "Metafield", "COLLECTION"]],
+  customers: [["metafields", "Metafield", "CUSTOMER"]],
+  companies: [["metafields", "Metafield", "COMPANY"]],
+  orders: [["metafields", "Metafield", "ORDER"]],
+  draft_orders: [["metafields", "Metafield", "DRAFTORDER"]],
+  discounts: [["metafields", "Metafield", "DISCOUNT"]],
+  pages: [["metafields", "Metafield", "PAGE"]],
+  blog_posts: [["metafields", "Metafield", "ARTICLE"]],
+  shop: [["metafields", "Metafield", "SHOP"]],
+};
+
+const METAFIELD_DEFINITIONS = `#graphql
+  query ExportMetafieldDefinitions($ownerType: MetafieldOwnerType!, $after: String) {
+    metafieldDefinitions(ownerType: $ownerType, first: 250, after: $after) {
+      nodes { namespace key type { name } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+/**
+ * Metafield columns that no exported item has a value for: every metafield
+ * defined in the store, and every one named in the export, so the file shows
+ * them (empty) and they can be filled in and imported.
+ */
+export async function emptyMetafieldColumns(gql: Gql, entity: Entity, options: ExportOptions, existing: string[], log: Logger): Promise<string[]> {
+  const groups = new Set(options.groups ?? (entity.groups ?? []).filter((g) => g.default).map((g) => g.key));
+  const bare = (h: string) => h.replace(/\s*\[.*$/, "").trim().toLowerCase();
+  const have = new Set(existing.map(bare));
+  const out: string[] = [];
+  const add = (header: string) => {
+    if (have.has(bare(header))) return;
+    have.add(bare(header));
+    out.push(header);
+  };
+  for (const [group, prefix, ownerType] of METAFIELD_OWNERS[entity.key] ?? []) {
+    if (!groups.has(group)) continue;
+    try {
+      let after: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const d: any = await gql(METAFIELD_DEFINITIONS, { ownerType, after });
+        for (const def of d.metafieldDefinitions.nodes) add(`${prefix}: ${def.namespace}.${def.key} [${def.type.name}]`);
+        if (!d.metafieldDefinitions.pageInfo.hasNextPage) break;
+        after = d.metafieldDefinitions.pageInfo.endCursor;
+      }
+    } catch (e: any) {
+      log(`Could not read the ${prefix.toLowerCase()} definitions (${e?.message ?? e}); only metafields with values are listed`);
+    }
+    // Named in the export but not defined in the store: an empty text column.
+    const named = prefix === "Metafield" ? options.metafields : options.variantMetafields;
+    for (const m of named ?? []) add(`${prefix}: ${m} [single_line_text_field]`);
+  }
+  return out;
+}
+
 export function selectColumns(entity: Entity, options: ExportOptions, headers: string[]): string[] {
   headers = headers.filter((h) => keepDynamic(options, h));
   if (!options.columns) return headers;
@@ -118,6 +180,7 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
         for (const r of rows) await spool.push(r);
       });
       await spool.finish();
+      for (const h of await emptyMetafieldColumns(gql, entity, options, spool.allHeaders(), ctx.log)) spool.addHeader(h);
       await out.addSheet(entity.sheet, selectColumns(entity, options, spool.headers(entity.columns)), spool.rows());
       summaries.push({ entity: entity.key, rows: spool.count, items });
       log(`${entity.sheet}: exported ${items} items in ${spool.count} rows`);

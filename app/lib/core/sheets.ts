@@ -274,6 +274,16 @@ export class RowSpool {
       await new Promise((r) => this.out.once("drain", r));
     }
   }
+  /** Adds a column that no row has a value for. */
+  addHeader(h: string) {
+    this.headerSet.add(h);
+  }
+  hasHeader(h: string): boolean {
+    return this.headerSet.has(h);
+  }
+  allHeaders(): string[] {
+    return [...this.headerSet];
+  }
   headers(preferred: string[]): string[] {
     const ordered = preferred.filter((h) => this.headerSet.has(h));
     const rest = [...this.headerSet].filter((h) => !preferred.includes(h));
