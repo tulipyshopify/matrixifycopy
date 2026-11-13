@@ -1,0 +1,41 @@
+# This file stores configurations for your Shopify app.
+# The third copy: app "Bulkport" in the Roots Plants LTD organization (32769062). client_id is not a secret.
+client_id = "3157f80c9c9f9ebc94868b28a0932b67"
+name = "Bulkport"
+application_url = "https://bulk-roots.tulipy.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+
+[auth]
+redirect_urls = [
+  "https://bulk-roots.tulipy.app/auth/callback",
+  "https://bulk-roots.tulipy.app/auth/shopify/callback",
+  "https://bulk-roots.tulipy.app/api/auth/callback",
+]
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+# write_* scopes include read access. read_all_orders and read_shopify_payments_payouts
+# need Shopify's approval for public apps; drop scopes for sheets you don't use.
+scopes = "write_products,write_inventory,read_locations,write_publications,write_customers,write_orders,read_all_orders,write_draft_orders,write_discounts,read_shopify_payments_payouts,write_content,write_online_store_pages,write_online_store_navigation,write_files,write_metaobjects,read_metaobject_definitions"
+
+[webhooks]
+api_version = "2026-10"
+
+  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  # Mandatory compliance topics (handled by /app/routes/webhooks.compliance.tsx)
+  # See: https://shopify.dev/docs/apps/build/privacy-law-compliance
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
