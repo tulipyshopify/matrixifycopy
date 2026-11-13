@@ -104,6 +104,11 @@ export interface DateRange {
 }
 
 export interface ExportOptions {
+  /**
+   * Settings version. Set-ups saved before a data option existed don't mention
+   * it; the version tells "left out because it didn't exist" from "switched off".
+   */
+  v?: number;
   /** The shop's IANA time zone; set by the server when the export runs. */
   timezone?: string;
   /** Date range filter, resolved at run time. */

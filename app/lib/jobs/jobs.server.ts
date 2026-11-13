@@ -27,6 +27,9 @@ export type EntityInfo = ReturnType<typeof entityCatalog>[number];
 
 const DATE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;
 
+/** Current version of saved export settings (see ExportOptions.v). */
+export const OPTIONS_VERSION = 2;
+
 /** Validates the export form payload into an ExportConfig. */
 export function parseExportConfig(raw: unknown): ExportConfig {
   const input = raw as { entities?: Array<{ entity: string; options?: ExportOptions }> };
@@ -35,7 +38,7 @@ export function parseExportConfig(raw: unknown): ExportConfig {
     entities: input.entities.map(({ entity, options = {} }) => {
       const e = getEntity(entity);
       if (!e?.export) throw new Error(`Cannot export "${entity}"`);
-      const o: ExportOptions = {};
+      const o: ExportOptions = { v: OPTIONS_VERSION };
       if (options.query?.trim()) {
         if (!e.supportsQuery) throw new Error(`${e.sheet} does not support filters`);
         o.query = options.query.trim().slice(0, 2000);

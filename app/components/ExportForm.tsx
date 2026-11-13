@@ -95,7 +95,20 @@ function stateFromPreset(
     state[entity] = {
       enabled: true,
       open: preset.entities.length === 1,
-      groups: o.groups ?? state[entity].groups,
+      // Set-ups saved before a standalone option existed get it at its default.
+      groups: o.groups
+        ? [
+            ...o.groups,
+            ...((o.v ?? 1) < 2
+              ? e.groups
+                  .filter(
+                    (g) =>
+                      g.standalone && g.default && !o.groups.includes(g.key),
+                  )
+                  .map((g) => g.key)
+              : []),
+          ]
+        : state[entity].groups,
       columns: o.columns
         ? e.columns.filter((c) => o.columns.includes(c))
         : [...e.columns],
@@ -638,7 +651,13 @@ function ColumnPicker({
                 ? [...new Set([...columns, ...optional])]
                 : columns.filter((c) => !optional.includes(c)),
               // Select all / none covers every data row too (inventory, metafields…).
-              groups: on ? entity.groups.map((g) => g.key) : [],
+              // Clearing keeps standalone options (e.g. shipping rows): they are
+              // extra rows, not columns, and have their own tick-box.
+              groups: on
+                ? entity.groups.map((g) => g.key)
+                : groups.filter(
+                    (k) => entity.groups.find((g) => g.key === k)?.standalone,
+                  ),
             });
           }}
         />

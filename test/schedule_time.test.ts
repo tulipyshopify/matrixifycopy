@@ -64,8 +64,9 @@ describe("shipping lines as rows", () => {
     const rows = orderToRows(order, new Set(["line_items", "shipping_lines"]));
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ "Line: Type": "Line Item", "Line: SKU": "T1", "Line: Quantity": "2" });
-    expect(rows[1]).toMatchObject({ ID: "1", Name: "#1001", "Line: Type": "Shipping Line", "Line: Title": "DHL Next Day", "Line: SKU": "dhl-nd", "Line: Price": "7.99" });
+    expect(rows[1]).toMatchObject({ ID: "1", Name: "#1001", "Line: Type": "Shipping Line", "Line: Title": "DHL Next Day", "Line: Price": "7.99" });
     expect(rows[1]["Line: Quantity"]).toBeUndefined();
+    expect(rows[1]["Line: SKU"]).toBeUndefined();
   });
 
   it("is left out when the section is unticked", () => {

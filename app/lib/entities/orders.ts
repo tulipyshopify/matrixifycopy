@@ -398,8 +398,9 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
     if (ship) {
       Object.assign(row, {
         "Line: Type": "Shipping Line",
+        // Title and price only (no SKU or quantity), so SKU-based comparisons
+        // and pivots see product lines only. The rate code is in "Shipping Line: Code".
         "Line: Title": ship.title ?? "",
-        "Line: SKU": ship.code ?? "",
         "Line: Price": bagAmount(ship.originalPriceSet),
       });
     }
@@ -496,6 +497,9 @@ async function shippingLinesFor(ctx: ExportContext, o: any): Promise<any[]> {
 
 async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
   const groups = new Set(ctx.options.groups ?? ordersEntity.groups!.filter((g) => g.default).map((g) => g.key));
+  // Settings saved before shipping rows existed (old presets, schedules, "Run
+  // again") never mention them: include them whenever line items are exported.
+  if ((ctx.options.v ?? 1) < 2 && groups.has("line_items")) groups.add("shipping_lines");
   const search = buildSearchQuery(ctx.options);
   let n = 0;
   for await (const o of ctx.bulk(ordersBulkQuery(search, groups))) {
