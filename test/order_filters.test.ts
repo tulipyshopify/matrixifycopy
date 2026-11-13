@@ -116,7 +116,7 @@ describe("order filters", () => {
     await ordersEntity.export!(ctx, async (r) => void rows.push(...r));
     expect(queries[0]).toMatch(/lineItems/);
     expect(queries[0]).toMatch(/product \{ id handle/);
-    expect(queries[0]).toMatch(/refunds \{ createdAt \}/);
+    expect(queries[0]).toMatch(/refunds \{ id createdAt/);
     expect(rows).toEqual([]); // #1 has the handle but no refund
     ctx.options.filters = jobs.parseFilters(orders, [{ field: "line_product_handle", op: "is", value: "shirt" }]);
     await ordersEntity.export!(ctx, async (r) => void rows.push(...r));

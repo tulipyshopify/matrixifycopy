@@ -588,6 +588,7 @@ function DateRangeFilter({
 
 const SECTION_NAMES: Record<string, string> = {
   Fulfillment: "Fulfillments",
+  Refund: "Refunds",
   Price: "Prices",
   Tax: "Taxes",
   Variant: "Variants",

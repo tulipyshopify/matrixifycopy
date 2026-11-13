@@ -185,6 +185,9 @@ const LINE_PRODUCT_COLUMNS = [
   "Line: Variant HS Code",
 ];
 
+/** One row per refund, beside the line rows (group "refunds"). Export only. */
+const REFUND_COLUMNS = ["Refund: ID", "Refund: Created At", "Refund: Note", "Refund: Amount"];
+
 const FULFILLMENT_COLUMNS = [
   "Fulfillment: ID",
   "Fulfillment: Status",
@@ -377,7 +380,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set
       ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
       taxLines { title rate priceSet ${BOTH} }
       ${groups.has("fulfillments") ? fulfillments : ""}
-      ${extras.has("refunds") ? "refunds { createdAt }" : ""}
+      ${groups.has("refunds") || extras.has("refunds") ? `refunds { id createdAt note totalRefundedSet ${MONEY} }` : ""}
 
       ${groups.has("transactions") ? transactions : ""}
       ${groups.has("metafields") ? metafields : ""}
@@ -414,7 +417,8 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
   const fulfillments: any[] = groups.has("fulfillments") ? (o.fulfillments ?? []) : [];
   // Shipping lines follow the line items as rows of their own ("Line: Type").
   const shipping: any[] = groups.has("shipping_lines") ? (o.shippingLines ?? []).filter((l: any) => !l.isRemoved) : [];
-  const count = Math.max(1, lines.length + shipping.length, transactions.length, fulfillments.length);
+  const refunds: any[] = groups.has("refunds") ? (o.refunds ?? []) : [];
+  const count = Math.max(1, lines.length + shipping.length, transactions.length, fulfillments.length, refunds.length);
   const rows: Row[] = [];
   for (let i = 0; i < count; i++) {
     const row: Row = { ID: gidToId(o.id), Name: o.name ?? "", "Row #": String(i + 1), "Top Row": boolCell(i === 0) };
@@ -559,6 +563,15 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
           "Line: Variant HS Code": inv.harmonizedSystemCode ?? "",
         });
       }
+    }
+    const refund = refunds[i];
+    if (refund) {
+      Object.assign(row, {
+        "Refund: ID": gidToId(refund.id),
+        "Refund: Created At": refund.createdAt ?? "",
+        "Refund: Note": refund.note ?? "",
+        "Refund: Amount": bagAmount(refund.totalRefundedSet),
+      });
     }
     const f = fulfillments[i];
     if (f) {
@@ -1126,6 +1139,7 @@ export const ordersEntity: Entity = {
     ...ORDER_LINE_COLUMNS,
     ...LINE_PRODUCT_COLUMNS,
     ...FULFILLMENT_COLUMNS,
+    ...REFUND_COLUMNS,
     ...TRANSACTION_COLUMNS,
   ],
   supportsQuery: true,
@@ -1137,6 +1151,7 @@ export const ordersEntity: Entity = {
     // Standalone: these are extra rows, not the Shipping address columns.
     { key: "shipping_lines", label: "Shipping lines as rows", default: true, standalone: true },
     { key: "fulfillments", label: "Fulfillments", default: true },
+    { key: "refunds", label: "Refunds", default: true },
     { key: "transactions", label: "Transactions", default: true },
     { key: "metafields", label: "Order metafields", default: true },
   ],

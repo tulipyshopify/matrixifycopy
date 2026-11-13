@@ -142,4 +142,17 @@ describe("Orders: line item columns", () => {
     });
     expect(row["Line: Tax 3 Title"]).toBeUndefined();
   });
+
+  it("writes refunds as rows with their date, note and amount", () => {
+    const o = { id: "gid://shopify/Order/1", name: "#1", lineItems: [li], refunds: [
+      { id: "gid://shopify/Refund/7", createdAt: "2026-11-10T09:00:00Z", note: "Damaged", totalRefundedSet: bag("12.50") },
+      { id: "gid://shopify/Refund/8", createdAt: "2026-11-12T09:00:00Z", note: null, totalRefundedSet: bag("3.00") },
+    ] };
+    const rows = orderToRows(o, new Set(["line_items", "refunds"]));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ "Refund: ID": "7", "Refund: Created At": "2026-11-10T09:00:00Z", "Refund: Note": "Damaged", "Refund: Amount": "12.50" });
+    expect(rows[1]).toMatchObject({ Name: "#1", "Refund: ID": "8", "Refund: Created At": "2026-11-12T09:00:00Z", "Refund: Amount": "3.00" });
+    expect(orderToRows(o, new Set(["line_items"]))[0]["Refund: ID"]).toBeUndefined();
+    expect(getEntity("orders")!.columns).toContain("Refund: Created At");
+  });
 });
