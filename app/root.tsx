@@ -16,6 +16,8 @@ export default function App() {
 .bp-chips{display:flex;flex-wrap:wrap;gap:6px}
 .bp-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 6px;border-radius:8px;background:#f1f1f1;font-size:13px;line-height:20px;cursor:grab;user-select:none;border:1px solid transparent}
 .bp-chip:focus-visible{outline:2px solid #005bd3;outline-offset:1px}
+.bp-chip-x{all:unset;cursor:pointer;color:#616161;font-size:15px;line-height:16px;width:16px;height:16px;text-align:center;border-radius:4px}
+.bp-chip-x:hover{background:#d4d4d4;color:#303030}
 .bp-chip-static{cursor:default;padding-left:10px}
 .bp-chip-dragging{opacity:.4}
 .bp-chip-over{border-color:#303030;background:#e3e3e3}

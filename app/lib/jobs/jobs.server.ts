@@ -71,8 +71,13 @@ export function parseExportConfig(raw: unknown): ExportConfig {
       }
       if (options.columns) {
         const valid = new Set(e.columns);
-        o.columns = options.columns.filter((c) => valid.has(c));
-        if (!o.columns.length) throw new Error(`${e.sheet}: choose at least one column`);
+        // "Metafield: namespace.key" places a named metafield among the columns.
+        const named = new Set([
+          ...(o.metafields ?? []).map((m) => `Metafield: ${m}`),
+          ...(o.variantMetafields ?? []).map((m) => `Variant Metafield: ${m}`),
+        ]);
+        o.columns = options.columns.filter((c) => valid.has(c) || named.has(c));
+        if (!o.columns.some((c) => valid.has(c))) throw new Error(`${e.sheet}: choose at least one column`);
       }
       if (options.limit) o.limit = Math.max(1, Math.floor(Number(options.limit)));
       return { entity: e.key, options: o };

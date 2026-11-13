@@ -123,6 +123,30 @@ describe("column selection", () => {
   });
 });
 
+describe("named metafields among the columns", () => {
+  const products = getEntity("products")!;
+  const headers = ["ID", "Title", "Vendor", "Metafield: custom.fit [single_line_text_field]", "Metafield: custom.care [multi_line_text_field]", "Variant Metafield: custom.size [number_integer]"];
+
+  it("puts a moved metafield at its place, the rest at the end", () => {
+    const options = { columns: ["Title", "Metafield: custom.care", "ID", "Variant Metafield: custom.size", "Metafield: custom.gone"] };
+    expect(selectColumns(products, options, headers)).toEqual([
+      "Title",
+      "Metafield: custom.care [multi_line_text_field]",
+      "ID",
+      "Variant Metafield: custom.size [number_integer]",
+      "Metafield: custom.fit [single_line_text_field]",
+    ]);
+  });
+
+  it("only accepts metafields that are also chosen", () => {
+    const cfg = parseExportConfig({
+      entities: [{ entity: "products", options: { metafields: ["custom.care"], columns: ["Metafield: custom.care", "Title", "Metafield: custom.other", "Bogus"] } }],
+    });
+    expect(cfg.entities[0].options.columns).toEqual(["Metafield: custom.care", "Title"]);
+    expect(() => parseExportConfig({ entities: [{ entity: "products", options: { metafields: ["custom.care"], columns: ["Metafield: custom.care"] } }] })).toThrow(/at least one column/);
+  });
+});
+
 describe("date range", async () => {
   const { resolveDateRange, compileDateRange } = await import("../app/lib/core/util");
   const now = new Date("2026-11-10T15:00:00Z");

@@ -58,7 +58,24 @@ export function selectColumns(entity: Entity, options: ExportOptions, headers: s
   // arrange them), followed by the dynamic columns.
   const present = new Set(headers);
   const known = new Set(entity.columns);
-  return [...options.columns.filter((c) => present.has(c)), ...headers.filter((h) => !known.has(h))];
+  const out: string[] = [];
+  const placed = new Set<string>();
+  for (const c of options.columns) {
+    if (present.has(c)) {
+      out.push(c);
+      placed.add(c);
+    } else if (/^(Variant )?Metafield: /.test(c)) {
+      // A named metafield placed among the columns; its header also carries the type.
+      const want = c.toLowerCase();
+      for (const h of headers) {
+        if (!placed.has(h) && !known.has(h) && h.replace(/\s*\[.*$/, "").trim().toLowerCase() === want) {
+          out.push(h);
+          placed.add(h);
+        }
+      }
+    }
+  }
+  return [...out, ...headers.filter((h) => !known.has(h) && !placed.has(h))];
 }
 
 export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {

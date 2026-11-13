@@ -150,7 +150,9 @@ function stateFromPreset(
         o.columns.join("|") !==
           e.columns.filter((c: string) => o.columns.includes(c)).join("|")
           ? [
-              ...o.columns.filter((c: string) => e.columns.includes(c)),
+              ...o.columns.filter(
+                (c: string) => e.columns.includes(c) || PSEUDO_COLUMN.test(c),
+              ),
               ...e.columns.filter((c) => !o.columns.includes(c)),
             ]
           : null,
@@ -937,25 +939,47 @@ function useLocations(enabled: boolean): string[] | null {
   return list;
 }
 
+const PSEUDO_COLUMN = /^(Variant )?Metafield: /;
+
+/** The metafields named in the panel, as movable columns ("Metafield: custom.fit"). */
+function metafieldChips(e: EntityInfo, s: EntityState): string[] {
+  const has = (k: string) =>
+    e.groups.some((g) => g.key === k) && s.groups.includes(k);
+  return [
+    ...(has("metafields")
+      ? splitList(s.metafields).map((m) => `Metafield: ${m}`)
+      : []),
+    ...(has("variant_metafields")
+      ? splitList(s.variantMetafields).map((m) => `Variant Metafield: ${m}`)
+      : []),
+  ];
+}
+
 /**
  * The selected columns as chips, in file order. Drag a chip (or focus it and
- * press the left / right arrow keys) to move it.
+ * press the left / right arrow keys) to move it; the cross takes it out.
  */
 function ColumnOrder({
   entity,
   columns,
+  extra,
   order,
   onChange,
+  onRemove,
 }: {
   entity: EntityInfo;
   columns: string[];
+  /** Named metafields: movable like any column. */
+  extra: string[];
   order: string[] | null;
   onChange: (order: string[] | null) => void;
+  onRemove: (column: string) => void;
 }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
-  const full = order ?? entity.columns;
-  const shown = full.filter((c) => columns.includes(c));
+  const base = order ?? entity.columns;
+  const full = [...base, ...extra.filter((c) => !base.includes(c))];
+  const shown = full.filter((c) => columns.includes(c) || extra.includes(c));
   // Moves `col` to sit just before `before` (or to the end) within the full order.
   const move = (col: string, before: string | null) => {
     if (col === before) return;
@@ -975,7 +999,7 @@ function ColumnOrder({
     <s-stack direction="block" gap="small">
       <s-stack direction="inline" gap="small" alignItems="center">
         <s-text tone="neutral">
-          Drag to change the order of the columns in the file.
+          Drag a column to move it. The cross takes it out of the file.
         </s-text>
         {order ? (
           <s-button variant="tertiary" onClick={() => onChange(null)}>
@@ -991,7 +1015,7 @@ function ColumnOrder({
             tabIndex={0}
             draggable
             className={`bp-chip${dragging === c ? " bp-chip-dragging" : ""}${over === c && dragging !== c ? " bp-chip-over" : ""}`}
-            aria-label={`${c}. Use the left and right arrow keys to move.`}
+            aria-label={`${c}. Use the left and right arrow keys to move, Delete to remove.`}
             onDragStart={(ev) => {
               setDragging(c);
               ev.dataTransfer.effectAllowed = "move";
@@ -1014,12 +1038,26 @@ function ColumnOrder({
             onKeyDown={(ev) => {
               if (ev.key === "ArrowLeft") nudge(c, -1);
               if (ev.key === "ArrowRight") nudge(c, 1);
+              if (ev.key === "Delete" || ev.key === "Backspace") onRemove(c);
             }}
           >
             <span aria-hidden="true" className="bp-grip">
               ⠿
             </span>
             {c}
+            <button
+              type="button"
+              className="bp-chip-x"
+              tabIndex={-1}
+              draggable={false}
+              aria-label={`Remove ${c}`}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onRemove(c);
+              }}
+            >
+              ×
+            </button>
           </div>
         ))}
       </div>
@@ -1031,7 +1069,11 @@ function ColumnOrder({
 function panelOptions(e: EntityInfo, s: EntityState) {
   const allColumns = e.columns.every((c) => s.columns.includes(c)) && !s.order;
   // Sent in display order: the custom order if there is one, else the standard order.
-  const ordered = (s.order ?? e.columns).filter((c) => s.columns.includes(c));
+  // Named metafields that were moved travel with the columns, at their place.
+  const chips = metafieldChips(e, s);
+  const ordered = (s.order ?? e.columns).filter(
+    (c) => s.columns.includes(c) || chips.includes(c),
+  );
   const filters = s.filters.filter(
     (f) => f.value && (f.op !== "between" || f.value2),
   );
@@ -1188,12 +1230,35 @@ function EntityPanel({
                   state={s}
                   onChange={(patch) => update(patch)}
                 />
-                <s-heading>Column order</s-heading>
+                <s-heading>Arrange columns</s-heading>
                 <ColumnOrder
                   entity={e}
                   columns={s.columns}
+                  extra={metafieldChips(e, s)}
                   order={s.order}
                   onChange={(order) => update({ order })}
+                  onRemove={(c) => {
+                    const drop = (list: string, prefix: string) =>
+                      splitList(list)
+                        .filter((m) => `${prefix}${m}` !== c)
+                        .join(", ");
+                    if (c.startsWith("Variant Metafield: "))
+                      return update({
+                        variantMetafields: drop(
+                          s.variantMetafields,
+                          "Variant Metafield: ",
+                        ),
+                      });
+                    if (c.startsWith("Metafield: "))
+                      return update({
+                        metafields: drop(s.metafields, "Metafield: "),
+                      });
+                    const columns = s.columns.filter((x) => x !== c);
+                    update({
+                      columns,
+                      groups: syncPrefixGroups(e, columns, s.groups),
+                    });
+                  }}
                 />
               </s-stack>
             </>
