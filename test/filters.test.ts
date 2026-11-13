@@ -147,6 +147,30 @@ describe("named metafields among the columns", () => {
   });
 });
 
+describe("stock columns among the columns", () => {
+  const products = getEntity("products")!;
+  const headers = ["ID", "Variant SKU", "Inventory Available: Main", "Inventory Available: Depot", "Inventory On Hand: Main", "Metafield: custom.fit [single_line_text_field]"];
+
+  it("are written where they were placed; ones taken out are dropped", () => {
+    const columns = ["Inventory Available: Depot", "Variant SKU", "Inventory On Hand: Main", "ID"];
+    expect(selectColumns(products, { columns }, headers)).toEqual([
+      "Inventory Available: Depot",
+      "Variant SKU",
+      "Inventory On Hand: Main",
+      "ID",
+      "Metafield: custom.fit [single_line_text_field]",
+    ]);
+    // No stock column listed (older set-ups): all of them follow at the end.
+    expect(selectColumns(products, { columns: ["Variant SKU"] }, headers)).toEqual(["Variant SKU", ...headers.slice(2)]);
+  });
+
+  it("are accepted for data types that have stock", () => {
+    const parse = (entity: string) => parseExportConfig({ entities: [{ entity, options: { columns: ["ID", "Inventory Available: Main", "Inventory Bogus: Main"] } }] }).entities[0].options.columns;
+    expect(parse("products")).toEqual(["ID", "Inventory Available: Main"]);
+    expect(parse("orders")).toEqual(["ID"]);
+  });
+});
+
 describe("date range", async () => {
   const { resolveDateRange, compileDateRange } = await import("../app/lib/core/util");
   const now = new Date("2026-11-10T15:00:00Z");

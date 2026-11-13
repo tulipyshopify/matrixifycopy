@@ -5,6 +5,7 @@ import type { Command, DateRange, Entity, ExportOptions, FilterCondition, Import
 import { COMMANDS, DATE_PRESETS, DATE_UNITS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
+import { INVENTORY_COLUMN } from "../core/exporter";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 import { redactUrl } from "./sources.server";
@@ -83,7 +84,12 @@ export function parseExportConfig(raw: unknown): ExportConfig {
           ...(o.metafields ?? []).map((m) => `Metafield: ${m}`),
           ...(o.variantMetafields ?? []).map((m) => `Variant Metafield: ${m}`),
         ]);
-        o.columns = options.columns.filter((c) => valid.has(c) || named.has(c));
+        // Stock columns ("Inventory Available: Main") can be placed too.
+        const stock = (e.groups ?? []).some((g) => g.key === "inventory");
+        o.columns = options.columns
+          .map((c) => String(c).slice(0, 300))
+          .filter((c) => valid.has(c) || named.has(c) || (stock && INVENTORY_COLUMN.test(c)))
+          .slice(0, 2000);
         if (!o.columns.some((c) => valid.has(c))) throw new Error(`${e.sheet}: choose at least one column`);
       }
       if (options.limit) o.limit = Math.max(1, Math.floor(Number(options.limit)));

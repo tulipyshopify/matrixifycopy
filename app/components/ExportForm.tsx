@@ -44,6 +44,8 @@ interface EntityState {
   locations: string[] | null;
   /** Stock quantities to export per location. */
   inventoryKinds: string[];
+  /** Stock columns taken out with their cross ("Inventory Available: Main"). */
+  inventoryOff: string[];
   /** "namespace.key" lists, comma separated; blank = all. */
   metafields: string;
   variantMetafields: string;
@@ -119,6 +121,7 @@ function blankState(
         order: null,
         locations: null,
         inventoryKinds: ["available"],
+        inventoryOff: [],
         metafields: "",
         variantMetafields: "",
       },
@@ -181,9 +184,18 @@ function stateFromPreset(
           : null,
       locations: o.locations ?? null,
       inventoryKinds: o.inventoryKinds?.length ? o.inventoryKinds : ["available"],
+      inventoryOff: [],
       metafields: (o.metafields ?? []).join(", "),
       variantMetafields: (o.variantMetafields ?? []).join(", "),
     };
+    // Stock columns that were taken out before saving stay out.
+    const saved: string[] = o.columns ?? [];
+    if (saved.some((c) => c.startsWith("Inventory "))) {
+      state[entity].inventoryOff = extraChips(e, {
+        ...state[entity],
+        locations: o.locations ?? locationsCache,
+      }).filter((c) => c.startsWith("Inventory ") && !saved.includes(c));
+    }
     state[entity].columns = withoutOffGroups(
       e,
       state[entity].columns,
@@ -475,11 +487,20 @@ function DateRangeFilter({
     >
       <s-select
         label="Date"
-        value={field}
-        onChange={(ev: any) =>
-          onChange(value ? { ...value, field: ev.currentTarget.value } : null)
-        }
+        value={value ? field : ""}
+        onChange={(ev: any) => {
+          const f = ev.currentTarget.value;
+          // Picking a date starts with a common range; "No date filter" clears it.
+          onChange(
+            f
+              ? value
+                ? { ...value, field: f }
+                : { field: f, preset: "last_30_days" }
+              : null,
+          );
+        }}
       >
+        <s-option value="">No date filter</s-option>
         {dateFields.map((f) => (
           <s-option key={f.key} value={f.key}>
             {f.label}
@@ -715,7 +736,12 @@ function ColumnPicker({
   state: EntityState;
 }) {
   // Data that belongs to columns (Browser) follows the ticked columns.
-  const onChange = (patch: Partial<EntityState>) =>
+  const onChange = (p: Partial<EntityState>) => {
+    // Changing the quantities or locations brings removed stock columns back.
+    const patch =
+      p.inventoryKinds || p.locations !== undefined
+        ? { ...p, inventoryOff: [] }
+        : p;
     rawChange(
       patch.columns
         ? {
@@ -728,9 +754,10 @@ function ColumnPicker({
           }
         : patch,
     );
+  };
   // Nothing is forced: key columns can be left out for report-style exports.
   const required = new Set<string>();
-  const keyColumns = ["ID", ...entity.keyColumns];
+  const keyColumns = [...new Set(["ID", ...entity.keyColumns])];
   const missingKeys = keyColumns.every((c) => !columns.includes(c));
   const storeLocations = useLocations(
     entity.groups.some((g) => g.key === "inventory") &&
@@ -1011,13 +1038,26 @@ function useLocations(enabled: boolean): string[] | null {
   return list;
 }
 
-const PSEUDO_COLUMN = /^(Variant )?Metafield: /;
+const PSEUDO_COLUMN =
+  /^((Variant )?Metafield|Inventory (Available|On Hand|Committed|Reserved|Damaged|Safety Stock|Quality Control|Incoming)): /;
 
-/** The metafields named in the panel, as movable columns ("Metafield: custom.fit"). */
-function metafieldChips(e: EntityInfo, s: EntityState): string[] {
+/**
+ * Columns that aren't in the fixed list but can be arranged all the same: the
+ * stock columns (one per quantity and location) and the named metafields.
+ */
+function extraChips(e: EntityInfo, s: EntityState): string[] {
   const has = (k: string) =>
     e.groups.some((g) => g.key === k) && s.groups.includes(k);
+  const locations = s.locations ?? locationsCache ?? [];
   return [
+    ...(has("inventory")
+      ? locations.flatMap((l) =>
+          INVENTORY_KINDS.filter(([name]) =>
+            s.inventoryKinds.includes(name),
+          ).map(([, label]) => `${label}: ${l}`),
+        )
+      : []
+    ).filter((c) => !s.inventoryOff.includes(c)),
     ...(has("metafields")
       ? splitList(s.metafields).map((m) => `Metafield: ${m}`)
       : []),
@@ -1139,11 +1179,15 @@ function ColumnOrder({
 
 /** Export options for one entity panel, as sent to the server. */
 function panelOptions(e: EntityInfo, s: EntityState) {
-  const allColumns = e.columns.every((c) => s.columns.includes(c)) && !s.order;
+  const allColumns =
+    e.columns.every((c) => s.columns.includes(c)) &&
+    !s.order &&
+    !s.inventoryOff.length;
   // Sent in display order: the custom order if there is one, else the standard order.
-  // Named metafields that were moved travel with the columns, at their place.
-  const chips = metafieldChips(e, s);
-  const ordered = (s.order ?? e.columns).filter(
+  // Stock columns and named metafields travel with the columns, at their place.
+  const chips = extraChips(e, s);
+  const base = s.order ?? e.columns;
+  const ordered = [...base, ...chips.filter((c) => !base.includes(c))].filter(
     (c) => s.columns.includes(c) || chips.includes(c),
   );
   const filters = s.filters.filter(
@@ -1224,6 +1268,11 @@ function EntityPanel({
   update: (patch: Partial<EntityState>) => void;
 }) {
   const total = useItemCount(e, s);
+  // Loaded here too, so the stock columns can be arranged once the store's locations are known.
+  useLocations(
+    e.groups.some((g) => g.key === "inventory") &&
+      s.groups.includes("inventory"),
+  );
   const [advanced, setAdvanced] = useState(!!s.query);
   return (
     <s-section>
@@ -1311,7 +1360,7 @@ function EntityPanel({
                 <ColumnOrder
                   entity={e}
                   columns={s.columns}
-                  extra={metafieldChips(e, s)}
+                  extra={extraChips(e, s)}
                   order={s.order}
                   onChange={(order) => update({ order })}
                   onRemove={(c) => {
@@ -1319,6 +1368,10 @@ function EntityPanel({
                       splitList(list)
                         .filter((m) => `${prefix}${m}` !== c)
                         .join(", ");
+                    if (c.startsWith("Inventory "))
+                      return update({
+                        inventoryOff: [...s.inventoryOff, c],
+                      });
                     if (c.startsWith("Variant Metafield: "))
                       return update({
                         variantMetafields: drop(

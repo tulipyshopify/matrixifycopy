@@ -33,7 +33,7 @@ export interface RunExportArgs {
  * location) are controlled by column groups instead.
  */
 /** "Inventory Available: Shop", "Inventory On Hand: Shop"… → the location name. */
-const INVENTORY_COLUMN = /^Inventory (?:Available|On Hand|Committed|Reserved|Damaged|Safety Stock|Quality Control|Incoming): (.+)$/;
+export const INVENTORY_COLUMN = /^Inventory (?:Available|On Hand|Committed|Reserved|Damaged|Safety Stock|Quality Control|Incoming): (.+)$/;
 
 /** Applies the location and metafield choices to dynamic column headers. */
 function keepDynamic(options: ExportOptions, h: string): boolean {
@@ -56,6 +56,12 @@ export function selectColumns(entity: Entity, options: ExportOptions, headers: s
   if (!options.columns) return headers;
   // Chosen columns come out in the order given (the export form lets people
   // arrange them), followed by the dynamic columns.
+  // When stock columns are listed, only the listed ones are written (the form
+  // lists them all unless some were taken out).
+  if (options.columns.some((c) => INVENTORY_COLUMN.test(c))) {
+    const listed = new Set(options.columns.map((c) => c.toLowerCase()));
+    headers = headers.filter((h) => !INVENTORY_COLUMN.test(h) || listed.has(h.toLowerCase()));
+  }
   const present = new Set(headers);
   const known = new Set(entity.columns);
   const out: string[] = [];
