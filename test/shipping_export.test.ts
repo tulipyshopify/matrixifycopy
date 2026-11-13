@@ -23,7 +23,7 @@ const order = {
 };
 const columns = ["ID", "Name", "Current Total Price", "Line: SKU", "Line: Quantity", "Line: Price", "Line: Product Type"];
 
-async function exportWith(options: Record<string, unknown>, id: string) {
+async function exportWith(options: object, id: string) {
   const res = await executeJob(
     { id, shop: "t.myshopify.com", type: "export", config: JSON.stringify({ entities: [{ entity: "orders", options }] }), format: "csv", name: "", inputFile: null, inputName: null },
     { gql: (async () => ({})) as any, bulk: async function* () { yield structuredClone(order); }, log: () => {}, progress: () => {}, isCancelled: async () => false },
