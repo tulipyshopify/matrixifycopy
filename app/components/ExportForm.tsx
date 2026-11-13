@@ -627,6 +627,10 @@ export function columnSections(
     // Current product/variant data of order lines is its own (slower) section.
     const name = /^Line: (Product (Type|Tags)|Variant (?!ID$|Title$))/.test(c)
       ? "Line items product data"
+      : entity.key === "orders" &&
+          /^(Price|Tax|Cancel|Payment|Shipping Line)$/.test(prefix)
+        ? // Totals, taxes and cancellation details are basic order data.
+          "Basic columns"
       : entity.key === "orders" && /^(Billing|Shipping|Browser)$/.test(prefix)
         ? // Who bought, where it goes and where they came from: one section.
           "Customer"
@@ -1090,6 +1094,7 @@ function ColumnOrder({
 }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
   const base = order ?? entity.columns;
   const full = [...base, ...extra.filter((c) => !base.includes(c))];
   const shown = full.filter((c) => columns.includes(c) || extra.includes(c));
@@ -1101,18 +1106,19 @@ function ColumnOrder({
     next.splice(at < 0 ? next.length : at, 0, col);
     onChange(next);
   };
-  const nudge = (col: string, dir: -1 | 1) => {
-    const i = shown.indexOf(col);
-    const j = i + dir;
-    if (j < 0 || j >= shown.length) return;
-    // Moving right means landing after the neighbour, i.e. before the one after it.
-    move(col, dir === -1 ? shown[j] : (shown[j + 1] ?? null));
+  // Puts `col` at a position (0 = first) among the columns shown.
+  const moveTo = (col: string, index: number) => {
+    const rest = shown.filter((c) => c !== col);
+    move(col, rest[Math.max(0, index)] ?? null);
   };
+  const selected = picked && shown.includes(picked) ? picked : null;
+  const at = selected ? shown.indexOf(selected) : -1;
   return (
     <s-stack direction="block" gap="small">
       <s-stack direction="inline" gap="small" alignItems="center">
         <s-text tone="neutral">
-          Drag a column to move it. The cross takes it out of the file.
+          Drag a column to move it, or click one and use the buttons. The cross
+          takes it out of the file.
         </s-text>
         {order ? (
           <s-button variant="tertiary" onClick={() => onChange(null)}>
@@ -1120,15 +1126,83 @@ function ColumnOrder({
           </s-button>
         ) : null}
       </s-stack>
-      <div className="bp-chips" role="list">
-        {shown.map((c) => (
+      {selected ? (
+        <div className="bp-movebar">
+          <s-text type="strong">{selected}</s-text>
+          <s-button
+            icon="arrow-left"
+            disabled={at === 0}
+            onClick={() => moveTo(selected, 0)}
+          >
+            First
+          </s-button>
+          <s-button
+            icon="chevron-left"
+            accessibilityLabel="Move one place left"
+            disabled={at === 0}
+            onClick={() => moveTo(selected, at - 1)}
+          />
+          <div className="bp-movepos">
+            <s-number-field
+              label="Position"
+              labelAccessibilityVisibility="exclusive"
+              min={1}
+              max={shown.length}
+              step={1}
+              value={String(at + 1)}
+              onChange={(ev: any) => {
+                const n = Math.floor(Number(ev.currentTarget.value));
+                if (n >= 1) moveTo(selected, Math.min(n, shown.length) - 1);
+              }}
+            />
+          </div>
+          <s-text tone="neutral">of {shown.length}</s-text>
+          <s-button
+            icon="chevron-right"
+            accessibilityLabel="Move one place right"
+            disabled={at === shown.length - 1}
+            onClick={() => moveTo(selected, at + 1)}
+          />
+          <s-button
+            icon="arrow-right"
+            disabled={at === shown.length - 1}
+            onClick={() => moveTo(selected, shown.length - 1)}
+          >
+            Last
+          </s-button>
+          <s-button
+            variant="tertiary"
+            tone="critical"
+            onClick={() => onRemove(selected)}
+          >
+            Remove
+          </s-button>
+        </div>
+      ) : null}
+      <div
+        className="bp-chips"
+        role="list"
+        onDragOver={(ev) => {
+          // Empty space after the chips: drop there to move to the end.
+          ev.preventDefault();
+          if (ev.target === ev.currentTarget) setOver("\u0000end");
+        }}
+        onDrop={(ev) => {
+          ev.preventDefault();
+          if (dragging && ev.target === ev.currentTarget) move(dragging, null);
+          setDragging(null);
+          setOver(null);
+        }}
+      >
+        {shown.map((c, i) => (
           <div
             key={c}
             role="listitem"
             tabIndex={0}
             draggable
-            className={`bp-chip${dragging === c ? " bp-chip-dragging" : ""}${over === c && dragging !== c ? " bp-chip-over" : ""}`}
-            aria-label={`${c}. Use the left and right arrow keys to move, Delete to remove.`}
+            className={`bp-chip${dragging === c ? " bp-chip-dragging" : ""}${over === c && dragging !== c ? " bp-chip-over" : ""}${selected === c ? " bp-chip-picked" : ""}`}
+            aria-label={`${c}, position ${i + 1} of ${shown.length}. Use the left and right arrow keys to move, Home or End to jump, Delete to remove.`}
+            onClick={() => setPicked(selected === c ? null : c)}
             onDragStart={(ev) => {
               setDragging(c);
               ev.dataTransfer.effectAllowed = "move";
@@ -1136,10 +1210,12 @@ function ColumnOrder({
             }}
             onDragOver={(ev) => {
               ev.preventDefault();
+              ev.stopPropagation();
               setOver(c);
             }}
             onDrop={(ev) => {
               ev.preventDefault();
+              ev.stopPropagation();
               if (dragging) move(dragging, c);
               setDragging(null);
               setOver(null);
@@ -1149,13 +1225,19 @@ function ColumnOrder({
               setOver(null);
             }}
             onKeyDown={(ev) => {
-              if (ev.key === "ArrowLeft") nudge(c, -1);
-              if (ev.key === "ArrowRight") nudge(c, 1);
+              if (ev.key === "ArrowLeft" && i > 0) moveTo(c, i - 1);
+              if (ev.key === "ArrowRight" && i < shown.length - 1)
+                moveTo(c, i + 1);
+              if (ev.key === "Home") moveTo(c, 0);
+              if (ev.key === "End") moveTo(c, shown.length - 1);
               if (ev.key === "Delete" || ev.key === "Backspace") onRemove(c);
             }}
           >
             <span aria-hidden="true" className="bp-grip">
               ⠿
+            </span>
+            <span aria-hidden="true" className="bp-chip-n">
+              {i + 1}
             </span>
             {c}
             <button
@@ -1173,6 +1255,9 @@ function ColumnOrder({
             </button>
           </div>
         ))}
+        {dragging && over === "\u0000end" ? (
+          <span className="bp-chip-endmark" aria-hidden="true" />
+        ) : null}
       </div>
     </s-stack>
   );

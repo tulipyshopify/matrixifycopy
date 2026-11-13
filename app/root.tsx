@@ -20,7 +20,13 @@ export default function App() {
 .bp-chip-x:hover{background:#d4d4d4;color:#303030}
 .bp-chip-static{cursor:default;padding-left:10px}
 .bp-chip-dragging{opacity:.4}
-.bp-chip-over{border-color:#303030;background:#e3e3e3}
+.bp-chip-over{background:#e3e3e3;box-shadow:-4px 0 0 #005bd3}
+.bp-chip-picked{background:#eaf4ff;border-color:#005bd3}
+.bp-chip-n{color:#8a8a8a;font-size:11px;min-width:14px;text-align:right;font-variant-numeric:tabular-nums}
+.bp-chip-endmark{width:4px;align-self:stretch;min-height:28px;background:#005bd3;border-radius:2px}
+.bp-chips{min-height:36px;padding-bottom:10px}
+.bp-movebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:#f6f6f7;position:sticky;top:0;z-index:2}
+.bp-movepos{width:84px}
 .bp-grip{color:#8a8a8a;font-size:12px}
 .bp-job{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding:14px 16px;border-top:1px solid #ebebeb}
 .bp-job:first-child{border-top:0}

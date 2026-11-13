@@ -78,19 +78,41 @@ function ORDER_ADDRESS_COLUMNS(prefix: string): string[] {
   );
 }
 
-const ORDER_COLUMNS = [
+/** Basic order columns, up to the totals. */
+const BASIC_HEAD = [
   "ID",
   "Name",
   "Command",
-  "Email",
+  "Send Receipt",
+  "Send Fulfillment Receipt",
+  "Inventory Behaviour",
+  "Number",
   "Phone",
+  "Email",
+  "Note",
+  "Tags",
+  "Tags Command",
   "Created At",
   "Updated At",
-  "Processed At",
   "Cancelled At",
-  "Cancel Reason",
+  "Cancel: Reason",
+  "Cancel: Send Receipt",
+  "Cancel: Refund",
+  "Cancel: Restock",
+  "Cancel: Note",
+  "Processed At",
   "Closed At",
   "Currency",
+  "Source",
+];
+
+/** Basic order columns after the totals; the plain totals are in the shop's currency. */
+const BASIC_TAIL = [
+  "Payment: Status",
+  "Order Fulfillment Status",
+  "Additional Details",
+  "Purchase Order Number",
+  "Cancel Reason",
   "Financial Status",
   "Fulfillment Status",
   "Subtotal",
@@ -100,10 +122,15 @@ const ORDER_COLUMNS = [
   "Total Price",
   "Current Total Price",
   "Total Refunded",
-  "Tags",
-  "Tags Command",
-  "Note",
-  "Source",
+  "Discount Codes",
+  "Shipping Line: Title",
+  "Shipping Line: Code",
+  "Shipping Line: Price",
+  "Row #",
+  "Top Row",
+];
+
+const CUSTOMER_COLUMNS = [
   "Customer: ID",
   "Customer: Email",
   "Customer: Phone",
@@ -120,15 +147,6 @@ const ORDER_COLUMNS = [
   ...ORDER_ADDRESS_COLUMNS("Billing"),
   ...ORDER_ADDRESS_COLUMNS("Shipping"),
   ...BROWSER_COLUMNS,
-  "Discount Codes",
-  "Shipping Line: Title",
-  "Shipping Line: Code",
-  "Shipping Line: Price",
-  "Send Receipt",
-  "Send Fulfillment Receipt",
-  "Inventory Behaviour",
-  "Row #",
-  "Top Row",
 ];
 
 /**
@@ -139,6 +157,9 @@ const PRICE_FIELDS: Array<[string, string]> = [
   ["Total Line Items", ""], // computed from line items
   ["Current Subtotal", "currentSubtotalPriceSet"],
   ["Subtotal", "subtotalPriceSet"],
+  ["Total Discount", "totalDiscountsSet"],
+  ["Current Total Shipping", "currentShippingPriceSet"],
+  ["Total Shipping", "totalShippingPriceSet"],
   ["Current Total Duties", "currentTotalDutiesSet"],
   ["Total Duties", "originalTotalDutiesSet"],
   ["Current Total Fees", "currentTotalAdditionalFeesSet"],
@@ -148,11 +169,22 @@ const PRICE_FIELDS: Array<[string, string]> = [
   ["Current Total", "currentTotalPriceSet"],
   ["Total", "totalPriceSet"],
 ];
-const PRICE_COLUMNS = PRICE_FIELDS.flatMap(([label]) => [`Price: ${label}`, `Price: ${label} (Shop Currency)`]);
+const priceColumns = (fields: Array<[string, string]>) => fields.flatMap(([label]) => [`Price: ${label}`, `Price: ${label} (Shop Currency)`]);
+/** The subtotals come before the tax columns, the other totals after. */
+const PRICE_COLUMNS_A = priceColumns(PRICE_FIELDS.slice(0, 3));
+const PRICE_COLUMNS_B = priceColumns(PRICE_FIELDS.slice(3));
 
-/** Tax lines exported as numbered column triplets. */
+/** Tax lines exported as numbered column sets, then the tax totals. */
 const MAX_TAX_LINES = 5;
-const TAX_COLUMNS = Array.from({ length: MAX_TAX_LINES }, (_, i) => [`Tax ${i + 1}: Title`, `Tax ${i + 1}: Rate`, `Tax ${i + 1}: Price`]).flat();
+const TAX_COLUMNS = [
+  ...Array.from({ length: MAX_TAX_LINES }, (_, i) => {
+    const t = `Tax ${i + 1}:`;
+    return [`${t} Title`, `${t} Rate`, `${t} Price`, `${t} Price (Shop Currency)`, `${t} Channel Liable`];
+  }).flat(),
+  "Tax: Included",
+  "Tax: Total",
+  "Tax: Total (Shop Currency)",
+];
 
 /** Extra order details. Export only. */
 const DETAIL_COLUMNS = [
@@ -164,8 +196,6 @@ const DETAIL_COLUMNS = [
   "Token",
   "Order Status URL",
   "Weight Total",
-  "Additional Details",
-  "Purchase Order Number",
 ];
 
 /** Current product/variant data of each line item (group line_product_data). Export only. */
@@ -358,12 +388,10 @@ export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set
   const fulfillments = `fulfillments { id status displayStatus createdAt updatedAt location { name } trackingInfo { company number url } }`;
   return `{
     orders${args} { edges { node {
-      id name email phone createdAt updatedAt processedAt cancelledAt cancelReason closedAt currencyCode
+      id name number email phone createdAt updatedAt processedAt cancelledAt cancelReason cancellation { staffNote } closedAt currencyCode taxesIncluded
       displayFinancialStatus displayFulfillmentStatus tags note sourceName discountCodes
       subtotalPriceSet ${MONEY}
-      totalDiscountsSet ${MONEY}
-      totalShippingPriceSet ${MONEY}
-      totalTaxSet ${MONEY}
+      totalTaxSet ${BOTH}
       totalPriceSet ${MONEY}
       totalRefundedSet ${MONEY}
       customer {
@@ -378,7 +406,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set
       presentmentCurrencyCode sourceIdentifier registeredSourceUrl cartToken checkoutToken statusPageUrl
       totalWeight poNumber retailLocation { name } customAttributes { key value }
       ${PRICE_FIELDS.filter(([, f]) => f).map(([, f]) => `${f} ${BOTH}`).join("\n      ")}
-      taxLines { title rate priceSet ${BOTH} }
+      taxLines { title rate channelLiable priceSet ${BOTH} }
       ${groups.has("fulfillments") ? fulfillments : ""}
       ${groups.has("refunds") || extras.has("refunds") ? `refunds { id createdAt note totalRefundedSet ${MONEY} }` : ""}
 
@@ -432,6 +460,18 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         "Processed At": o.processedAt ?? "",
         "Cancelled At": o.cancelledAt ?? "",
         "Cancel Reason": enumToCell(o.cancelReason),
+        Number: str(o.number),
+        "Cancel: Reason": enumToCell(o.cancelReason),
+        // What a cancellation did isn't recorded by Shopify; these are for the file's layout.
+        "Cancel: Send Receipt": o.cancelledAt ? "FALSE" : "",
+        "Cancel: Refund": o.cancelledAt ? "FALSE" : "",
+        "Cancel: Restock": o.cancelledAt ? "FALSE" : "",
+        "Cancel: Note": o.cancellation?.staffNote ?? "",
+        "Payment: Status": enumToCell(o.displayFinancialStatus),
+        "Order Fulfillment Status": enumToCell(o.displayFulfillmentStatus),
+        "Tax: Included": o.taxesIncluded === undefined || o.taxesIncluded === null ? "" : boolCell(o.taxesIncluded),
+        "Tax: Total": o.totalTaxSet?.presentmentMoney?.amount ?? o.totalTaxSet?.shopMoney?.amount ?? "",
+        "Tax: Total (Shop Currency)": o.totalTaxSet?.shopMoney?.amount ?? "",
         "Closed At": o.closedAt ?? "",
         Currency: o.currencyCode ?? "",
         "Financial Status": enumToCell(o.displayFinancialStatus),
@@ -497,6 +537,8 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         row[`Tax ${n + 1}: Title`] = t.title ?? "";
         row[`Tax ${n + 1}: Rate`] = str(t.rate);
         row[`Tax ${n + 1}: Price`] = t.priceSet?.presentmentMoney?.amount ?? "";
+        row[`Tax ${n + 1}: Price (Shop Currency)`] = t.priceSet?.shopMoney?.amount ?? "";
+        row[`Tax ${n + 1}: Channel Liable`] = t.channelLiable === null || t.channelLiable === undefined ? "" : boolCell(t.channelLiable);
       });
       if (groups.has("browser")) {
         // The visit that led to the order (the last one before checkout).
@@ -1132,10 +1174,13 @@ export const ordersEntity: Entity = {
   aliases: ["order"],
   description: "Orders with line items, addresses, transactions and metafields. Import creates orders (migrations) and updates editable fields.",
   columns: [
-    ...ORDER_COLUMNS,
+    ...BASIC_HEAD,
     ...DETAIL_COLUMNS,
-    ...PRICE_COLUMNS,
+    ...PRICE_COLUMNS_A,
     ...TAX_COLUMNS,
+    ...PRICE_COLUMNS_B,
+    ...BASIC_TAIL,
+    ...CUSTOMER_COLUMNS,
     ...ORDER_LINE_COLUMNS,
     ...LINE_PRODUCT_COLUMNS,
     ...FULFILLMENT_COLUMNS,

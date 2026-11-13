@@ -155,4 +155,26 @@ describe("Orders: line item columns", () => {
     expect(orderToRows(o, new Set(["line_items"]))[0]["Refund: ID"]).toBeUndefined();
     expect(getEntity("orders")!.columns).toContain("Refund: Created At");
   });
+
+  it("has the basic order columns, all in the Basic columns section", async () => {
+    const { columnSections } = await import("../app/components/ExportForm");
+    const basic = columnSections(jobs.entityCatalog().find((e) => e.key === "orders")!).find((x) => x.name === "Basic columns")!.columns;
+    expect(basic.slice(0, 7)).toEqual(["ID", "Name", "Command", "Send Receipt", "Send Fulfillment Receipt", "Inventory Behaviour", "Number"]);
+    for (const c of ["Phone", "Email", "Note", "Tags", "Tags Command", "Created At", "Updated At", "Cancelled At", "Cancel: Reason", "Cancel: Send Receipt", "Cancel: Refund", "Cancel: Restock",
+      "Cancel: Note", "Processed At", "Closed At", "Currency", "Tax 1: Price (Shop Currency)", "Tax 1: Channel Liable", "Tax 3: Title", "Tax 3: Channel Liable", "Tax: Included", "Tax: Total",
+      "Tax: Total (Shop Currency)", "Price: Total Discount", "Price: Total Discount (Shop Currency)", "Price: Current Total Shipping", "Price: Current Total Shipping (Shop Currency)",
+      "Price: Total Shipping", "Price: Current Total Duties", "Payment: Status", "Order Fulfillment Status"])
+      expect(basic, c).toContain(c);
+    const row = orderToRows({
+      id: "gid://shopify/Order/1", name: "#1", number: 1001, cancelledAt: "2026-11-01T00:00:00Z", cancelReason: "CUSTOMER", cancellation: { staffNote: "Changed mind" }, taxesIncluded: true,
+      displayFinancialStatus: "PARTIALLY_REFUNDED", displayFulfillmentStatus: "FULFILLED", totalTaxSet: bag("6.00", "7.20"), totalDiscountsSet: bag("4.00", "4.80"),
+      currentShippingPriceSet: bag("0.00"), totalShippingPriceSet: bag("5.00", "6.00"), taxLines: [{ title: "VAT", rate: 0.2, channelLiable: true, priceSet: bag("6.00", "7.20") }],
+    }, new Set())[0];
+    expect(row).toMatchObject({
+      Number: "1001", "Cancel: Reason": "customer", "Cancel: Note": "Changed mind", "Cancel: Refund": "FALSE", "Tax: Included": "TRUE", "Tax: Total": "7.20", "Tax: Total (Shop Currency)": "6.00",
+      "Tax 1: Price": "7.20", "Tax 1: Price (Shop Currency)": "6.00", "Tax 1: Channel Liable": "TRUE", "Price: Total Discount": "4.80", "Price: Total Discount (Shop Currency)": "4.00",
+      "Price: Current Total Shipping": "0.00", "Price: Total Shipping": "6.00", "Price: Total Shipping (Shop Currency)": "5.00", "Payment: Status": "partially_refunded",
+      "Order Fulfillment Status": "fulfilled", "Total Discounts": "4.00", "Total Shipping": "5.00", "Total Tax": "6.00",
+    });
+  });
 });
