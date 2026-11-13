@@ -3,7 +3,7 @@ import zlib from "node:zlib";
 import { buildClientSchema, parse, validate } from "graphql";
 import { describe, expect, it } from "vitest";
 import type { ExportContext, FilterCondition, Row } from "../app/lib/core/types";
-import { buildSearchQuery, compileDateRange, resolveDateRange } from "../app/lib/core/util";
+import { buildSearchQuery, compileDateRange } from "../app/lib/core/util";
 import { getEntity } from "../app/lib/entities";
 import { localOrderFilters, ordersBulkQuery, ordersEntity } from "../app/lib/entities/orders";
 
@@ -78,16 +78,25 @@ describe("order filters", () => {
   });
 
   it("'Fulfillment created in the last 21 days' ignores orders that were only updated", () => {
-    const range = jobs.parseDateRange(orders, { field: "fulfillment_created_at", preset: "last_n_days", days: 21 })!;
-    expect(range).toEqual({ field: "fulfillment_created_at", preset: "last_n_days", days: 21, searchBy: "updated_at" });
-    expect(resolveDateRange(range, now, "Europe/London")).toEqual({ from: "2026-10-24", to: "2026-11-13" });
+    const range = jobs.parseDateRange(orders, { field: "fulfillment_created_at", preset: "last_n", amount: 21, unit: "days" })!;
+    expect(range).toEqual({ field: "fulfillment_created_at", preset: "last_n", amount: 21, unit: "days", searchBy: "updated_at" });
     // Shopify narrows by update time; the export then checks the fulfillment dates.
     expect(compileDateRange(range, now, "Europe/London")).toBe("updated_at:>='2026-10-23T23:00:00Z'");
     expect(names([], { dateRange: range })).toBe("#1");
-    expect(() => jobs.parseDateRange(orders, { field: "created_at", preset: "last_n_days", days: 0 })).toThrow(/number of days/);
-    expect(compileDateRange(jobs.parseDateRange(orders, { field: "created_at", preset: "last_n_days", days: 21 })!, now)).toBe(
-      "created_at:>='2026-10-24T00:00:00Z' AND created_at:<'2026-11-14T00:00:00Z'",
-    );
+  });
+
+  it("'Last …' counts back minutes, hours, days or months", () => {
+    const last = (amount: number, unit: any, tz = "UTC") => compileDateRange(jobs.parseDateRange(orders, { field: "created_at", preset: "last_n", amount, unit })!, now, tz);
+    expect(last(1440, "minutes")).toBe("created_at:>='2026-11-12T12:00:00Z'");
+    expect(last(6, "hours")).toBe("created_at:>='2026-11-13T06:00:00Z'");
+    expect(last(21, "days")).toBe("created_at:>='2026-10-24T00:00:00Z' AND created_at:<'2026-11-14T00:00:00Z'");
+    expect(last(1, "months", "Europe/London")).toBe("created_at:>='2026-10-12T23:00:00Z'");
+    expect(last(3, "months")).toBe("created_at:>='2026-08-13T00:00:00Z'");
+    // Set-ups saved as "last N days" keep working.
+    expect(jobs.parseDateRange(orders, { field: "created_at", preset: "last_n_days" as any, days: 21 })).toEqual({ field: "created_at", preset: "last_n", amount: 21, unit: "days" });
+    expect(compileDateRange({ field: "created_at", preset: "last_n_days", days: 21 }, now)).toBe("created_at:>='2026-10-24T00:00:00Z' AND created_at:<'2026-11-14T00:00:00Z'");
+    expect(() => jobs.parseDateRange(orders, { field: "created_at", preset: "last_n", amount: 0, unit: "hours" })).toThrow(/how many hours/);
+    expect(() => jobs.parseDateRange(orders, { field: "created_at", preset: "last_n", amount: 5, unit: "years" as any })).toThrow(/minutes, hours, days or months/);
   });
 
   it("fetches what the filters need without adding it to the file", async () => {

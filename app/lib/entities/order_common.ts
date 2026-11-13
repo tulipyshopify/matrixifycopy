@@ -195,7 +195,8 @@ export function parseLines(rows: Row[]): LineSpec[] {
       title: cell(row, "Line: Title") || undefined,
       variantTitle: cell(row, "Line: Variant Title") || undefined,
       quantity: q ?? 1,
-      price: parseMoney(cell(row, "Line: Price"), "Line: Price"),
+      // Order exports carry the shop-currency price beside the order-currency one.
+      price: parseMoney(cell(row, "Line: Price (Shop Currency)") || cell(row, "Line: Price"), "Line: Price"),
       vendor: cell(row, "Line: Vendor") || undefined,
       requiresShipping: parseBool(cell(row, "Line: Requires Shipping")),
       taxable: parseBool(cell(row, "Line: Taxable")),

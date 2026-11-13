@@ -32,13 +32,13 @@ export interface RunExportArgs {
  * file without them can't be imported back); dynamic columns (metafields, inventory per
  * location) are controlled by column groups instead.
  */
-const INVENTORY_PREFIX = "Inventory Available: ";
+/** "Inventory Available: Shop", "Inventory On Hand: Shop"… → the location name. */
+const INVENTORY_COLUMN = /^Inventory (?:Available|On Hand|Committed|Reserved|Damaged|Safety Stock|Quality Control|Incoming): (.+)$/;
 
 /** Applies the location and metafield choices to dynamic column headers. */
 function keepDynamic(options: ExportOptions, h: string): boolean {
-  if (options.locations && h.startsWith(INVENTORY_PREFIX)) {
-    return options.locations.some((l) => l.toLowerCase() === h.slice(INVENTORY_PREFIX.length).trim().toLowerCase());
-  }
+  const inv = options.locations ? INVENTORY_COLUMN.exec(h) : null;
+  if (inv) return options.locations!.some((l) => l.toLowerCase() === inv[1].trim().toLowerCase());
   for (const [prefix, list] of [
     ["Variant Metafield: ", options.variantMetafields],
     ["Metafield: ", options.metafields],

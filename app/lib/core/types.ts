@@ -83,11 +83,15 @@ export type DatePreset =
   | "last_30_days"
   | "last_90_days"
   | "last_n_days"
+  | "last_n"
   | "this_month"
   | "last_month"
   | "this_year"
   | "last_year"
   | "custom";
+
+export type DateUnit = "minutes" | "hours" | "days" | "months";
+export const DATE_UNITS: DateUnit[] = ["minutes", "hours", "days", "months"];
 
 export const DATE_PRESETS: Array<{ value: DatePreset; label: string }> = [
   { value: "today", label: "Today" },
@@ -95,7 +99,7 @@ export const DATE_PRESETS: Array<{ value: DatePreset; label: string }> = [
   { value: "last_7_days", label: "Last 7 days" },
   { value: "last_30_days", label: "Last 30 days" },
   { value: "last_90_days", label: "Last 90 days" },
-  { value: "last_n_days", label: "Last … days (choose)" },
+  { value: "last_n", label: "Last … (choose)" },
   { value: "this_month", label: "This month" },
   { value: "last_month", label: "Last month" },
   { value: "this_year", label: "This year" },
@@ -113,8 +117,11 @@ export interface DateRange {
   /** Custom range bounds (YYYY-MM-DD); either may be empty. */
   from?: string;
   to?: string;
-  /** Number of days for `last_n_days`, today included. */
+  /** Number of days for `last_n_days` (older set-ups), today included. */
   days?: number;
+  /** `last_n`: how many of which unit, counted back from the moment the export runs. */
+  amount?: number;
+  unit?: DateUnit;
   /** Set by the server for dates Shopify can't search by: the field to narrow the search with. */
   searchBy?: string;
 }
@@ -135,6 +142,8 @@ export interface ExportOptions {
   filters?: FilterCondition[];
   /** Inventory locations (names) to include as columns. Undefined means all. */
   locations?: string[];
+  /** Stock quantities to export per location ("available", "on_hand"…). Undefined means available only. */
+  inventoryKinds?: string[];
   /** Metafields ("namespace.key") to include as columns. Undefined means all. */
   metafields?: string[];
   variantMetafields?: string[];

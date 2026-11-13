@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
-import { COMMANDS, DATE_PRESETS, FILTER_OPS } from "../core/types";
+import { COMMANDS, DATE_PRESETS, DATE_UNITS, FILTER_OPS } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import type { ExportConfig, ImportConfig } from "./runner.server";
@@ -31,6 +31,9 @@ export type EntityInfo = ReturnType<typeof entityCatalog>[number];
 const DATE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;
 
 /** Current version of saved export settings (see ExportOptions.v). */
+/** Stock quantities Shopify keeps per location. */
+export const INVENTORY_KIND_NAMES = ["available", "on_hand", "committed", "reserved", "damaged", "safety_stock", "quality_control", "incoming"];
+
 export const OPTIONS_VERSION = 2;
 
 /** Validates the export form payload into an ExportConfig. */
@@ -69,6 +72,10 @@ export function parseExportConfig(raw: unknown): ExportConfig {
         if (clean.length) o[k] = clean;
         else if (k === "locations") throw new Error(`${e.sheet}: choose at least one inventory location, or untick Inventory by location`);
       }
+      if (Array.isArray(options.inventoryKinds) && (e.groups ?? []).some((g) => g.key === "inventory")) {
+        const kinds = INVENTORY_KIND_NAMES.filter((k) => options.inventoryKinds!.includes(k));
+        if (kinds.length) o.inventoryKinds = kinds;
+      }
       if (options.columns) {
         const valid = new Set(e.columns);
         // "Metafield: namespace.key" places a named metafield among the columns.
@@ -91,13 +98,17 @@ const NUMBER = /^-?\d+(\.\d+)?$/;
 export function parseDateRange(e: Entity, r: DateRange): DateRange | undefined {
   const field = (e.filters ?? []).find((f) => f.key === r.field && f.type === "date");
   if (!field) throw new Error(`${e.sheet}: can't filter by date "${r.field}"`);
-  if (!DATE_PRESETS.some((p) => p.value === r.preset)) throw new Error(`${e.sheet}: unknown date range`);
+  if (!DATE_PRESETS.some((p) => p.value === r.preset) && (r.preset as string) !== "last_n_days") throw new Error(`${e.sheet}: unknown date range`);
   // Taken from the field's definition, never from the request.
   const searchBy = field.searchBy ? { searchBy: field.searchBy } : {};
-  if (r.preset === "last_n_days") {
-    const days = Math.floor(Number(r.days));
-    if (!(days >= 1 && days <= 3650)) throw new Error(`${field.label}: enter a number of days between 1 and 3650`);
-    return { field: r.field, preset: r.preset, days, ...searchBy };
+  // "Last N days" from older set-ups is the same as "last N" with days.
+  const preset = (r.preset as string) === "last_n_days" ? "last_n" : r.preset;
+  if (preset === "last_n") {
+    const unit = r.preset === "last_n" ? (r.unit ?? "days") : "days";
+    if (!DATE_UNITS.includes(unit)) throw new Error(`${field.label}: choose minutes, hours, days or months`);
+    const amount = Math.floor(Number(r.preset === "last_n" ? r.amount : r.days));
+    if (!(amount >= 1 && amount <= 100000)) throw new Error(`${field.label}: enter how many ${unit}, from 1 to 100000`);
+    return { field: r.field, preset: "last_n", amount, unit, ...searchBy };
   }
   if (r.preset !== "custom") return { field: r.field, preset: r.preset, ...searchBy };
   const from = r.from?.trim() || undefined;

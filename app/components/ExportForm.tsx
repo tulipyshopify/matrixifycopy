@@ -42,6 +42,8 @@ interface EntityState {
   order: string[] | null;
   /** Inventory locations to export; null = all. */
   locations: string[] | null;
+  /** Stock quantities to export per location. */
+  inventoryKinds: string[];
   /** "namespace.key" lists, comma separated; blank = all. */
   metafields: string;
   variantMetafields: string;
@@ -83,6 +85,18 @@ function syncPrefixGroups(e: EntityInfo, columns: string[], groups: string[]) {
   return out;
 }
 
+/** Stock quantities per location; the last three can only be exported. */
+const INVENTORY_KINDS: Array<[string, string]> = [
+  ["available", "Inventory Available"],
+  ["on_hand", "Inventory On Hand"],
+  ["committed", "Inventory Committed"],
+  ["reserved", "Inventory Reserved"],
+  ["damaged", "Inventory Damaged"],
+  ["safety_stock", "Inventory Safety Stock"],
+  ["quality_control", "Inventory Quality Control"],
+  ["incoming", "Inventory Incoming"],
+];
+
 function blankState(
   entities: EntityInfo[],
   enabled: string[] = [],
@@ -104,6 +118,7 @@ function blankState(
         query: "",
         order: null,
         locations: null,
+        inventoryKinds: ["available"],
         metafields: "",
         variantMetafields: "",
       },
@@ -141,7 +156,15 @@ function stateFromPreset(
         ? e.columns.filter((c) => o.columns.includes(c))
         : [...e.columns],
       filters: o.filters ?? [],
-      dateRange: o.dateRange ?? null,
+      dateRange:
+        o.dateRange?.preset === "last_n_days"
+          ? {
+              ...o.dateRange,
+              preset: "last_n",
+              amount: o.dateRange.days ?? 21,
+              unit: "days",
+            }
+          : (o.dateRange ?? null),
       query: o.query ?? "",
       // A saved order that differs from the standard one is restored; columns
       // the preset left out go after it.
@@ -157,6 +180,7 @@ function stateFromPreset(
             ]
           : null,
       locations: o.locations ?? null,
+      inventoryKinds: o.inventoryKinds?.length ? o.inventoryKinds : ["available"],
       metafields: (o.metafields ?? []).join(", "),
       variantMetafields: (o.variantMetafields ?? []).join(", "),
     };
@@ -442,7 +466,7 @@ function DateRangeFilter({
       gridTemplateColumns={
         value?.preset === "custom"
           ? "1fr 1fr 1fr 1fr"
-          : value?.preset === "last_n_days"
+          : value?.preset === "last_n"
             ? "1fr 1fr 1fr 1fr"
             : "1fr 1fr 2fr"
       }
@@ -474,7 +498,8 @@ function DateRangeFilter({
                   preset,
                   from: value?.from,
                   to: value?.to,
-                  days: value?.days ?? 21,
+                  amount: value?.amount ?? 21,
+                  unit: value?.unit ?? "days",
                 }
               : null,
           );
@@ -504,22 +529,34 @@ function DateRangeFilter({
             }
           />
         </>
-      ) : value?.preset === "last_n_days" ? (
+      ) : value?.preset === "last_n" ? (
         <>
           <s-number-field
-            label="Days"
+            label="How many"
             min={1}
-            max={3650}
+            max={100000}
             step={1}
-            value={String(value.days ?? 21)}
+            value={String(value.amount ?? 21)}
             onInput={(ev: any) =>
               onChange({
                 ...value,
-                days: Math.max(1, Math.floor(Number(ev.currentTarget.value)) || 1),
+                amount:
+                  Math.max(1, Math.floor(Number(ev.currentTarget.value))) || 1,
               })
             }
           />
-          <span />
+          <s-select
+            label="Unit"
+            value={value.unit ?? "days"}
+            onChange={(ev: any) =>
+              onChange({ ...value, unit: ev.currentTarget.value })
+            }
+          >
+            <s-option value="minutes">Minutes</s-option>
+            <s-option value="hours">Hours</s-option>
+            <s-option value="days">Days</s-option>
+            <s-option value="months">Months</s-option>
+          </s-select>
         </>
       ) : (
         <span />
@@ -844,7 +881,41 @@ function ColumnPicker({
             onToggle={(v) => onChange({ groups: setGroup(groups, g.key, v) })}
           >
             {g.key === "inventory" ? (
-              storeLocations === null ? (
+              <s-stack direction="block" gap="small">
+                <s-text tone="neutral">
+                  Quantities to include, one column per location each:
+                </s-text>
+                <s-grid
+                  gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))"
+                  gap="small base"
+                >
+                  {INVENTORY_KINDS.map(([name, label]) => (
+                    <s-checkbox
+                      key={name}
+                      label={`${label}: …`}
+                      checked={state.inventoryKinds.includes(name)}
+                      onChange={(ev: any) => {
+                        const next = INVENTORY_KINDS.map(([n]) => n).filter(
+                          (n) =>
+                            n === name
+                              ? ev.currentTarget.checked
+                              : state.inventoryKinds.includes(n),
+                        );
+                        onChange({
+                          inventoryKinds: next.length ? next : ["available"],
+                          groups: setGroup(groups, g.key, true),
+                        });
+                      }}
+                    />
+                  ))}
+                </s-grid>
+                <s-text tone="neutral">
+                  To change stock on import, fill these columns or add
+                  "Inventory Available Adjust: Location" columns (also On Hand,
+                  Damaged, Safety Stock, Quality Control) with the amount to add
+                  or subtract. Committed, Reserved and Incoming can't be imported.
+                </s-text>
+                {storeLocations === null ? (
                 <s-text tone="neutral">Loading locations…</s-text>
               ) : storeLocations.length === 0 ? (
                 <s-text tone="neutral">
@@ -883,7 +954,8 @@ function ColumnPicker({
                     })}
                   </s-grid>
                 </s-stack>
-              )
+              )}
+              </s-stack>
             ) : g.key === "metafields" || g.key === "variant_metafields" ? (
               <s-text-field
                 label="Only these metafields (optional)"
@@ -1085,6 +1157,11 @@ function panelOptions(e: EntityInfo, s: EntityState) {
     query: s.query || undefined,
     locations:
       s.groups.includes("inventory") && s.locations ? s.locations : undefined,
+    inventoryKinds:
+      s.groups.includes("inventory") &&
+      s.inventoryKinds.join() !== "available"
+        ? s.inventoryKinds
+        : undefined,
     metafields: splitList(s.metafields).length
       ? splitList(s.metafields)
       : undefined,

@@ -6,7 +6,7 @@ import { detectEntity } from "./registry";
 import type { Sheet } from "./sheets";
 
 /** Column prefixes whose names are dynamic (metafields, per-location stock…). */
-const DYNAMIC_PREFIXES = ["Metafield:", "Variant Metafield:", "Inventory Available:", "Inventory Available Adjust:", "Field:"];
+const DYNAMIC_PREFIXES = ["Metafield:", "Variant Metafield:", "Inventory Available:", "Inventory Available Adjust:", "Inventory On Hand:", "Inventory On Hand Adjust:", "Inventory Committed:", "Inventory Reserved:", "Inventory Damaged:", "Inventory Damaged Adjust:", "Inventory Safety Stock:", "Inventory Safety Stock Adjust:", "Inventory Quality Control:", "Inventory Quality Control Adjust:", "Inventory Incoming:", "Field:"];
 
 export interface SheetAnalysis {
   sheet: string;

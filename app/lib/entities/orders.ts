@@ -203,7 +203,86 @@ const BROWSER_SELECTION = `clientIp customerJourneySummary { firstVisit ${VISIT}
 const WEIGHT_UNIT_CELL: Record<string, string> = { GRAMS: "g", KILOGRAMS: "kg", OUNCES: "oz", POUNDS: "lb" };
 const BOTH = "{ shopMoney { amount } presentmentMoney { amount } }";
 
-const ORDER_LINE_COLUMNS = ["Line: Type", ...LINE_COLUMNS, "Line: Fulfillable Quantity"];
+const LINE_TAXES = 3;
+const SHOP = " (Shop Currency)";
+/** Line item columns. Money is in the order's currency; "(Shop Currency)" columns in the shop's. */
+const ORDER_LINE_COLUMNS = [
+  "Line: Type",
+  "Line: ID",
+  "Line: Command",
+  "Line: Product ID",
+  "Line: Product Handle",
+  "Line: Title",
+  "Line: Name",
+  "Line: Variant ID",
+  "Line: Variant Title",
+  "Line: SKU",
+  "Line: Quantity",
+  "Line: Current Quantity",
+  "Line: Refundable Quantity",
+  ...["Line: Price", "Line: Discount", "Line: Discount Allocation", "Line: Discount per Item", "Line: Total"].flatMap((c) => [c, c + SHOP]),
+  "Line: Grams",
+  "Line: Requires Shipping",
+  "Line: Vendor",
+  "Line: Gift Card",
+  "Line: Force Gift Card",
+  "Line: Taxable",
+  "Line: Tax Total",
+  "Line: Tax Total" + SHOP,
+  ...Array.from({ length: LINE_TAXES }, (_, i) => {
+    const t = `Line: Tax ${i + 1}`;
+    return [`${t} Title`, `${t} Rate`, `${t} Price`, `${t} Price${SHOP}`, `${t} Channel Liable`];
+  }).flat(),
+  "Line: Fulfillable Quantity",
+  "Line: Fulfillment Status",
+];
+
+const GRAMS_PER: Record<string, number> = { GRAMS: 1, KILOGRAMS: 1000, OUNCES: 28.349523125, POUNDS: 453.59237 };
+const amount = (v: unknown) => (v === null || v === undefined || v === "" ? "" : String(Math.round(Number(v) * 100) / 100));
+const sumBags = (bags: any[], k: "shopMoney" | "presentmentMoney") => bags.reduce((n, b) => n + Number(b?.[k]?.amount ?? b?.shopMoney?.amount ?? 0), 0);
+
+/** The order-specific Line: cells (the common ones come from lineToRow). */
+function orderLineToRow(row: Row, li: any) {
+  const qty = Number(li.quantity) || 0;
+  const taxes: any[] = li.taxLines ?? [];
+  const allocations = (li.discountAllocations ?? []).map((d: any) => d.allocatedAmountSet);
+  const both = (col: string, bag: any) => {
+    row[col] = bag?.presentmentMoney?.amount ?? bag?.shopMoney?.amount ?? "";
+    row[col + SHOP] = bag?.shopMoney?.amount ?? "";
+  };
+  const bothSum = (col: string, bags: any[]) => {
+    row[col] = amount(sumBags(bags, "presentmentMoney"));
+    row[col + SHOP] = amount(sumBags(bags, "shopMoney"));
+  };
+  Object.assign(row, {
+    "Line: Command": "DEFAULT",
+    "Line: Product Handle": li.product?.handle ?? "",
+    "Line: Name": li.name ?? "",
+    "Line: Current Quantity": str(li.currentQuantity),
+    "Line: Refundable Quantity": str(li.refundableQuantity),
+    "Line: Grams": li.weight?.value != null ? amount(Number(li.weight.value) * (GRAMS_PER[li.weight.unit] ?? 1)) : "",
+    "Line: Gift Card": boolCell(!!li.isGiftCard),
+    "Line: Force Gift Card": "No",
+    "Line: Fulfillable Quantity": str(li.unfulfilledQuantity),
+    "Line: Fulfillment Status": Number(li.unfulfilledQuantity) === 0 ? "fulfilled" : Number(li.unfulfilledQuantity) < qty ? "partial" : "",
+  });
+  both("Line: Price", li.originalUnitPriceSet);
+  both("Line: Discount", li.totalDiscountSet);
+  bothSum("Line: Discount Allocation", allocations);
+  for (const [col, k] of [["Line: Discount per Item", "presentmentMoney"], ["Line: Discount per Item" + SHOP, "shopMoney"]] as const) {
+    const d = li.totalDiscountSet?.[k]?.amount ?? li.totalDiscountSet?.shopMoney?.amount;
+    row[col] = qty && d != null ? amount(Number(d) / qty) : "";
+  }
+  both("Line: Total", li.discountedTotalSet);
+  bothSum("Line: Tax Total", taxes.map((t) => t.priceSet));
+  taxes.slice(0, LINE_TAXES).forEach((t, i) => {
+    const c = `Line: Tax ${i + 1}`;
+    row[`${c} Title`] = t.title ?? "";
+    row[`${c} Rate`] = str(t.rate);
+    both(`${c} Price`, t.priceSet);
+    row[`${c} Channel Liable`] = t.channelLiable === null || t.channelLiable === undefined ? "" : boolCell(t.channelLiable);
+  });
+}
 
 const TRANSACTION_COLUMNS = [
   "Transaction: ID",
@@ -256,9 +335,13 @@ export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set
   const metafields = `metafields { edges { node { id namespace key type value } } }`;
   const transactions = `transactions { id kind gateway status processedAt amountSet { shopMoney { amount currencyCode } } }`;
   const lineItems = `lineItems { edges { node {
-      id title ${extras.has("line_name") ? "name" : ""} variantTitle sku quantity unfulfilledQuantity vendor requiresShipping taxable
-      originalUnitPriceSet ${MONEY}
-      totalDiscountSet ${MONEY}
+      id title name variantTitle sku quantity currentQuantity refundableQuantity unfulfilledQuantity vendor requiresShipping taxable isGiftCard
+      weight { value unit }
+      originalUnitPriceSet ${BOTH}
+      totalDiscountSet ${BOTH}
+      discountedTotalSet ${BOTH}
+      discountAllocations { allocatedAmountSet ${BOTH} }
+      taxLines { title rate channelLiable priceSet ${BOTH} }
       variant { id ${extras.has("line_inventory") && !groups.has("line_product_data") ? "inventoryQuantity" : ""} ${
         groups.has("line_product_data")
           ? `sku barcode price compareAtPrice inventoryQuantity inventoryItem {
@@ -266,7 +349,7 @@ export function ordersBulkQuery(search: string, groups: Set<string>, extras: Set
               measurement { weight { value unit } } }`
           : ""
       } }
-      product { id ${extras.has("line_handle") ? "handle" : ""} ${groups.has("line_product_data") ? "productType tags" : ""} }
+      product { id handle ${groups.has("line_product_data") ? "productType tags" : ""} }
   } } }`;
   // fulfillments is a plain list (not a connection), so it comes inline.
   const fulfillments = `fulfillments { id status displayStatus createdAt updatedAt location { name } trackingInfo { company number url } }`;
@@ -450,12 +533,13 @@ export function orderToRows(o: any, groups: Set<string>): Row[] {
         // and pivots see product lines only. The rate code is in "Shipping Line: Code".
         "Line: Title": ship.title ?? "",
         "Line: Price": bagAmount(ship.originalPriceSet),
+        ["Line: Price" + SHOP]: bagAmount(ship.originalPriceSet),
       });
     }
     if (li) {
       row["Line: Type"] = "Line Item";
       lineToRow(row, li);
-      row["Line: Fulfillable Quantity"] = str(li.unfulfilledQuantity);
+      orderLineToRow(row, li);
       if (groups.has("line_product_data")) {
         const v = li.variant ?? {};
         const inv = v.inventoryItem ?? {};
@@ -557,9 +641,9 @@ const LOCAL_FILTERS: Record<string, { values: (o: any) => unknown[]; group?: str
     values: (o) => [...((o.lineItems ?? []).length ? ["Line Item"] : []), ...(o.shippingLine ? ["Shipping Line"] : [])],
     group: "line_items",
   },
-  line_product_handle: { values: (o) => (o.lineItems ?? []).map((l: any) => l.product?.handle ?? ""), group: "line_items", extra: "line_handle" },
+  line_product_handle: { values: (o) => (o.lineItems ?? []).map((l: any) => l.product?.handle ?? ""), group: "line_items" },
   line_title: { values: (o) => (o.lineItems ?? []).map((l: any) => l.title ?? ""), group: "line_items" },
-  line_name: { values: (o) => (o.lineItems ?? []).map((l: any) => l.name ?? ""), group: "line_items", extra: "line_name" },
+  line_name: { values: (o) => (o.lineItems ?? []).map((l: any) => l.name ?? ""), group: "line_items" },
   line_variant_id: { values: (o) => (o.lineItems ?? []).map((l: any) => gidToId(l.variant?.id)), group: "line_items" },
   line_variant_title: { values: (o) => (o.lineItems ?? []).map((l: any) => l.variantTitle ?? ""), group: "line_items" },
   line_vendor: { values: (o) => (o.lineItems ?? []).map((l: any) => l.vendor ?? ""), group: "line_items" },

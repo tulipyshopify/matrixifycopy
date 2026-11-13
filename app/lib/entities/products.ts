@@ -122,9 +122,29 @@ const VARIANT_SIGNAL_COLUMNS = VARIANT_COLUMNS.filter(
     ].includes(c),
 );
 
+/**
+ * Stock quantities per location: "Inventory <Label>: <Location>" columns, and
+ * "Inventory <Label> Adjust: <Location>" to add to (or subtract from) one.
+ * Committed, reserved and incoming are worked out by Shopify: export only.
+ */
+export const INVENTORY_KINDS: Array<{ name: string; label: string; writable: boolean }> = [
+  { name: "available", label: "Available", writable: true },
+  { name: "on_hand", label: "On Hand", writable: true },
+  { name: "committed", label: "Committed", writable: false },
+  { name: "reserved", label: "Reserved", writable: false },
+  { name: "damaged", label: "Damaged", writable: true },
+  { name: "safety_stock", label: "Safety Stock", writable: true },
+  { name: "quality_control", label: "Quality Control", writable: true },
+  { name: "incoming", label: "Incoming", writable: false },
+];
 const INVENTORY_PREFIX = "Inventory Available: ";
-/** Adds to (or with a negative number, subtracts from) the stock at a location. */
-const INVENTORY_ADJUST_PREFIX = "Inventory Available Adjust: ";
+const inventoryPrefix = (label: string) => `Inventory ${label}: `;
+/** "Inventory Damaged Adjust: Shop" → { kind: damaged, adjust: true, location: "Shop" }. */
+function inventoryColumn(header: string): { name: string; label: string; writable: boolean; adjust: boolean; location: string } | null {
+  const m = /^Inventory (.+?)( Adjust)?: (.+)$/.exec(header);
+  const kind = m && INVENTORY_KINDS.find((k) => k.label.toLowerCase() === m[1].trim().toLowerCase());
+  return kind && m ? { ...kind, adjust: !!m[2], location: m[3].trim() } : null;
+}
 
 const WEIGHT_UNITS: Record<string, string> = {
   g: "GRAMS",
@@ -182,11 +202,11 @@ export function variantMetafieldsBulkQuery(search: string): string {
   }`;
 }
 
-export function productsBulkQuery(search: string, groups: Set<string>): string {
+export function productsBulkQuery(search: string, groups: Set<string>, kinds: string[] = ["available"]): string {
   const args = search ? `(query: ${gqlString(search)})` : "";
   const metafields = `metafields { edges { node { id namespace key type value } } }`;
   const media = `media { edges { node { id mediaContentType alt ... on MediaImage { image { url width height } } preview { image { url width height } } } } }`;
-  const inventoryLevels = `inventoryLevels { edges { node { id location { id name } quantities(names: ["available"]) { name quantity } } } }`;
+  const inventoryLevels = `inventoryLevels { edges { node { id location { id name } quantities(names: ${JSON.stringify(kinds)}) { name quantity } } } }`;
   const variants = `variants { edges { node {
       id title sku barcode price compareAtPrice position taxable taxCode inventoryPolicy inventoryQuantity
       image { url }
@@ -300,10 +320,10 @@ export function productToRows(p: any, groups: Set<string>): Row[] {
         row[`Option${j + 1} Value`] = o.value;
       });
       for (const lvl of inv.inventoryLevels ?? v.inventoryLevels ?? []) {
-        const q = (lvl.quantities ?? []).find(
-          (x: any) => x.name === "available",
-        );
-        row[INVENTORY_PREFIX + lvl.location.name] = str(q?.quantity ?? "");
+        for (const q of lvl.quantities ?? []) {
+          const kind = INVENTORY_KINDS.find((k) => k.name === q.name);
+          if (kind) row[inventoryPrefix(kind.label) + lvl.location.name] = str(q.quantity ?? "");
+        }
       }
       if (groups.has("variant_metafields"))
         metafieldsToRow(row, v.metafields, "Variant Metafield");
@@ -331,7 +351,9 @@ async function exportProducts(
     }
   }
   let n = 0;
-  for await (const p of ctx.bulk(productsBulkQuery(search, groups))) {
+  const valid = new Set(INVENTORY_KINDS.map((k) => k.name));
+  const kinds = (ctx.options.inventoryKinds ?? ["available"]).filter((k) => valid.has(k));
+  for await (const p of ctx.bulk(productsBulkQuery(search, groups, kinds.length ? kinds : ["available"]))) {
     if (variantMetafields.size) {
       for (const v of p.variants ?? []) v.metafields ??= variantMetafields.get(v.id);
     }
@@ -443,11 +465,12 @@ interface VariantSpec {
   optionValues: string[]; // by position (1..3)
   input: Record<string, any>; // common ProductVariantsBulkInput/ProductVariantSetInput fields
   imageSrc?: string;
-  inventory: Array<{ locationName: string; quantity: number }>;
+  /** Per-location stock to set; `kind` is the quantity name (available, on_hand, damaged…). */
+  inventory: Array<{ locationName: string; quantity: number; kind: string }>;
   totalQty?: number;
   adjust?: number;
   /** Per-location stock adjustments ("Inventory Available Adjust: <Location>"). */
-  adjustments: Array<{ locationName: string; delta: number }>;
+  adjustments: Array<{ locationName: string; delta: number; kind: string }>;
   metafields: ReturnType<typeof metafieldsFromRow>;
 }
 
@@ -464,7 +487,7 @@ function isVariantRow(row: Row): boolean {
     return true;
   return Object.keys(row).some(
     (k) =>
-      (k.startsWith(INVENTORY_PREFIX) || k.startsWith(INVENTORY_ADJUST_PREFIX) || k.startsWith("Variant Metafield:")) &&
+      (inventoryColumn(k)?.writable || k.startsWith("Variant Metafield:")) &&
       (row[k] ?? "").trim() !== "",
   );
 }
@@ -563,20 +586,16 @@ function parseVariants(rows: Row[]): {
       if (v) optionValues[n - 1] = v;
     }
     const inventory: VariantSpec["inventory"] = [];
-    for (const k of Object.keys(row)) {
-      if (!k.startsWith(INVENTORY_PREFIX)) continue;
-      const q = parseInt10(row[k]);
-      if (q !== undefined)
-        inventory.push({
-          locationName: k.slice(INVENTORY_PREFIX.length).trim(),
-          quantity: q,
-        });
-    }
     const adjustments: VariantSpec["adjustments"] = [];
     for (const k of Object.keys(row)) {
-      if (!k.startsWith(INVENTORY_ADJUST_PREFIX)) continue;
-      const delta = parseInt10(row[k]);
-      if (delta) adjustments.push({ locationName: k.slice(INVENTORY_ADJUST_PREFIX.length).trim(), delta });
+      const col = inventoryColumn(k);
+      // Committed, reserved and incoming come from orders and transfers: not importable.
+      if (!col?.writable) continue;
+      const n = parseInt10(row[k]);
+      if (n === undefined) continue;
+      if (col.adjust) {
+        if (n) adjustments.push({ locationName: col.location, delta: n, kind: col.name });
+      } else inventory.push({ locationName: col.location, quantity: n, kind: col.name });
     }
     variants.push({
       rowIndex,
@@ -848,45 +867,51 @@ async function singleLocationId(ctx: ImportContext): Promise<string | null> {
   return null;
 }
 
+const INVENTORY_CURRENT = `#graphql
+  query ImportInventoryCurrent($id: ID!, $locationId: ID!, $names: [String!]!) {
+    inventoryItem(id: $id) { inventoryLevel(locationId: $locationId) { quantities(names: $names) { name quantity } } }
+  }
+`;
+
+/** Shopify wants to know what changed any quantity other than "available". */
+const LEDGER_URI = "bulkport://import";
+
 async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
-  const quantities: Array<{
-    inventoryItemId: string;
-    locationId: string;
-    quantity: number;
-    changeFromQuantity: null;
-  }> = [];
-  const changes: Array<{
-    inventoryItemId: string;
-    locationId: string;
-    delta: number;
-    changeFromQuantity: null;
-  }> = [];
+  type Target = { inventoryItemId: string; locationId: string; quantity: number; changeFromQuantity: null };
+  type Change = { inventoryItemId: string; locationId: string; delta: number; changeFromQuantity: null; ledgerDocumentUri?: string };
+  // Available and on hand can be set outright; the others only moved by a difference.
+  const sets = new Map<string, Target[]>();
+  const changes = new Map<string, Change[]>();
+  const add = <T,>(map: Map<string, T[]>, name: string, v: T) => map.set(name, [...(map.get(name) ?? []), v]);
+  const change = (name: string, c: Omit<Change, "changeFromQuantity">) =>
+    add(changes, name, { ...c, changeFromQuantity: null, ...(name === "available" ? {} : { ledgerDocumentUri: LEDGER_URI }) });
   for (const w of work) {
-    const targets: Array<{ locationId: string; quantity: number }> = [];
+    const item = w.inventoryItemId;
+    const locs: string[] = [];
+    const absolute: Array<{ locationId: string; quantity: number; kind: string }> = [];
     for (const inv of w.spec.inventory) {
       const loc = await locationByName(ctx.gql, ctx.cache, inv.locationName);
-      targets.push({ locationId: loc.id, quantity: inv.quantity });
+      absolute.push({ locationId: loc.id, quantity: inv.quantity, kind: inv.kind });
+      locs.push(loc.id);
     }
-    if (!w.spec.inventory.length && w.spec.totalQty !== undefined) {
+    if (!w.spec.inventory.some((i) => i.kind === "available") && w.spec.totalQty !== undefined) {
       const locationId = await singleLocationId(ctx);
-      if (locationId) targets.push({ locationId, quantity: w.spec.totalQty });
-    }
-    const locs = targets.map((t) => t.locationId);
-    if (w.spec.adjust) {
-      const locationId = locs[0] ?? (await singleLocationId(ctx));
       if (locationId) {
-        changes.push({
-          inventoryItemId: w.inventoryItemId,
-          locationId,
-          delta: w.spec.adjust,
-          changeFromQuantity: null,
-        });
+        absolute.push({ locationId, quantity: w.spec.totalQty, kind: "available" });
+        locs.push(locationId);
+      }
+    }
+    if (w.spec.adjust) {
+      const locationId = absolute.find((t) => t.kind === "available")?.locationId ?? (await singleLocationId(ctx));
+      if (locationId) {
+        change("available", { inventoryItemId: item, locationId, delta: w.spec.adjust });
         locs.push(locationId);
       }
     }
     for (const a of w.spec.adjustments) {
       const loc = await locationByName(ctx.gql, ctx.cache, a.locationName);
-      changes.push({ inventoryItemId: w.inventoryItemId, locationId: loc.id, delta: a.delta, changeFromQuantity: null });
+      // On hand is the sum of the other quantities: adding to it means adding available stock.
+      change(a.kind === "on_hand" ? "available" : a.kind, { inventoryItemId: item, locationId: loc.id, delta: a.delta });
       locs.push(loc.id);
     }
     for (const locationId of new Set(locs)) {
@@ -900,28 +925,32 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
         throw new ImportError(`Inventory: ${err.message}`);
       w.activeLocations.add(locationId);
     }
-    for (const t of targets)
-      quantities.push({
-        inventoryItemId: w.inventoryItemId,
-        ...t,
-        changeFromQuantity: null,
+    for (const t of absolute) {
+      if (t.kind === "available" || t.kind === "on_hand") {
+        add(sets, t.kind, { inventoryItemId: item, locationId: t.locationId, quantity: t.quantity, changeFromQuantity: null });
+        continue;
+      }
+      // Damaged, safety stock, quality control: move by the difference from what is there now.
+      const d = await ctx.gql(INVENTORY_CURRENT, { id: item, locationId: t.locationId, names: [t.kind] });
+      const now = d.inventoryItem?.inventoryLevel?.quantities?.find((q: any) => q.name === t.kind)?.quantity ?? 0;
+      if (t.quantity !== now) change(t.kind, { inventoryItemId: item, locationId: t.locationId, delta: t.quantity - now });
+    }
+  }
+  for (const [name, quantities] of sets) {
+    for (let i = 0; i < quantities.length; i += 250) {
+      const d = await ctx.gql(INVENTORY_SET, {
+        input: { name, reason: "correction", quantities: quantities.slice(i, i + 250) },
       });
+      assertNoUserErrors(d.inventorySetQuantities, "Inventory");
+    }
   }
-  for (let i = 0; i < quantities.length; i += 250) {
-    const d = await ctx.gql(INVENTORY_SET, {
-      input: {
-        name: "available",
-        reason: "correction",
-        quantities: quantities.slice(i, i + 250),
-      },
-    });
-    assertNoUserErrors(d.inventorySetQuantities, "Inventory");
-  }
-  if (changes.length) {
-    const d = await ctx.gql(INVENTORY_ADJUST, {
-      input: { name: "available", reason: "correction", changes },
-    });
-    assertNoUserErrors(d.inventoryAdjustQuantities, "Inventory adjust");
+  for (const [name, list] of changes) {
+    for (let i = 0; i < list.length; i += 250) {
+      const d = await ctx.gql(INVENTORY_ADJUST, {
+        input: { name, reason: "correction", changes: list.slice(i, i + 250) },
+      });
+      assertNoUserErrors(d.inventoryAdjustQuantities, "Inventory adjust");
+    }
   }
 }
 

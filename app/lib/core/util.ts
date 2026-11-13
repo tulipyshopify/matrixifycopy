@@ -318,6 +318,9 @@ export function resolveDateRange(r: DateRange, now = new Date(), timeZone = "UTC
       return { from: ymd(addDays(day, -89)), to: ymd(day) };
     case "last_n_days":
       return { from: ymd(addDays(day, -(Math.max(1, Math.floor(r.days ?? 1)) - 1))), to: ymd(day) };
+    case "last_n":
+      // Worked out as exact instants in dateRangeInstants.
+      return {};
     case "this_month":
       return { from: ymd(new Date(Date.UTC(y, m, 1))), to: ymd(day) };
     case "last_month":
@@ -348,21 +351,35 @@ export function startOfDay(date: string, timeZone: string, plusDays = 0): string
  */
 export function compileDateRange(r: DateRange | undefined, now = new Date(), timeZone = "UTC"): string {
   if (!r) return "";
-  const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
-  const { from, to } = resolveDateRange(r, now, tz);
+  const { from, to } = dateRangeInstants(r, now, timeZone);
+  const iso = (d: Date) => d.toISOString().replace(".000Z", "Z");
   // A date Shopify can't search by (e.g. when a fulfillment was created):
   // anything that happened to the item since `from` also updated it, so the
   // search is narrowed by that and the export checks the real date itself.
-  if (r.searchBy) return from ? `${r.searchBy}:>='${startOfDay(from, tz)}'` : "";
+  if (r.searchBy) return from ? `${r.searchBy}:>='${iso(from)}'` : "";
   const parts: string[] = [];
-  if (from) parts.push(`${r.field}:>='${startOfDay(from, tz)}'`);
-  if (to) parts.push(`${r.field}:<'${startOfDay(to, tz, 1)}'`);
+  if (from) parts.push(`${r.field}:>='${iso(from)}'`);
+  if (to) parts.push(`${r.field}:<'${iso(to)}'`);
   return parts.join(" AND ");
 }
 
 /** The range as instants: `from` inclusive, `to` exclusive. */
 export function dateRangeInstants(r: DateRange, now = new Date(), timeZone = "UTC"): { from?: Date; to?: Date } {
   const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
+  if (r.preset === "last_n") {
+    const n = Math.max(1, Math.floor(r.amount ?? 1));
+    // Minutes and hours count back from this moment; nothing later is cut off.
+    if (r.unit === "minutes") return { from: new Date(now.getTime() - n * 60_000) };
+    if (r.unit === "hours") return { from: new Date(now.getTime() - n * 3600_000) };
+    const local = localParts(now, tz);
+    if (r.unit === "months") {
+      // The same day of the month, n months back (Date.UTC evens out short months).
+      const d = new Date(Date.UTC(local.year, local.month - 1 - n, local.day));
+      return { from: new Date(startOfDay(d.toISOString().slice(0, 10), tz)) };
+    }
+    // Days: whole days in the shop's time zone, today included.
+    return dateRangeInstants({ ...r, preset: "last_n_days", days: n }, now, tz);
+  }
   const { from, to } = resolveDateRange(r, now, tz);
   return { from: from ? new Date(startOfDay(from, tz)) : undefined, to: to ? new Date(startOfDay(to, tz, 1)) : undefined };
 }
