@@ -15,7 +15,11 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
   const [dryRun, setDryRun] = useState(false);
   const [runAt, setRunAt] = useState("");
   const [weekday, setWeekday] = useState(1);
-  const [interval, setIntervalMinutes] = useState(0);
+  const [scheduled, setScheduled] = useState(false);
+  const [interval, setIntervalMinutes] = useState(1440);
+  const [name, setName] = useState("");
+  // Only a URL can be fetched again later; an uploaded file is imported once.
+  const repeating = scheduled && source === "url";
   const busy = fetcher.state !== "idle";
 
   const submit = () => {
@@ -25,8 +29,9 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
-      form.set("intervalMinutes", String(interval));
-      if (runAt.trim() && interval >= 1440) {
+      form.set("intervalMinutes", String(repeating ? interval : 0));
+      if (repeating && name.trim()) form.set("name", name.trim());
+      if (repeating && runAt.trim() && interval >= 1440) {
         form.set("runAt", runAt.trim());
         form.set("timezone", browserTimeZone());
         if (interval >= 10080) form.set("weekday", String(weekday));
@@ -70,26 +75,6 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
                 value={url}
                 onInput={(ev: any) => setUrl(ev.currentTarget.value)}
               />
-              <s-select
-                label="Repeat"
-                value={String(interval)}
-                onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}
-              >
-                <s-option value="0">Import once now</s-option>
-                <s-option value="60">Every hour</s-option>
-                <s-option value="360">Every 6 hours</s-option>
-                <s-option value="1440">Every day</s-option>
-                <s-option value="10080">Every week</s-option>
-              </s-select>
-              <ScheduleTimeFields
-                intervalMinutes={interval}
-                runAt={runAt}
-                weekday={weekday}
-                onChange={(p) => {
-                  if (p.runAt !== undefined) setRunAt(p.runAt);
-                  if (p.weekday !== undefined) setWeekday(p.weekday);
-                }}
-              />
             </>
           )}
           {file && source === "file" ? <s-text>Selected: {file.name}</s-text> : null}
@@ -115,9 +100,50 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
             checked={dryRun}
             onChange={(ev: any) => setDryRun(ev.currentTarget.checked)}
           />
+          <s-switch
+            label="Repeat this import on a schedule"
+            details={
+              source === "url"
+                ? "The file is downloaded from the URL again at every run."
+                : "Choose \"Download from a URL\" above to repeat an import: an uploaded file can only be imported once."
+            }
+            checked={repeating}
+            disabled={source !== "url"}
+            onChange={(ev: any) => setScheduled(ev.currentTarget.checked)}
+          />
+          {repeating ? (
+            <>
+              <s-select label="How often" value={String(interval)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
+                <s-option value="60">Every hour</s-option>
+                <s-option value="360">Every 6 hours</s-option>
+                <s-option value="1440">Every day</s-option>
+                <s-option value="10080">Every week</s-option>
+              </s-select>
+              <ScheduleTimeFields
+                intervalMinutes={interval}
+                runAt={runAt}
+                weekday={weekday}
+                onChange={(p) => {
+                  if (p.runAt !== undefined) setRunAt(p.runAt);
+                  if (p.weekday !== undefined) setWeekday(p.weekday);
+                }}
+              />
+              <s-text-field
+                label="Schedule name (optional)"
+                placeholder="Scheduled import"
+                value={name}
+                onInput={(ev: any) => setName(ev.currentTarget.value)}
+              />
+              {dryRun ? (
+                <s-text tone="caution">Dry run is on: every scheduled run will only check the file and change nothing.</s-text>
+              ) : (
+                <s-text tone="neutral">Every run applies the file to the store. Rows that add to stock are applied again each time.</s-text>
+              )}
+            </>
+          ) : null}
           <s-stack direction="inline" justifyContent="end">
             <s-button variant="primary" onClick={submit} disabled={!ready || busy} loading={busy}>
-              {source === "url" && interval > 0 ? "Save schedule" : dryRun ? "Check file" : "Import"}
+              {repeating ? "Save schedule" : dryRun ? "Check file" : "Import"}
             </s-button>
           </s-stack>
         </s-stack>
