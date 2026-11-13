@@ -10,7 +10,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     entities: entityCatalog().filter((e) => e.canExport),
     presets: await listPresets(session.shop),
-    latest: await latestExportPreset(session.shop),
+    // "Edit and export again" on a job page opens the form with that job's set-up.
+    latest: await latestExportPreset(session.shop, new URL(request.url).searchParams.get("from") ?? undefined),
   };
 };
 

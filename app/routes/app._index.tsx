@@ -1,24 +1,28 @@
+import path from "node:path";
 import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, entityCatalog, latestExportPreset, listPresets, listJobs, rerunJob } from "../lib/jobs/jobs.server";
-import { StatusBadge, formatDate, isActive, jobSummary, progressText } from "../components/jobs";
-import { ExportForm } from "../components/ExportForm";
+import { cancelJob, downloadLinks, listJobs, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
+import { describeSchedule } from "../lib/jobs/schedule-time";
+import { StatusBadge, formatDate, isActive, jobRow } from "../components/jobs";
 import { ImportForm } from "../components/ImportForm";
 
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const jobs = await listJobs(session.shop);
+  const [jobs, schedules] = await Promise.all([listJobs(session.shop), listSchedules(session.shop)]);
+  const repeats = new Map(schedules.map((s) => [s.id, describeSchedule(s)]));
   return {
-    jobs: jobs.map((j) => ({ ...j, links: downloadLinks({ ...j, inputFile: null }) })),
-    entities: entityCatalog().filter((e) => e.canExport),
-    presets: await listPresets(session.shop),
-    // "Edit and export again" on a job page opens the form with that job's set-up.
-    latest: await latestExportPreset(session.shop, new URL(request.url).searchParams.get("from") ?? undefined),
+    jobs: jobs.map(({ resultFile, scheduleId, ...j }) => ({
+      ...j,
+      links: downloadLinks({ id: j.id, resultFile, inputFile: null }),
+      fileName: resultFile ? path.basename(resultFile) : null,
+      repeat: scheduleId ? (repeats.get(scheduleId) ?? null) : null,
+    })),
+    scheduleCount: schedules.filter((s) => s.enabled).length,
     maxUploadMb: MAX_UPLOAD_MB,
   };
 };
@@ -33,10 +37,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Home() {
-  const { jobs, entities, maxUploadMb, presets, latest } = useLoaderData<typeof loader>();
-  const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "import" ? "import" : "export";
-  const setTab = (t: string) => setParams(t === "export" ? {} : { tab: t }, { replace: true });
+  const { jobs, scheduleCount, maxUploadMb } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const anyActive = jobs.some((j) => isActive(j.status));
@@ -53,81 +54,101 @@ export default function Home() {
   return (
     <s-page heading="Bulkport" inlineSize="large">
       <div className="bp-column">
-      <s-section>
-        <s-stack direction="inline" gap="base" alignItems="center">
-          <s-button variant={tab === "export" ? "primary" : "secondary"} onClick={() => setTab("export")}>
-            Export
-          </s-button>
-          <s-button variant={tab === "import" ? "primary" : "secondary"} onClick={() => setTab("import")}>
-            Import
-          </s-button>
-          <s-text tone="neutral">
-            {tab === "export"
-              ? "Choose data, filters and columns, then download an Excel or CSV file."
-              : "Upload an edited file to create, update or delete items in bulk."}
-          </s-text>
-        </s-stack>
-      </s-section>
-
-      {tab === "export" ? <ExportForm entities={entities} presets={presets} latest={latest} /> : <ImportForm maxUploadMb={maxUploadMb} />}
-
-      {jobs.length === 0 ? null : (
-        <s-section heading="Recent jobs">
-          <s-table>
-            <s-table-header-row>
-              <s-table-header listSlot="primary">Job</s-table-header>
-              <s-table-header>Status</s-table-header>
-              <s-table-header>Progress</s-table-header>
-              <s-table-header>Created</s-table-header>
-              <s-table-header>Actions</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {jobs.map((job) => (
-                <s-table-row key={job.id}>
-                  <s-table-cell>
-                    <s-stack direction="block" gap="small-500">
-                      <s-link href={`/app/jobs/${job.id}`}>
-                        {job.type === "export" ? "Export" : "Import"}: {jobSummary(job)}
-                      </s-link>
-                      {job.error ? <s-text tone="critical">{job.error}</s-text> : null}
-                    </s-stack>
-                  </s-table-cell>
-                  <s-table-cell>
-                    <StatusBadge status={job.status} />
-                  </s-table-cell>
-                  <s-table-cell>{progressText(job)}</s-table-cell>
-                  <s-table-cell>{formatDate(job.createdAt)}</s-table-cell>
-                  <s-table-cell>
-                    <s-stack direction="inline" gap="small-200">
-                      {job.links.result ? (
-                        <s-button variant="secondary" href={job.links.result} target="_blank">
-                          Download
-                        </s-button>
-                      ) : null}
-                      {isActive(job.status) ? (
-                        <s-button
-                          variant="tertiary"
-                          tone="critical"
-                          onClick={() => fetcher.submit({ intent: "cancel", id: job.id }, { method: "post" })}
-                        >
-                          Cancel
-                        </s-button>
-                      ) : (
-                        <s-button
-                          variant="tertiary"
-                          onClick={() => fetcher.submit({ intent: "rerun", id: job.id }, { method: "post" })}
-                        >
-                          Run again
-                        </s-button>
-                      )}
-                    </s-stack>
-                  </s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
+        <s-section heading="Export">
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+            <s-text tone="neutral">Choose data, filters and columns, then download an Excel or CSV file.</s-text>
+            <s-button variant="primary" href="/app/export">
+              New export
+            </s-button>
+          </s-stack>
         </s-section>
-      )}
+
+        <ImportForm maxUploadMb={maxUploadMb} />
+
+        <s-paragraph>
+          {scheduleCount === 0 ? (
+            <>
+              Nothing is scheduled yet. <s-link href="/app/schedules">Schedules</s-link>
+            </>
+          ) : (
+            <>
+              You have{" "}
+              <s-link href="/app/schedules">
+                {scheduleCount} scheduled {scheduleCount === 1 ? "job" : "jobs"}
+              </s-link>
+              .
+            </>
+          )}
+        </s-paragraph>
+
+        {jobs.length === 0 ? (
+          <s-section>
+            <s-text tone="neutral">Exports and imports you run will be listed here.</s-text>
+          </s-section>
+        ) : (
+          <s-section padding="none" accessibilityLabel="Job history">
+            <div className="bp-jobs">
+              {jobs.map((job) => {
+                const row = jobRow(job);
+                return (
+                  <div className="bp-job" key={job.id}>
+                    <div className="bp-job-main">
+                      <div className="bp-job-line">
+                        <span className={`bp-kind bp-kind-${job.type}`} aria-hidden="true">
+                          {job.type === "export" ? "↑" : "↓"}
+                        </span>
+                        <s-link href={`/app/jobs/${job.id}`}>
+                          {row.kind} #{row.number}
+                        </s-link>
+                        <s-text type="strong">{row.title}</s-text>
+                        {row.counts.map((c) => (
+                          <s-badge key={c.label} tone={c.tone}>
+                            {c.label}
+                          </s-badge>
+                        ))}
+                      </div>
+                      <div className="bp-job-line bp-job-meta">
+                        <span>{formatDate(job.createdAt)}</span>
+                        {row.took ? <span>{row.took}</span> : null}
+                        {job.repeat ? <span>↻ {job.repeat}</span> : null}
+                      </div>
+                      {job.error ? <s-text tone="critical">{job.error}</s-text> : null}
+                    </div>
+                    <div className="bp-job-side">
+                      <div className="bp-job-line bp-job-end">
+                        <s-badge>{row.format}</s-badge>
+                        <StatusBadge status={job.status} />
+                      </div>
+                      <div className="bp-job-line bp-job-end">
+                        {job.links.result ? (
+                          <s-link href={job.links.result} target="_blank">
+                            {job.fileName ?? "Download"}
+                          </s-link>
+                        ) : null}
+                        {isActive(job.status) ? (
+                          <s-button
+                            variant="tertiary"
+                            tone="critical"
+                            onClick={() => fetcher.submit({ intent: "cancel", id: job.id }, { method: "post" })}
+                          >
+                            Stop
+                          </s-button>
+                        ) : (
+                          <s-button
+                            variant="tertiary"
+                            onClick={() => fetcher.submit({ intent: "rerun", id: job.id }, { method: "post" })}
+                          >
+                            Run again
+                          </s-button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </s-section>
+        )}
       </div>
     </s-page>
   );

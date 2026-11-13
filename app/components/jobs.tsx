@@ -66,3 +66,80 @@ export function jobTiming(job: {
     fraction >= 0.03 && fraction < 1 && elapsed > 15_000 ? ` · about ${duration((elapsed * (1 - fraction)) / fraction)} left` : "";
   return `Running for ${duration(elapsed)}${left}`;
 }
+
+export interface JobRowInput {
+  id: string;
+  type: string;
+  status: string;
+  config: string;
+  format: string;
+  name: string;
+  inputName: string | null;
+  stats: string;
+  progress: number;
+  total: number;
+  startedAt: string | Date | null;
+  finishedAt: string | Date | null;
+}
+
+const titleCase = (s: string) => s.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * What one line of the job history shows: a short job number, what the job
+ * was about, and count badges ("Exported: 912", "Failed: 3").
+ */
+export function jobRow(job: JobRowInput): {
+  number: string;
+  kind: "Export" | "Import";
+  title: string;
+  counts: Array<{ label: string; tone: "neutral" | "success" | "critical" | "info" }>;
+  format: string;
+  took: string;
+} {
+  let stats: any[] = [];
+  try {
+    stats = JSON.parse(job.stats);
+  } catch {
+    // Unreadable stats: show the row without counts.
+  }
+  const sum = (k: string) => stats.reduce((n, s) => n + (Number(s?.[k]) || 0), 0);
+  const counts: ReturnType<typeof jobRow>["counts"] = [];
+  let title = job.name;
+  if (job.type === "export") {
+    try {
+      title = JSON.parse(job.config).entities.map((e: any) => titleCase(String(e.entity))).join(", ");
+    } catch {
+      // Keep the job name.
+    }
+    if (isActive(job.status) || job.status === "stopping") {
+      const p = progressText(job);
+      if (p) counts.push({ label: p, tone: "info" });
+    } else if (stats.length) {
+      counts.push({ label: `Exported: ${sum("items").toLocaleString("en")}`, tone: "success" });
+      if (sum("rows") !== sum("items")) counts.push({ label: `Rows: ${sum("rows").toLocaleString("en")}`, tone: "neutral" });
+    }
+  } else {
+    const sheets = [...new Set(stats.map((s) => s?.sheet).filter(Boolean))];
+    title = sheets.length ? sheets.join(", ") : job.inputName ?? job.name ?? "Import";
+    if (isActive(job.status) || job.status === "stopping") {
+      const p = progressText(job);
+      if (p) counts.push({ label: p, tone: "info" });
+    } else if (stats.length) {
+      counts.push({ label: `Total: ${sum("items").toLocaleString("en")}`, tone: "neutral" });
+      if (sum("ok")) counts.push({ label: `OK: ${sum("ok").toLocaleString("en")}`, tone: "success" });
+      if (sum("failed")) counts.push({ label: `Failed: ${sum("failed").toLocaleString("en")}`, tone: "critical" });
+      if (sum("skipped")) counts.push({ label: `Skipped: ${sum("skipped").toLocaleString("en")}`, tone: "neutral" });
+    }
+  }
+  const ext = job.type === "import" ? (/\.(\w+)$/.exec(job.inputName ?? "")?.[1] ?? job.format) : job.format;
+  const took =
+    job.startedAt && job.finishedAt ? duration(new Date(job.finishedAt).getTime() - new Date(job.startedAt).getTime()) : "";
+  return {
+    number: job.id.slice(-6).toUpperCase(),
+    kind: job.type === "export" ? "Export" : "Import",
+    title: title || (job.type === "export" ? "Export" : "Import"),
+    counts,
+    format: ext === "xlsx" ? "Excel" : ext.toUpperCase(),
+    took,
+  };
+}

@@ -193,6 +193,9 @@ export function listJobs(shop: string, take = 50) {
       resultFile: true,
       error: true,
       config: true,
+      stats: true,
+      startedAt: true,
+      scheduleId: true,
     },
   });
 }

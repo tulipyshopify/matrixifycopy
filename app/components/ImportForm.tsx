@@ -3,14 +3,19 @@ import { useFetcher } from "react-router";
 import { ScheduleTimeFields, browserTimeZone } from "./ScheduleTime";
 
 /**
- * Import form: upload or URL source, default command and dry run. Used on the
+ * Import form: a drop zone or a link, then (once one is chosen) the default
+ * command, dry run and schedule. Used on the
  * home page and on /app/import; posts to the /app/import action.
  */
 export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
   const fetcher = useFetcher<{ error?: string }>();
-  const [source, setSource] = useState<"file" | "url">("file");
+  const [source, setSource] = useState<"file" | "url" | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
+  const pickFile = (f: File | null) => {
+    setFile(f);
+    setSource(f ? "file" : url.trim() ? "url" : null);
+  };
   const [defaultCommand, setDefaultCommand] = useState("MERGE");
   const [dryRun, setDryRun] = useState(false);
   const [runAt, setRunAt] = useState("");
@@ -24,6 +29,7 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
 
   const submit = () => {
     const form = new FormData();
+    if (!source) return;
     form.set("source", source);
     form.set("options", JSON.stringify({ defaultCommand, dryRun }));
     if (source === "file" && file) form.set("file", file);
@@ -50,38 +56,33 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
         </s-banner>
       ) : null}
 
-      <s-section heading="File">
+      <s-section heading="Import">
         <s-stack direction="block" gap="base">
-          <s-choice-list
-            label="Source"
-            values={[source]}
-            onChange={(ev: any) => setSource(ev.currentTarget.values[0])}
-          >
-            <s-choice value="file">Upload a file</s-choice>
-            <s-choice value="url">Download from a URL (Google Sheets, Dropbox, FTP…)</s-choice>
-          </s-choice-list>
-          {source === "file" ? (
-            <s-drop-zone
-              label={`Excel, CSV or ZIP file, up to ${maxUploadMb} MB`}
-              accept=".xlsx,.csv,.zip"
-              onInput={(ev: any) => setFile(ev.currentTarget.files?.[0] ?? null)}
-              onChange={(ev: any) => setFile(ev.currentTarget.files?.[0] ?? null)}
+          <s-drop-zone
+            label={`Add an Excel, CSV or ZIP file, up to ${maxUploadMb} MB`}
+            accept=".xlsx,.csv,.zip"
+            onInput={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
+            onChange={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
+          />
+          <div className="bp-url-row">
+            <s-url-field
+              label="Or import from a link"
+              placeholder="https://… or ftp://user:password@host/file.xlsx"
+              value={url}
+              onInput={(ev: any) => setUrl(ev.currentTarget.value)}
             />
-          ) : (
-            <>
-              <s-url-field
-                label="File URL"
-                details="Google Sheets links are exported as Excel automatically. FTP: ftp://user:password@host/path/file.xlsx"
-                value={url}
-                onInput={(ev: any) => setUrl(ev.currentTarget.value)}
-              />
-            </>
-          )}
-          {file && source === "file" ? <s-text>Selected: {file.name}</s-text> : null}
+            <s-button disabled={!url.trim()} onClick={() => setSource("url")}>
+              Import from link
+            </s-button>
+          </div>
+          <s-text tone="neutral">Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.</s-text>
+          {source === "file" && file ? <s-text>Selected file: {file.name}</s-text> : null}
+          {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}</s-text> : null}
         </s-stack>
       </s-section>
 
-      <s-section heading="Options">
+      {source ? (
+      <s-section heading="Import options">
         <s-stack direction="block" gap="base">
           <s-select
             label="Command for rows with an empty Command column"
@@ -104,8 +105,8 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
             label="Repeat this import on a schedule"
             details={
               source === "url"
-                ? "The file is downloaded from the URL again at every run."
-                : "Choose \"Download from a URL\" above to repeat an import: an uploaded file can only be imported once."
+                ? "The file is downloaded from the link again at every run."
+                : "Import from a link to repeat an import: an uploaded file can only be imported once."
             }
             checked={repeating}
             disabled={source !== "url"}
@@ -148,7 +149,7 @@ export function ImportForm({ maxUploadMb }: { maxUploadMb: number }) {
           </s-stack>
         </s-stack>
       </s-section>
-
+      ) : null}
     </>
   );
 }

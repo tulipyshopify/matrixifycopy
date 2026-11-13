@@ -19,7 +19,19 @@ export default function App() {
 .bp-chip-static{cursor:default;padding-left:10px}
 .bp-chip-dragging{opacity:.4}
 .bp-chip-over{border-color:#303030;background:#e3e3e3}
-.bp-grip{color:#8a8a8a;font-size:12px}`}</style>
+.bp-grip{color:#8a8a8a;font-size:12px}
+.bp-job{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding:14px 16px;border-top:1px solid #ebebeb}
+.bp-job:first-child{border-top:0}
+.bp-job-main,.bp-job-side{display:flex;flex-direction:column;gap:6px;min-width:0}
+.bp-job-side{align-items:flex-end;flex-shrink:0;max-width:45%}
+.bp-job-line{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.bp-job-end{justify-content:flex-end}
+.bp-job-meta{color:#616161;font-size:13px;gap:14px}
+.bp-kind{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;font-size:13px;font-weight:650}
+.bp-kind-export{background:#e0f0ff;color:#00527c}
+.bp-kind-import{background:#e3f5e1;color:#0c5132}
+.bp-url-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
+@media (max-width:600px){.bp-job{flex-direction:column}.bp-job-side{align-items:flex-start;max-width:none}.bp-job-end{justify-content:flex-start}.bp-url-row{grid-template-columns:1fr}}`}</style>
         <Meta />
         <Links />
       </head>

@@ -157,7 +157,7 @@ export default function JobDetail() {
           <s-box padding="base small-200 none small-200">
             <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
               <s-heading>What was exported</s-heading>
-              <s-button href={`/app?from=${job.id}`}>Edit and export again</s-button>
+              <s-button href={`/app/export?from=${job.id}`}>Edit and export again</s-button>
             </s-stack>
           </s-box>
           <ExportDetails entities={entities} exported={exported} stats={job.stats} />
