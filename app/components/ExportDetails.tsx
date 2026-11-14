@@ -59,6 +59,10 @@ export function ExportDetails({
         if (!e) return null;
         const stat = stats.find((s) => s.entity === entity);
         const chosen = o.columns ?? e.columns;
+        // Stock columns (one per location) and named metafields are counted apart from the fixed columns.
+        const fixed = chosen.filter((c) => e.columns.includes(c)).length;
+        const stock = chosen.filter((c) => !e.columns.includes(c) && c.startsWith("Inventory ")).length;
+        const named = chosen.length - fixed - stock;
         const groups = o.groups ?? e.groups.filter((g) => g.default).map((g) => g.key);
         const filters = [
           ...(o.dateRange ? [dateRangeText(e, o.dateRange)] : []),
@@ -91,7 +95,9 @@ export function ExportDetails({
                 <s-divider />
                 <s-stack direction="block" gap="small">
                   <s-heading>
-                    Columns: {chosen.length} of {e.columns.length}
+                    Columns: {fixed} of {e.columns.length}
+                    {stock ? `, plus ${stock} stock ${stock === 1 ? "column" : "columns"}` : ""}
+                    {named ? `, plus ${named} ${named === 1 ? "metafield" : "metafields"}` : ""}
                   </s-heading>
                   <s-stack direction="inline" gap="small">
                     {sections.map((sec) => (
