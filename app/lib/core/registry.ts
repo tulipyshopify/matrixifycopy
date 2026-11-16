@@ -52,10 +52,10 @@ const DYNAMIC: Array<[RegExp, string]> = [
  * knows. `confident`: one type clearly ahead on distinctive columns, and it
  * knows most of them. `guess`: a single best match, even on common columns.
  */
-function scoreByHeaders(headers: string[], entities: Entity[]): { confident: Entity | null; guess: Entity | null } {
+function scoreByHeaders(headers: string[], entities: Entity[]): { confident: Entity | null; guess: Entity | null; candidates: Entity[] } {
   const all = headers.map((h) => h.trim()).filter((h) => h && !IGNORED.test(h) && !/^Metafield: /.test(h));
   const distinctive = all.filter((h) => !GENERIC.has(h));
-  if (!all.length) return { confident: null, guess: null };
+  if (!all.length) return { confident: null, guess: null, candidates: [] };
   const scored = entities
     .filter((e) => e.import)
     .map((e) => {
@@ -72,11 +72,65 @@ function scoreByHeaders(headers: string[], entities: Entity[]): { confident: Ent
     });
   const top = [...scored].sort((a, b) => b.score - a.score || b.total - a.total);
   const [first, second] = top;
-  if (!first || first.total === 0) return { confident: null, guess: null };
+  if (!first || first.total === 0) return { confident: null, guess: null, candidates: [] };
   const ahead = first.score > (second?.score ?? 0);
   // Tied on distinctive columns: the common ones (Handle, Tags, Email…) may still single one out.
   const aheadOverall = ahead || (first.score === second?.score && first.total > second.total);
   const confident = ahead && first.score >= 2 && first.score >= distinctive.length * 0.6 ? first.e : ahead && distinctive.length === 1 && first.total >= 2 ? first.e : null;
   const guess = aheadOverall && (first.score > 0 || first.total >= 2) ? first.e : null;
-  return { confident, guess };
+  // Every type that knows all of the sheet's columns could be the one.
+  const candidates = scored.filter((x) => x.total === all.length).map((x) => x.e);
+  return { confident, guess, candidates };
+}
+
+/** Shopify object type behind each data type's ID column. */
+const ID_TYPES: Record<string, string> = {
+  products: "Product",
+  smart_collections: "Collection",
+  custom_collections: "Collection",
+  customers: "Customer",
+  companies: "Company",
+  orders: "Order",
+  draft_orders: "DraftOrder",
+  pages: "Page",
+  blog_posts: "Article",
+  redirects: "UrlRedirect",
+  metaobjects: "Metaobject",
+  menus: "Menu",
+};
+
+const RECOGNISE_BY_ID = `#graphql
+  query ImportRecogniseById($ids: [ID!]!) {
+    nodes(ids: $ids) { __typename id ... on Collection { ruleSet { appliedDisjunctively } } }
+  }
+`;
+
+/**
+ * For a sheet whose columns fit several data types (say just ID and Tags):
+ * looks its first IDs up in the store and returns the type they belong to.
+ */
+export async function detectEntityByIds(
+  gql: (query: string, variables?: Record<string, unknown>) => Promise<any>,
+  sheet: { headers?: string[]; rows: Array<Record<string, string>> },
+  entities: Entity[],
+): Promise<Entity | null> {
+  const ids = [...new Set(sheet.rows.map((r) => (r.ID ?? "").trim()).filter((v) => /^\d+$/.test(v)))].slice(0, 3);
+  if (!ids.length) return null;
+  const { candidates } = scoreByHeaders(sheet.headers ?? [], entities);
+  const found = new Set<Entity>();
+  for (const type of new Set(candidates.map((e) => ID_TYPES[e.key]).filter(Boolean))) {
+    try {
+      const d = await gql(RECOGNISE_BY_ID, { ids: ids.map((id) => `gid://shopify/${type}/${id}`) });
+      for (const node of d?.nodes ?? []) {
+        if (!node) continue;
+        const key = type === "Collection" ? (node.ruleSet ? "smart_collections" : "custom_collections") : candidates.find((e) => ID_TYPES[e.key] === type)?.key;
+        const e = candidates.find((c) => c.key === key);
+        if (e) found.add(e);
+      }
+    } catch {
+      // No access to this type, or it can't be looked up: not this one.
+    }
+  }
+  // An ID number can exist under two types by coincidence; only a single answer counts.
+  return found.size === 1 ? [...found][0] : null;
 }

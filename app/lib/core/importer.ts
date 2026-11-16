@@ -2,7 +2,7 @@ import type { Command, Entity, ImportContext, ItemResult, Logger, Row } from "./
 import { ImportError } from "./types";
 import { cell, gidToId, mapLimit, parseCommand } from "./util";
 import type { Sheet, WorkbookOut } from "./sheets";
-import { detectEntity } from "./registry";
+import { detectEntity, detectEntityByIds } from "./registry";
 
 export const RESULT_COLUMN = "Import Result";
 export const COMMENT_COLUMN = "Import Comment";
@@ -105,7 +105,16 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
   const defaultCommand: Command = ctx.options.defaultCommand ?? "MERGE";
 
   // Process sheets in registry order so dependencies (products before collections) exist.
-  const plan = sheets.map((sheet) => ({ sheet, entity: detectEntity(sheet, entities) }));
+  const plan: Array<{ sheet: Sheet; entity: Entity | null }> = [];
+  for (const sheet of sheets) {
+    let entity = detectEntity(sheet, entities);
+    // Columns that fit several data types (e.g. only ID and Tags): the IDs tell which one.
+    if (!entity) {
+      entity = await detectEntityByIds(ctx.gql, sheet, entities);
+      if (entity) log(`Sheet "${sheet.name}": recognised as ${entity.sheet} from its IDs`);
+    }
+    plan.push({ sheet, entity });
+  }
   plan.sort((a, b) => entities.indexOf(a.entity!) - entities.indexOf(b.entity!));
 
   const grouped = plan.map((p) => ({
@@ -129,7 +138,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     };
     summaries.push(summary);
     if (!entity) {
-      log(`Sheet "${sheet.name}": not recognised, skipped. Name sheets/files like the export (e.g. "Products").`);
+      log(`Sheet "${sheet.name}": not recognised, skipped. Its columns fit more than one data type and its IDs weren't found in the store; add the data type to the file or sheet name (e.g. "Products").`);
       continue;
     }
     if (!entity.import) {
