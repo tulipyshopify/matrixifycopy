@@ -134,3 +134,56 @@ export async function detectEntityByIds(
   // An ID number can exist under two types by coincidence; only a single answer counts.
   return found.size === 1 ? [...found][0] : null;
 }
+
+/** Shopify owner type of each data type's "Metafield: …" columns. */
+const METAFIELD_OWNERS: Record<string, string> = {
+  products: "PRODUCT",
+  customers: "CUSTOMER",
+  companies: "COMPANY",
+  orders: "ORDER",
+  draft_orders: "DRAFTORDER",
+  pages: "PAGE",
+  blog_posts: "ARTICLE",
+};
+
+const RECOGNISE_BY_METAFIELD = `#graphql
+  query ImportRecogniseByMetafield($ownerType: MetafieldOwnerType!, $namespace: String!, $key: String!) {
+    metafieldDefinitions(ownerType: $ownerType, namespace: $namespace, key: $key, first: 1) { nodes { id } }
+  }
+`;
+
+/**
+ * For a sheet with "Metafield: namespace.key" columns that could be several
+ * data types: the type whose metafield definitions in the store include those
+ * metafields (e.g. custom.courier is defined for orders only).
+ */
+export async function detectEntityByMetafields(
+  gql: (query: string, variables?: Record<string, unknown>) => Promise<any>,
+  sheet: { headers?: string[] },
+  entities: Entity[],
+): Promise<Entity | null> {
+  const fields = (sheet.headers ?? [])
+    .map((h) => /^Metafield:\s*([^.\s]+)\.([^\s\[]+)/.exec(h.trim()))
+    .filter((m): m is RegExpExecArray => !!m)
+    .slice(0, 3);
+  if (!fields.length) return null;
+  const { candidates } = scoreByHeaders(sheet.headers ?? [], entities);
+  const scores: Array<{ e: Entity; n: number }> = [];
+  for (const e of candidates) {
+    const ownerType = METAFIELD_OWNERS[e.key];
+    if (!ownerType) continue;
+    let n = 0;
+    for (const m of fields) {
+      try {
+        const d = await gql(RECOGNISE_BY_METAFIELD, { ownerType, namespace: m[1], key: m[2] });
+        if (d?.metafieldDefinitions?.nodes?.length) n++;
+      } catch {
+        // No access to this type's definitions: not counted.
+      }
+    }
+    scores.push({ e, n });
+  }
+  scores.sort((a, b) => b.n - a.n);
+  const [first, second] = scores;
+  return first && first.n > 0 && first.n > (second?.n ?? 0) ? first.e : null;
+}

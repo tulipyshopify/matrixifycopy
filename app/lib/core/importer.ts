@@ -2,7 +2,7 @@ import type { Command, Entity, ImportContext, ItemResult, Logger, Row } from "./
 import { ImportError } from "./types";
 import { cell, gidToId, mapLimit, parseCommand } from "./util";
 import type { Sheet, WorkbookOut } from "./sheets";
-import { detectEntity, detectEntityByIds } from "./registry";
+import { detectEntity, detectEntityByIds, detectEntityByMetafields } from "./registry";
 
 export const RESULT_COLUMN = "Import Result";
 export const COMMENT_COLUMN = "Import Comment";
@@ -113,6 +113,11 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       entity = await detectEntityByIds(ctx.gql, sheet, entities);
       if (entity) log(`Sheet "${sheet.name}": recognised as ${entity.sheet} from its IDs`);
     }
+    // Still open: which data type has the sheet's metafields defined in the store?
+    if (!entity) {
+      entity = await detectEntityByMetafields(ctx.gql, sheet, entities);
+      if (entity) log(`Sheet "${sheet.name}": recognised as ${entity.sheet} from its metafields`);
+    }
     plan.push({ sheet, entity });
   }
   plan.sort((a, b) => entities.indexOf(a.entity!) - entities.indexOf(b.entity!));
@@ -137,12 +142,23 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       byCommand: {},
     };
     summaries.push(summary);
+    // A skipped sheet still goes into the result file, with the reason on every row.
+    const skip = async (reason: string) => {
+      log(`Sheet "${sheet.name}": ${reason}`);
+      summary.skipped = sheet.rows.length;
+      const headers = [...sheet.headers.filter((h) => h !== RESULT_COLUMN && h !== COMMENT_COLUMN), RESULT_COLUMN, COMMENT_COLUMN];
+      await out?.addSheet(sheet.name, headers, sheet.rows.map((r) => ({ ...r, [RESULT_COLUMN]: "Skipped", [COMMENT_COLUMN]: reason })));
+    };
     if (!entity) {
-      log(`Sheet "${sheet.name}": not recognised, skipped. Its columns fit more than one data type and its IDs weren't found in the store; add the data type to the file or sheet name (e.g. "Products").`);
+      await skip(
+        sheet.rows.length
+          ? `not recognised, nothing imported. Its columns (${sheet.headers.slice(0, 12).join(", ")}${sheet.headers.length > 12 ? ", …" : ""}) don't point to one data type and its IDs weren't found in the store. Add the data type to the file or sheet name (e.g. "Products"), or use the column names from an export.`
+          : "the sheet is empty, nothing imported.",
+      );
       continue;
     }
     if (!entity.import) {
-      log(`Sheet "${sheet.name}": ${entity.sheet} are export-only, skipped.`);
+      await skip(`${entity.sheet} are export-only, nothing imported.`);
       continue;
     }
     log(`Sheet "${sheet.name}": importing ${items.length} ${entity.sheet.toLowerCase()} (${sheet.rows.length} rows)`);

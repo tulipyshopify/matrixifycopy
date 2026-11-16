@@ -222,6 +222,12 @@ export function createCsvOut(filePathNoExt: string): WorkbookOut {
       tmpFiles.push({ name: safeSheetName(name, used), file });
     },
     async close() {
+      if (tmpFiles.length === 0) {
+        // Nothing was written: a readable note instead of an empty archive.
+        const final = `${filePathNoExt}.csv`;
+        await fs.promises.writeFile(final, "\ufeff" + csvLine(["Note"]) + csvLine(["The file had no sheets with rows."]));
+        return final;
+      }
       if (tmpFiles.length === 1) {
         const final = `${filePathNoExt}.csv`;
         await fs.promises.rename(tmpFiles[0].file, final);

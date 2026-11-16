@@ -230,7 +230,13 @@ describe("importer", () => {
     expect(seen.sort()).toEqual(["DELETE:b", "MERGE:a", "MERGE:bad"]);
     const s = summaries.find((x) => x.entity === "products")!;
     expect(s).toMatchObject({ items: 5, ok: 2, failed: 2, skipped: 1 });
-    const result = (await readWorkbook(await out.close()))[0];
+    const written = await readWorkbook(await out.close());
+    const result = written.find((x) => x.name === "Products")!;
+    // The sheet that couldn't be recognised is in the result too, with the reason.
+    const unknown = written.find((x) => x.name === "Unknown")!;
+    expect(unknown.rows[0]).toMatchObject({ X: "1", "Import Result": "Skipped" });
+    expect(unknown.rows[0]["Import Comment"]).toMatch(/not recognised, nothing imported/);
+    expect(summaries.find((x) => x.sheet === "Unknown")).toMatchObject({ entity: null, skipped: 1 });
     expect(result.headers.slice(-2)).toEqual(["Import Result", "Import Comment"]);
     expect(result.rows[0]).toMatchObject({ ID: "99", "Import Result": "OK" });
     expect(result.rows[3]).toMatchObject({ "Import Result": "Failed", "Import Comment": "Error: boom" });
