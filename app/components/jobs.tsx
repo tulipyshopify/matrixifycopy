@@ -82,6 +82,14 @@ export interface JobRowInput {
   finishedAt: string | Date | null;
 }
 
+const isDryRun = (config: string) => {
+  try {
+    return !!JSON.parse(config)?.options?.dryRun;
+  } catch {
+    return false;
+  }
+};
+
 const titleCase = (s: string) => s.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 /**
@@ -90,7 +98,7 @@ const titleCase = (s: string) => s.replace(/_/g, " ").replace(/^./, (c) => c.toU
  */
 export function jobRow(job: JobRowInput): {
   number: string;
-  kind: "Export" | "Import";
+  kind: "Export" | "Import" | "Preview";
   title: string;
   counts: Array<{ label: string; tone: "neutral" | "success" | "critical" | "info" }>;
   format: string;
@@ -136,7 +144,7 @@ export function jobRow(job: JobRowInput): {
     job.startedAt && job.finishedAt ? duration(new Date(job.finishedAt).getTime() - new Date(job.startedAt).getTime()) : "";
   return {
     number: job.id.slice(-6).toUpperCase(),
-    kind: job.type === "export" ? "Export" : "Import",
+    kind: job.type === "export" ? "Export" : isDryRun(job.config) ? "Preview" : "Import",
     title: title || (job.type === "export" ? "Export" : "Import"),
     counts,
     format: ext === "xlsx" ? "Excel" : ext.toUpperCase(),

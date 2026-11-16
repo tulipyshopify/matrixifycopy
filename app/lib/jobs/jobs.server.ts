@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
+import type { PreviewItem } from "../core/importer";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, DATE_UNITS, FILTER_OPS } from "../core/types";
@@ -7,6 +9,7 @@ import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import { INVENTORY_COLUMN } from "../core/exporter";
 import type { ExportConfig, ImportConfig } from "./runner.server";
+import { PREVIEW_FILE } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 import { redactUrl } from "./sources.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
@@ -306,6 +309,44 @@ export async function rerunJob(shop: string, id: string) {
       scheduleId: job.scheduleId,
     },
   });
+}
+
+/**
+ * Runs a dry-run import for real: same file, same options, without the dry run.
+ * Uses the file the preview was made from, even when it came from a link.
+ */
+export async function applyDryRun(shop: string, id: string) {
+  const job = await getJob(shop, id);
+  let config: ImportConfig;
+  try {
+    config = JSON.parse(job.config);
+  } catch {
+    throw new Error("This job's settings can't be read");
+  }
+  if (job.type !== "import" || !config.options?.dryRun) throw new Error("Only a dry run can be applied");
+  if (job.status !== "finished") throw new Error("Wait for the dry run to finish");
+  if (!job.inputFile) throw new Error("The previewed file is no longer available. Import it again.");
+  const { dryRun: _d, ...options } = config.options;
+  return prisma.job.create({
+    data: {
+      shop,
+      type: "import",
+      config: JSON.stringify({ ...config, options }),
+      format: job.format,
+      name: job.name,
+      inputFile: job.inputFile,
+      inputName: job.inputName,
+    },
+  });
+}
+
+/** A dry run's preview, if it has one. */
+export async function readPreview(shop: string, id: string): Promise<Array<{ sheet: string; entity: string | null; items: PreviewItem[] }>> {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(jobDir(shop, id), PREVIEW_FILE), "utf8"));
+  } catch {
+    return [];
+  }
 }
 
 export function downloadLinks(job: { id: string; resultFile: string | null; inputFile: string | null }) {

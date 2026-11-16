@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
@@ -5,6 +6,9 @@ import { runImport, type ImportSummary } from "../core/importer";
 import { createWorkbookOut, readWorkbook, type OutputFormat } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
 import { jobDir, tmpDir } from "./storage.server";
+
+/** Dry-run preview of an import, in the job's folder. */
+export const PREVIEW_FILE = "preview.json";
 
 export interface ExportConfig {
   entities: Array<{ entity: string; options: ExportOptions }>;
@@ -141,7 +145,15 @@ export async function executeJob(
       isCancelled: deps.isCancelled,
     });
     const resultFile = await out.close();
-    return { resultFile, stats };
+    // The dry-run preview is kept in a file of its own beside the results.
+    const previews = stats.filter((s) => s.preview?.length);
+    if (previews.length) {
+      await fs.promises.writeFile(
+        path.join(dir, PREVIEW_FILE),
+        JSON.stringify(previews.map((s) => ({ sheet: s.sheet, entity: s.entity, items: s.preview }))),
+      );
+    }
+    return { resultFile, stats: stats.map(({ preview: _p, ...s }) => s) };
   }
 
   throw new Error(`Unknown job type ${job.type}`);

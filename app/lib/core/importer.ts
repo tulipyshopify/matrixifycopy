@@ -9,7 +9,10 @@ export const COMMENT_COLUMN = "Import Comment";
 
 /** Thrown by the dry-run API wrapper when an item reaches its first write. */
 class DryRunStop extends Error {
-  constructor(public operation: string) {
+  constructor(
+    public operation: string,
+    public variables: Record<string, unknown> = {},
+  ) {
     super(`Dry run stopped at ${operation}`);
   }
 }
@@ -21,7 +24,7 @@ class DryRunStop extends Error {
 function dryRunGql(gql: ImportContext["gql"]): ImportContext["gql"] {
   return (async (query: string, variables?: Record<string, unknown>) => {
     const m = /^\s*(?:#graphql\s*)?(query|mutation)\s+(\w+)/.exec(query);
-    if (m?.[1] === "mutation") throw new DryRunStop(m[2]);
+    if (m?.[1] === "mutation") throw new DryRunStop(m[2], variables ?? {});
     return gql(query, variables);
   }) as ImportContext["gql"];
 }
@@ -29,7 +32,73 @@ function dryRunGql(gql: ImportContext["gql"]): ImportContext["gql"] {
 function dryRunVerb(command: Command, operation: string): string {
   if (command === "DELETE" || command === "REPLACE") return command.toLowerCase();
   if (/Delete/.test(operation)) return "delete";
-  return /Create|Set$|Upsert/.test(operation) ? "create" : "update";
+  if (command === "UPDATE") return "update";
+  if (command === "NEW") return "create";
+  // MERGE: creating the item itself (productSet, customerCreate…) is a create;
+  // setting metafields, stock or tags on an existing one is an update.
+  if (/Metafields|Inventory|Tags/.test(operation)) return "update";
+  return /Create$|Upsert$|^Import\w*Set$/.test(operation) ? "create" : "update";
+}
+
+/** One item of a dry-run preview: what the import would do with it. */
+export interface PreviewItem {
+  /** Spreadsheet row number of the item's first row (header is row 1). */
+  row: number;
+  /** What identifies it: "ID: 123", "Handle: blue-shirt"… */
+  item: string;
+  command: string;
+  action: "create" | "update" | "delete" | "replace" | "none" | "failed" | "skipped";
+  message: string;
+  /** The values the first change would send, e.g. "custom.courier = P: DX Freight". */
+  changes: string[];
+}
+
+/** Items kept per sheet for the preview (the result file has every row). */
+export const MAX_PREVIEW_ITEMS = 1000;
+
+const ID_KEYS = /^(id|ownerId|productId|orderId|customerId|companyId|collectionId|draftOrderId|inventoryItemId|locationId)$/;
+
+/** Short value text for the preview. */
+function shown(v: unknown): string {
+  const t = typeof v === "string" ? v : JSON.stringify(v);
+  return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+}
+
+/**
+ * The values a mutation would send, as readable lines. Shopify IDs and empty
+ * values are left out; metafields read "namespace.key = value".
+ */
+export function describeChanges(variables: Record<string, unknown>, limit = 12): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown, path: string) => {
+    if (out.length >= limit || v === null || v === undefined || v === "") return;
+    const key = path.split(".").pop() ?? "";
+    if (ID_KEYS.test(key) || (typeof v === "string" && v.startsWith("gid://"))) return;
+    if (Array.isArray(v)) {
+      if (!v.length) return;
+      if (v.every((x) => typeof x !== "object" || x === null)) return void out.push(`${path}: ${shown(v.join(", "))}`);
+      for (const x of v) {
+        if (x && typeof x === "object" && "namespace" in x && "key" in x) {
+          const mf = x as Record<string, unknown>;
+          out.push(`${mf.namespace}.${mf.key} = ${shown(mf.value ?? "(cleared)")}`);
+        } else walk(x, path);
+        if (out.length >= limit) return;
+      }
+      return;
+    }
+    if (typeof v === "object") {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) walk(x, path && !/^(input|product|order|customer|variables)$/.test(path) ? `${path}.${k}` : k);
+      return;
+    }
+    out.push(`${path}: ${shown(v)}`);
+  };
+  walk(variables, "");
+  return out;
+}
+
+/** "ImportOrderUpdate" -> "order update", "MetafieldsSet" -> "metafields set". */
+function operationText(op: string): string {
+  return op.replace(/^Import/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
 /** How many failed rows are written to the job log per sheet. */
@@ -88,6 +157,8 @@ export interface ImportSummary {
   failed: number;
   skipped: number;
   byCommand: Record<string, number>;
+  /** Dry runs only: what would happen to each item (first MAX_PREVIEW_ITEMS). */
+  preview?: PreviewItem[];
 }
 
 export interface RunImportArgs {
@@ -164,6 +235,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     log(`Sheet "${sheet.name}": importing ${items.length} ${entity.sheet.toLowerCase()} (${sheet.rows.length} rows)`);
 
     const results: Array<{ item: ImportItem; result: ItemResult }> = [];
+    const previews = new Map<ImportItem, Pick<PreviewItem, "action" | "changes">>();
     let cancelled = false;
     await mapLimit(items, Math.max(1, ctx.options.concurrency ?? 4), async (item) => {
       let result: ItemResult;
@@ -181,9 +253,16 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
               const r = await entity.import!.apply({ ...ctx, gql: dryRunGql(ctx.gql) }, item.rows, command);
               // Finished without writing anything: nothing to change (or a problem it reported).
               result = { ...r, id: undefined, rowPatches: undefined, message: `Dry run: ${r.message ?? "no changes needed"}` };
+              previews.set(item, { action: r.status === "OK" ? "none" : r.status === "Failed" ? "failed" : "skipped", changes: [] });
             } catch (e) {
               if (!(e instanceof DryRunStop)) throw e;
-              result = { status: "OK", command, message: `Dry run: would ${dryRunVerb(command, e.operation)}` };
+              const verb = dryRunVerb(command, e.operation);
+              result = { status: "OK", command, message: `Dry run: would ${verb}` };
+              const changes = describeChanges(e.variables);
+              previews.set(item, {
+                action: command === "REPLACE" ? "replace" : (verb as PreviewItem["action"]),
+                changes: changes.length ? [`First step: ${operationText(e.operation)}`, ...changes] : [`First step: ${operationText(e.operation)}`],
+              });
             }
           } else {
             result = await entity.import!.apply(ctx, item.rows, command);
@@ -206,6 +285,24 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    if (ctx.options.dryRun) {
+      const firstValue = (row: Row, col: string) => cell(row, col);
+      summary.preview = [...results]
+        .sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0])
+        .slice(0, MAX_PREVIEW_ITEMS)
+        .map(({ item, result }) => {
+          const keyCol = item.key.startsWith("#row") ? null : (entity.import!.keyColumns.find((c) => firstValue(item.rows[0], c)) ?? null);
+          const p = previews.get(item);
+          return {
+            row: item.rowIndexes[0] + 2,
+            item: keyCol ? `${keyCol}: ${firstValue(item.rows[0], keyCol)}` : `Row ${item.rowIndexes[0] + 2}`,
+            command: result.command,
+            action: p?.action ?? (result.status === "Failed" ? "failed" : "skipped"),
+            message: (result.message ?? "").replace(/^Dry run: /, ""),
+            changes: p?.changes ?? [],
+          };
+        });
+    }
     // Say why rows failed right in the log (the results file has every row).
     const failures = results.filter((r) => r.result.status === "Failed").sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0]);
     for (const { item, result } of failures.slice(0, MAX_LOGGED_FAILURES)) {

@@ -3,14 +3,24 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { cancelJob, downloadLinks, entityCatalog, getJob, rerunJob } from "../lib/jobs/jobs.server";
+import { applyDryRun, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
+import { DryRunPreview } from "../components/DryRunPreview";
 import { ExportDetails } from "../components/ExportDetails";
 import { StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const job = await getJob(session.shop, params.id!);
+  let dryRun = false;
+  try {
+    dryRun = job.type === "import" && !!JSON.parse(job.config).options?.dryRun;
+  } catch {
+    // unreadable config: not a dry run
+  }
   return {
+    dryRun,
+    preview: dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [],
+    canApply: dryRun && job.status === "finished" && !!job.inputFile,
     job: {
       id: job.id,
       type: job.type,
@@ -38,6 +48,15 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);
   const form = await request.formData();
   if (form.get("intent") === "cancel") await cancelJob(session.shop, params.id!);
+  if (form.get("intent") === "apply") {
+    try {
+      const job = await applyDryRun(session.shop, params.id!);
+      return redirect(`/app/jobs/${job.id}`);
+    } catch (e: any) {
+      if (e instanceof Response) throw e;
+      return { error: e.message as string };
+    }
+  }
   if (form.get("intent") === "rerun") {
     const job = await rerunJob(session.shop, params.id!);
     return redirect(`/app/jobs/${job.id}`);
@@ -46,7 +65,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, canApply } = useLoaderData<typeof loader>();
   let exported: any[] = [];
   try {
     if (job.type === "export") exported = JSON.parse(job.config).entities ?? [];
@@ -54,7 +73,8 @@ export default function JobDetail() {
     // unreadable config: just skip the details
   }
   const revalidator = useRevalidator();
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{ error?: string }>();
+  const applying = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "apply";
   const active = isActive(job.status);
 
   useEffect(() => {
@@ -75,7 +95,7 @@ export default function JobDetail() {
     return () => clearInterval(t);
   }, [job, active]);
   const pct = job.total ? Math.min(100, Math.floor((job.progress / job.total) * 100)) : null;
-  const heading = `${job.type === "export" ? "Export" : "Import"}: ${jobSummary(job)}`;
+  const heading = `${job.type === "export" ? "Export" : dryRun ? "Preview (dry run)" : "Import"}: ${jobSummary(job)}`;
 
   return (
     <s-page heading={heading} inlineSize="base">
@@ -100,6 +120,39 @@ export default function JobDetail() {
           Run again
         </s-button>
       )}
+
+      {fetcher.data?.error ? (
+        <s-banner tone="critical" heading="Could not start the import">
+          {fetcher.data.error}
+        </s-banner>
+      ) : null}
+
+      {dryRun ? (
+        <s-banner
+          tone={active ? "info" : "warning"}
+          heading={active ? "Preview running: nothing in the store is being changed" : "Preview only: nothing in the store was changed"}
+        >
+          <s-stack direction="block" gap="small">
+            <s-text>
+              {active
+                ? "Every row is checked against the store as a real import would, and stops just before the first change."
+                : "Below is what the import would do with each item. If it looks right, run it for real with the same file and settings."}
+            </s-text>
+            {canApply ? (
+              <s-stack direction="inline" gap="small">
+                <s-button
+                  variant="primary"
+                  loading={applying}
+                  disabled={applying}
+                  onClick={() => fetcher.submit({ intent: "apply" }, { method: "post" })}
+                >
+                  Import for real
+                </s-button>
+              </s-stack>
+            ) : null}
+          </s-stack>
+        </s-banner>
+      ) : null}
 
       {job.error ? (
         <s-banner tone="critical" heading="Job failed">
@@ -204,6 +257,8 @@ export default function JobDetail() {
           </s-table>
         </s-section>
       ) : null}
+
+      {preview.length ? <DryRunPreview sheets={preview} /> : null}
 
       <s-section heading="Log">
         <s-box padding="base" background="subdued" borderRadius="base" overflow="hidden">

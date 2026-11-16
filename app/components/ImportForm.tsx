@@ -40,11 +40,14 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
   const repeating = scheduled && source === "url";
   const busy = fetcher.state !== "idle";
 
-  const submit = () => {
+  // `preview`: a one-off dry run, whatever the tick-box says.
+  const [previewing, setPreviewing] = useState(false);
+  const submit = (preview = false) => {
     const form = new FormData();
     if (!source) return;
+    setPreviewing(preview);
     form.set("source", source);
-    form.set("options", JSON.stringify({ defaultCommand, dryRun }));
+    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun) }));
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
@@ -124,12 +127,14 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
             <s-option value="REPLACE">REPLACE: delete and re-create</s-option>
             <s-option value="DELETE">DELETE: delete the items</s-option>
           </s-select>
-          <s-checkbox
-            label="Dry run"
-            details="Read and check the file without changing anything in the store"
-            checked={dryRun}
-            onChange={(ev: any) => setDryRun(ev.currentTarget.checked)}
-          />
+          {repeating ? (
+            <s-checkbox
+              label="Dry run every time"
+              details="Each scheduled run only checks the file and shows a preview, without changing the store"
+              checked={dryRun}
+              onChange={(ev: any) => setDryRun(ev.currentTarget.checked)}
+            />
+          ) : null}
           {editing ? null : (
           <s-switch
             label="Repeat this import on a schedule"
@@ -174,9 +179,17 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
               )}
             </>
           ) : null}
-          <s-stack direction="inline" justifyContent="end">
-            <s-button variant="primary" onClick={submit} disabled={!ready || busy} loading={busy}>
-              {editing ? "Save changes" : repeating ? "Save schedule" : dryRun ? "Check file" : "Import"}
+          <s-stack direction="inline" gap="small" justifyContent="end" alignItems="center">
+            {repeating ? null : (
+              <>
+                <s-text tone="neutral">Preview shows what would change, without changing anything.</s-text>
+                <s-button icon="view" onClick={() => submit(true)} disabled={!ready || busy} loading={busy && previewing}>
+                  Preview (dry run)
+                </s-button>
+              </>
+            )}
+            <s-button variant="primary" onClick={() => submit()} disabled={!ready || busy} loading={busy && !previewing}>
+              {editing ? "Save changes" : repeating ? "Save schedule" : "Import"}
             </s-button>
           </s-stack>
         </s-stack>
