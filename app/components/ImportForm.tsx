@@ -99,7 +99,10 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
               Import from link
             </s-button>
           </div>
-          <s-text tone="neutral">Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.</s-text>
+          <s-text tone="neutral">
+            The file can have any name: what it holds (products, orders, customers…) is recognised from its columns.
+            Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.
+          </s-text>
           {source === "file" && file ? <s-text>Selected file: {file.name}</s-text> : null}
           {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}</s-text> : null}
             </>

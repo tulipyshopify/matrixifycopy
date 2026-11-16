@@ -89,7 +89,7 @@ export default function NewImport() {
       <ImportForm key={editing?.id ?? "new"} maxUploadMb={maxUploadMb} editing={editing} />
       <s-section heading="Recognised sheets" slot="aside">
         <s-paragraph>
-          Sheet (or CSV file) names decide what is imported. Export first to get a file in the right layout.
+          The data type is recognised from the columns, so the file can have any name. Export first to get a file in the right layout. These sheet names are always recognised:
         </s-paragraph>
         <s-unordered-list>
           {entities.map((e) => (

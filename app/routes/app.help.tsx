@@ -25,8 +25,11 @@ export default function Help() {
       <s-section heading="How files work">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            Each sheet in an Excel file (or each CSV file) holds one data type. The sheet name decides the type, so keep
-            the names used in exports, like "Products" or "Custom Collections". Only include the columns you want to
+            Each sheet in an Excel file (or each CSV file) holds one data type. The app recognises the type from the
+            columns, so the file and its sheets can be called anything. Only when the columns fit more than one type
+            (Smart and Custom Collections, or a file with just ID and Title) does the name decide: use the names from
+            exports, like "Products" or "Custom Collections". A sheet named exactly after a data type is always treated
+            as that type. Only include the columns you want to
             change: missing columns are left untouched, while an empty cell in an included column clears that value.
           </s-paragraph>
           <s-paragraph>
