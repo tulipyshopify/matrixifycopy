@@ -58,6 +58,7 @@ export type FilterOp =
   | "is"
   | "is_not"
   | "starts_with"
+  | "starts_with_any"
   | "contains"
   | "not_contains"
   | "any_of"
@@ -89,7 +90,7 @@ export function listValues(v: string): string[] {
 }
 
 export const FILTER_OPS: Record<FilterType, FilterOp[]> = {
-  text: ["is", "is_not", "any_of", "contains", "not_contains", "starts_with"],
+  text: ["is", "is_not", "any_of", "contains", "not_contains", "starts_with", "starts_with_any"],
   enum: ["is", "is_not", "any_of"],
   number: ["is", "gt", "gte", "lt", "lte", "between"],
   date: ["gte", "lte", "between"],

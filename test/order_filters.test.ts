@@ -59,6 +59,8 @@ describe("order filters", () => {
     expect(names([{ field: "line_vendor", op: "is_not", value: "Acme" }])).toBe("#2,#3");
     expect(names([{ field: "line_title", op: "starts_with", value: "mu" }])).toBe("#2");
     expect(names([{ field: "line_name", op: "contains", value: "BLUE" }])).toBe("#1");
+    expect(names([{ field: "line_vendor", op: "starts_with_any", value: "acm, pot" }])).toBe("#1,#2");
+    expect(names([{ field: "line_vendor", op: "any_of", value: "Potter\nNobody" }])).toBe("#2");
     expect(names([{ field: "line_name", op: "not_contains", value: "blue" }])).toBe("#2,#3");
     expect(names([{ field: "line_name", op: "is", value: "Shirt - Blue" }])).toBe("#1");
     expect(names([{ field: "line_product_handle", op: "is", value: "mug" }])).toBe("#2");

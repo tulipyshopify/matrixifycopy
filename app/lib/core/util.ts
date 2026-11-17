@@ -275,6 +275,11 @@ export function compileFilters(filters: FilterCondition[] | undefined): string {
         parts.push(f.op === "contains" ? all : `-${all}`);
         break;
       }
+      case "starts_with_any": {
+        const values = listValues(v).map((x) => `${k}:${bareTerm(x)}*`);
+        if (values.length) parts.push(values.length === 1 ? values[0] : `(${values.join(" OR ")})`);
+        break;
+      }
       case "starts_with":
         parts.push(`${k}:${bareTerm(v)}*`);
         break;

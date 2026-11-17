@@ -219,6 +219,7 @@ const OP_LABELS: Record<FilterOp, string> = {
   is: "is",
   is_not: "is not",
   starts_with: "starts with",
+  starts_with_any: "starts with one of",
   contains: "contains",
   not_contains: "does not contain",
   any_of: "is any of",
@@ -339,7 +340,7 @@ function FilterValue({
         onInput={(ev: any) => onChange({ [key]: ev.currentTarget.value })}
       />
     );
-  if (cond.op === "any_of") {
+  if (cond.op === "any_of" || cond.op === "starts_with_any") {
     const n = listValues(cond.value).length;
     return (
       <s-text-area
@@ -347,7 +348,11 @@ function FilterValue({
         labelAccessibilityVisibility="exclusive"
         rows={3}
         value={cond.value}
-        placeholder={"One per line, or separated by commas\ne.g. PP0287, PP0252, PP0253"}
+        placeholder={
+          cond.op === "starts_with_any"
+            ? "Beginnings, one per line or separated by commas\ne.g. PP02, PP03"
+            : "One per line, or separated by commas\ne.g. PP0287, PP0252, PP0253"
+        }
         details={n ? `${n.toLocaleString("en")} ${n === 1 ? "value" : "values"}${n > MAX_LIST_VALUES ? ` (at most ${MAX_LIST_VALUES})` : ""}` : undefined}
         error={n > MAX_LIST_VALUES ? `Up to ${MAX_LIST_VALUES} values per filter` : undefined}
         onInput={(ev: any) => onChange({ value: ev.currentTarget.value })}
@@ -444,7 +449,7 @@ function FilterBuilder({
               onClick={() => onChange(filters.filter((_, j) => j !== i))}
             />
             {/* Several values typed into "is": offer the list condition. */}
-            {(cond.op === "is" || cond.op === "is_not") &&
+            {(cond.op === "is" || cond.op === "is_not" || cond.op === "starts_with") &&
             (field.type === "text" || field.type === "id") &&
             /[,\n]/.test(cond.value) &&
             opsFor(field).includes("any_of") ? (
@@ -454,12 +459,17 @@ function FilterBuilder({
                     "{opLabel(field, cond.op)}" looks for this whole text as one
                     value, commas included.
                   </s-text>
-                  {cond.op === "is" ? (
+                  {cond.op === "is" || cond.op === "starts_with" ? (
                     <s-button
                       variant="secondary"
-                      onClick={() => update(i, { op: "any_of" })}
+                      onClick={() =>
+                        update(i, {
+                          op: cond.op === "is" ? "any_of" : "starts_with_any",
+                        })
+                      }
                     >
-                      Use "is one of" ({listValues(cond.value).length} values)
+                      Use "{cond.op === "is" ? "is one of" : "starts with one of"}"
+                      ({listValues(cond.value).length} values)
                     </s-button>
                   ) : null}
                 </s-stack>

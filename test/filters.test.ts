@@ -60,6 +60,14 @@ describe("'is one of' filters", () => {
     expect(ids.value).toBe("1,2");
   });
 
+  it("'starts with one of' matches any of several beginnings", () => {
+    const [f] = parseFilters(products, [{ field: "sku", op: "starts_with_any", value: "PP02, PP03\nWW-" }]);
+    expect(f).toEqual({ field: "sku", op: "starts_with_any", value: "PP02,PP03,WW-" });
+    expect(compileFilters([f])).toBe("(sku:PP02* OR sku:PP03* OR sku:WW-*)");
+    expect(compileFilters([{ field: "sku", op: "starts_with_any", value: "PP02" }])).toBe("sku:PP02*");
+    expect(compileFilters([{ field: "title", op: "starts_with_any", value: "Big (XL), a:b" }])).toBe("(title:Big\\ \\(XL\\)* OR title:a\\:b*)");
+  });
+
   it("accepts long lists, up to 500 values", () => {
     const many = Array.from({ length: 500 }, (_, i) => `PP${String(i).padStart(4, "0")}`).join(", ");
     expect(parseFilters(products, [{ field: "sku", op: "any_of", value: many }])[0].value.split(",")).toHaveLength(500);

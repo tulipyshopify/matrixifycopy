@@ -144,7 +144,7 @@ export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition
       if (field.type === "boolean" && v !== "true" && v !== "false") throw new Error(`${field.label}: choose yes or no`);
       if (field.type === "id" && !/^(\d+|gid:\/\/shopify\/\w+\/\d+)$/.test(v)) throw new Error(`${field.label}: "${v}" is not an ID`);
     };
-    if (f.op === "any_of" && field.type !== "enum") {
+    if ((f.op === "any_of" && field.type !== "enum") || f.op === "starts_with_any") {
       // A list: one value per line or separated by commas.
       const values = listValues(String(f.value ?? "").slice(0, 50_000)).map((v) => (field.type === "id" ? v.replace(/^gid:\/\/shopify\/\w+\//, "") : v));
       if (!values.length) throw new Error(`${field.label}: enter at least one value`);
