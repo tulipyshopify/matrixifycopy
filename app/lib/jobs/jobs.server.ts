@@ -4,7 +4,7 @@ import path from "node:path";
 import type { PreviewItem } from "../core/importer";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
-import { COMMANDS, DATE_PRESETS, DATE_UNITS, opsFor } from "../core/types";
+import { COMMANDS, DATE_PRESETS, DATE_UNITS, MAX_LIST_VALUES, listValues, opsFor } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import { INVENTORY_COLUMN } from "../core/exporter";
@@ -144,6 +144,19 @@ export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition
       if (field.type === "boolean" && v !== "true" && v !== "false") throw new Error(`${field.label}: choose yes or no`);
       if (field.type === "id" && !/^(\d+|gid:\/\/shopify\/\w+\/\d+)$/.test(v)) throw new Error(`${field.label}: "${v}" is not an ID`);
     };
+    if (f.op === "any_of" && field.type !== "enum") {
+      // A list: one value per line or separated by commas.
+      const values = listValues(String(f.value ?? "").slice(0, 50_000)).map((v) => (field.type === "id" ? v.replace(/^gid:\/\/shopify\/\w+\//, "") : v));
+      if (!values.length) throw new Error(`${field.label}: enter at least one value`);
+      if (values.length > MAX_LIST_VALUES) throw new Error(`${field.label}: at most ${MAX_LIST_VALUES} values in one filter (${values.length} given)`);
+      for (const v of values) if (field.type === "id" && !/^\d+$/.test(v)) throw new Error(`${field.label}: "${v}" is not an ID`);
+      return {
+        field: field.key,
+        op: f.op,
+        value: values.join(","),
+        ...(field.local ? { local: true } : {}),
+      };
+    }
     if (field.type === "enum") {
       const allowed = new Set(field.options?.map((o) => o.value));
       const values = value.split(",").map((v) => v.trim()).filter(Boolean);

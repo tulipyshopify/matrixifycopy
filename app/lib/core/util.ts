@@ -1,4 +1,5 @@
 import type { Command, DateRange, FilterCondition, Row } from "./types";
+import { listValues } from "./types";
 import { isValidTimeZone, localParts, zonedTimeToUtc } from "./time";
 import { COMMANDS, ImportError } from "./types";
 
@@ -278,7 +279,7 @@ export function compileFilters(filters: FilterCondition[] | undefined): string {
         parts.push(`${k}:${bareTerm(v)}*`);
         break;
       case "any_of": {
-        const values = v.split(",").map((x) => x.trim()).filter(Boolean);
+        const values = listValues(v);
         parts.push(values.length === 1 ? `${k}:${searchValue(values[0])}` : `(${values.map((x) => `${k}:${searchValue(x)}`).join(" OR ")})`);
         break;
       }

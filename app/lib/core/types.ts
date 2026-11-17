@@ -80,13 +80,21 @@ export interface FilterCondition {
 }
 
 /** Operators offered for each filter type. */
+/** Most values an "is one of" filter takes. */
+export const MAX_LIST_VALUES = 500;
+
+/** "is one of" values: separated by commas or new lines. */
+export function listValues(v: string): string[] {
+  return [...new Set(v.split(/[,\n\r]+/).map((x) => x.trim()).filter(Boolean))];
+}
+
 export const FILTER_OPS: Record<FilterType, FilterOp[]> = {
-  text: ["is", "is_not", "contains", "not_contains", "starts_with"],
+  text: ["is", "is_not", "any_of", "contains", "not_contains", "starts_with"],
   enum: ["is", "is_not", "any_of"],
   number: ["is", "gt", "gte", "lt", "lte", "between"],
   date: ["gte", "lte", "between"],
   boolean: ["is"],
-  id: ["is", "is_not"],
+  id: ["is", "is_not", "any_of"],
 };
 
 export type DatePreset =

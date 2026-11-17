@@ -4,6 +4,8 @@ import type { EntityInfo } from "../lib/jobs/jobs.server";
 import {
   DATE_PRESETS,
   FILTER_OPS,
+  MAX_LIST_VALUES,
+  listValues,
   opsFor,
   type DateRange,
   type DatePreset,
@@ -228,6 +230,7 @@ const OP_LABELS: Record<FilterOp, string> = {
 };
 
 export function opLabel(field: FilterField, op: FilterOp): string {
+  if (op === "any_of" && field.type !== "enum") return "is one of";
   if (field.type === "date")
     return (
       { gte: "on or after", lte: "on or before", between: "between" }[
@@ -336,6 +339,21 @@ function FilterValue({
         onInput={(ev: any) => onChange({ [key]: ev.currentTarget.value })}
       />
     );
+  if (cond.op === "any_of") {
+    const n = listValues(cond.value).length;
+    return (
+      <s-text-area
+        label="Values"
+        labelAccessibilityVisibility="exclusive"
+        rows={3}
+        value={cond.value}
+        placeholder={"One per line, or separated by commas\ne.g. PP0287, PP0252, PP0253"}
+        details={n ? `${n.toLocaleString("en")} ${n === 1 ? "value" : "values"}${n > MAX_LIST_VALUES ? ` (at most ${MAX_LIST_VALUES})` : ""}` : undefined}
+        error={n > MAX_LIST_VALUES ? `Up to ${MAX_LIST_VALUES} values per filter` : undefined}
+        onInput={(ev: any) => onChange({ value: ev.currentTarget.value })}
+      />
+    );
+  }
   if (cond.op === "between") {
     return (
       <s-stack direction="inline" gap="small" alignItems="center">
@@ -425,6 +443,28 @@ function FilterBuilder({
               accessibilityLabel="Remove filter"
               onClick={() => onChange(filters.filter((_, j) => j !== i))}
             />
+            {/* Several values typed into "is": offer the list condition. */}
+            {(cond.op === "is" || cond.op === "is_not") &&
+            (field.type === "text" || field.type === "id") &&
+            /[,\n]/.test(cond.value) &&
+            opsFor(field).includes("any_of") ? (
+              <s-grid-item gridColumn="span 4">
+                <s-stack direction="inline" gap="small" alignItems="center">
+                  <s-text tone="caution">
+                    "{opLabel(field, cond.op)}" looks for this whole text as one
+                    value, commas included.
+                  </s-text>
+                  {cond.op === "is" ? (
+                    <s-button
+                      variant="secondary"
+                      onClick={() => update(i, { op: "any_of" })}
+                    >
+                      Use "is one of" ({listValues(cond.value).length} values)
+                    </s-button>
+                  ) : null}
+                </s-stack>
+              </s-grid-item>
+            ) : null}
           </s-grid>
         );
       })}

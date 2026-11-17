@@ -49,6 +49,26 @@ describe("filter compilation", () => {
   });
 });
 
+describe("'is one of' filters", () => {
+  const products = getEntity("products")!;
+  it("takes a list of SKUs, IDs or text separated by commas or new lines", () => {
+    const [sku] = parseFilters(products, [{ field: "sku", op: "any_of", value: "PP0287,PP0252, PP0253\nPP0255\n\nPP0252" }]);
+    expect(sku).toEqual({ field: "sku", op: "any_of", value: "PP0287,PP0252,PP0253,PP0255" });
+    expect(compileFilters([sku])).toBe('(sku:"PP0287" OR sku:"PP0252" OR sku:"PP0253" OR sku:"PP0255")');
+    expect(compileFilters([{ field: "sku", op: "any_of", value: "PP0287" }])).toBe('sku:"PP0287"');
+    const [ids] = parseFilters(products, [{ field: "collection_id", op: "any_of", value: "gid://shopify/Collection/1, 2" }]);
+    expect(ids.value).toBe("1,2");
+  });
+
+  it("accepts long lists, up to 500 values", () => {
+    const many = Array.from({ length: 500 }, (_, i) => `PP${String(i).padStart(4, "0")}`).join(", ");
+    expect(parseFilters(products, [{ field: "sku", op: "any_of", value: many }])[0].value.split(",")).toHaveLength(500);
+    expect(() => parseFilters(products, [{ field: "sku", op: "any_of", value: `${many}, PP9999` }])).toThrow(/at most 500/);
+    expect(() => parseFilters(products, [{ field: "sku", op: "any_of", value: " , \n" }])).toThrow(/at least one value/);
+    expect(() => parseFilters(products, [{ field: "collection_id", op: "any_of", value: "12, abc" }])).toThrow(/not an ID/);
+  });
+});
+
 describe("'contains' filters", () => {
   it("matches each word anywhere in the title", () => {
     expect(compileFilters([{ field: "title", op: "contains", value: "planter" }])).toBe("title:planter*");

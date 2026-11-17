@@ -1,5 +1,5 @@
 import type { Command, Entity, ExportContext, Gql, ImportContext, ItemResult, Row } from "../core/types";
-import { ImportError } from "../core/types";
+import { ImportError, listValues } from "../core/types";
 import {
   assertNoUserErrors,
   boolCell,
@@ -773,7 +773,7 @@ export function localOrderFilters(options: ExportContext["options"], now = new D
         tests.push((o) => !spec.values(o).some((v) => lower(v).includes(want)));
         break;
       case "any_of": {
-        const set = new Set(f.value.split(",").map(lower).filter(Boolean));
+        const set = new Set(listValues(f.value).map(lower));
         tests.push(some((v) => set.has(lower(v))));
         break;
       }
