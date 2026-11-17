@@ -49,6 +49,29 @@ describe("filter compilation", () => {
   });
 });
 
+describe("'contains' filters", () => {
+  it("matches each word anywhere in the title", () => {
+    expect(compileFilters([{ field: "title", op: "contains", value: "planter" }])).toBe("title:planter*");
+    expect(compileFilters([{ field: "title", op: "contains", value: " wooden  planter " }])).toBe("(title:wooden* AND title:planter*)");
+    expect(compileFilters([{ field: "title", op: "not_contains", value: "sale" }])).toBe("-title:sale*");
+    expect(compileFilters([{ field: "title", op: "not_contains", value: "gift card" }])).toBe("-(title:gift* AND title:card*)");
+    // Characters with a meaning in search syntax can't break out of the term.
+    expect(compileFilters([{ field: "title", op: "contains", value: 'a:b (c) "d"' }])).toBe('(title:a\\:b* AND title:\\(c\\)* AND title:\\"d\\"*)');
+  });
+
+  it("is offered for titles, not for fields Shopify matches whole", () => {
+    const products = getEntity("products")!;
+    expect(parseFilters(products, [{ field: "title", op: "contains", value: "Planter" }])).toEqual([{ field: "title", op: "contains", value: "Planter" }]);
+    expect(() => parseFilters(products, [{ field: "vendor", op: "contains", value: "Acme" }])).toThrow(/unsupported/);
+    for (const key of ["smart_collections", "custom_collections", "pages", "blog_posts"]) {
+      expect(getEntity(key)!.filters!.find((f) => f.key === "title")?.contains, key).toBe(true);
+    }
+    // Order line filters are checked by the app itself, so they can contain too.
+    const orders = getEntity("orders")!;
+    expect(parseFilters(orders, [{ field: "line_title", op: "contains", value: "bin" }])[0]).toMatchObject({ op: "contains", local: true });
+  });
+});
+
 describe("filter validation", () => {
   const products = getEntity("products")!;
 

@@ -41,12 +41,25 @@ export interface FilterField {
    */
   local?: boolean;
   searchBy?: string;
+  /**
+   * Shopify searches this field word by word (titles), so "contains" works.
+   * Fields matched as a whole (vendor, tag, SKU) don't offer it.
+   */
+  contains?: boolean;
+}
+
+/** The conditions a field offers. */
+export function opsFor(field: FilterField): FilterOp[] {
+  const canContain = field.type !== "text" || field.contains || field.local;
+  return FILTER_OPS[field.type].filter((op) => canContain || (op !== "contains" && op !== "not_contains"));
 }
 
 export type FilterOp =
   | "is"
   | "is_not"
   | "starts_with"
+  | "contains"
+  | "not_contains"
   | "any_of"
   | "gt"
   | "gte"
@@ -68,7 +81,7 @@ export interface FilterCondition {
 
 /** Operators offered for each filter type. */
 export const FILTER_OPS: Record<FilterType, FilterOp[]> = {
-  text: ["is", "is_not", "starts_with"],
+  text: ["is", "is_not", "contains", "not_contains", "starts_with"],
   enum: ["is", "is_not", "any_of"],
   number: ["is", "gt", "gte", "lt", "lte", "between"],
   date: ["gte", "lte", "between"],

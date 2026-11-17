@@ -4,6 +4,7 @@ import type { EntityInfo } from "../lib/jobs/jobs.server";
 import {
   DATE_PRESETS,
   FILTER_OPS,
+  opsFor,
   type DateRange,
   type DatePreset,
   type FilterCondition,
@@ -216,6 +217,8 @@ const OP_LABELS: Record<FilterOp, string> = {
   is: "is",
   is_not: "is not",
   starts_with: "starts with",
+  contains: "contains",
+  not_contains: "does not contain",
   any_of: "is any of",
   gt: "is greater than",
   gte: "is at least / on or after",
@@ -239,7 +242,7 @@ export function opLabel(field: FilterField, op: FilterOp): string {
 function newCondition(field: FilterField): FilterCondition {
   return {
     field: field.key,
-    op: FILTER_OPS[field.type][0],
+    op: opsFor(field)[0],
     value: field.type === "boolean" ? "true" : "",
   };
 }
@@ -404,7 +407,7 @@ function FilterBuilder({
                   })
                 }
               >
-                {FILTER_OPS[field.type].map((op) => (
+                {opsFor(field).map((op) => (
                   <s-option key={op} value={op}>
                     {opLabel(field, op)}
                   </s-option>

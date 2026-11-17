@@ -58,6 +58,8 @@ describe("order filters", () => {
     expect(names([{ field: "line_vendor", op: "is", value: "acme" }])).toBe("#1");
     expect(names([{ field: "line_vendor", op: "is_not", value: "Acme" }])).toBe("#2,#3");
     expect(names([{ field: "line_title", op: "starts_with", value: "mu" }])).toBe("#2");
+    expect(names([{ field: "line_name", op: "contains", value: "BLUE" }])).toBe("#1");
+    expect(names([{ field: "line_name", op: "not_contains", value: "blue" }])).toBe("#2,#3");
     expect(names([{ field: "line_name", op: "is", value: "Shirt - Blue" }])).toBe("#1");
     expect(names([{ field: "line_product_handle", op: "is", value: "mug" }])).toBe("#2");
     expect(names([{ field: "line_variant_id", op: "is", value: "gid://shopify/ProductVariant/55" }])).toBe("#1");

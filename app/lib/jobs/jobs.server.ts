@@ -4,7 +4,7 @@ import path from "node:path";
 import type { PreviewItem } from "../core/importer";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
-import { COMMANDS, DATE_PRESETS, DATE_UNITS, FILTER_OPS } from "../core/types";
+import { COMMANDS, DATE_PRESETS, DATE_UNITS, opsFor } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import { INVENTORY_COLUMN } from "../core/exporter";
@@ -134,7 +134,7 @@ export function parseFilters(e: Entity, raw: FilterCondition[]): FilterCondition
   return raw.slice(0, 30).map((f) => {
     const field = fields.get(f.field);
     if (!field) throw new Error(`${e.sheet}: unknown filter "${f.field}"`);
-    if (!FILTER_OPS[field.type].includes(f.op)) throw new Error(`${field.label}: unsupported condition`);
+    if (!opsFor(field).includes(f.op)) throw new Error(`${field.label}: unsupported condition`);
     const value = String(f.value ?? "").trim().slice(0, 500);
     const value2 = f.op === "between" ? String(f.value2 ?? "").trim().slice(0, 500) : undefined;
     const check = (v: string) => {

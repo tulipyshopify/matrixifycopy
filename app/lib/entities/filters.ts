@@ -12,7 +12,7 @@ const created: FilterField = { key: "created_at", label: "Created", type: "date"
 const updated: FilterField = { key: "updated_at", label: "Updated", type: "date" };
 const publishedAt: FilterField = { key: "published_at", label: "Published", type: "date" };
 const tag: FilterField = { key: "tag", label: "Tag", type: "text" };
-const title: FilterField = { key: "title", label: "Title", type: "text" };
+const title: FilterField = { key: "title", label: "Title", type: "text", contains: true };
 const handle: FilterField = { key: "handle", label: "Handle", type: "text" };
 const onlineStore: FilterField = {
   key: "published_status",

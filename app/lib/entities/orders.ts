@@ -766,6 +766,12 @@ export function localOrderFilters(options: ExportContext["options"], now = new D
       case "starts_with":
         tests.push(some((v) => lower(v).startsWith(want)));
         break;
+      case "contains":
+        tests.push(some((v) => lower(v).includes(want)));
+        break;
+      case "not_contains":
+        tests.push((o) => !spec.values(o).some((v) => lower(v).includes(want)));
+        break;
       case "any_of": {
         const set = new Set(f.value.split(",").map(lower).filter(Boolean));
         tests.push(some((v) => set.has(lower(v))));

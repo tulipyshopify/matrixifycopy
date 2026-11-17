@@ -264,6 +264,16 @@ export function compileFilters(filters: FilterCondition[] | undefined): string {
       case "is_not":
         parts.push(`-${k}:${searchValue(v)}`);
         break;
+      case "contains":
+      case "not_contains": {
+        // Shopify matches words anywhere in the title: each word is matched as
+        // the start of a word ("plant" finds "Wooden Planters").
+        const words = v.split(/\s+/).filter(Boolean).map((w) => `${k}:${bareTerm(w)}*`);
+        if (!words.length) break;
+        const all = words.length === 1 ? words[0] : `(${words.join(" AND ")})`;
+        parts.push(f.op === "contains" ? all : `-${all}`);
+        break;
+      }
       case "starts_with":
         parts.push(`${k}:${bareTerm(v)}*`);
         break;
