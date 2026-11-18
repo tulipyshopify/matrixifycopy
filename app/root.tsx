@@ -12,7 +12,7 @@ export default function App() {
           href="https://cdn.shopify.com/static/fonts/inter/v4/styles.css"
         />
         {/* Centred content column with wide side margins that shrink on small screens. */}
-        <style>{`:root{--bp-brand:#0F766E;--bp-brand-dark:#134E4A;--bp-brand-soft:#E6F4F2;--bp-accent:#F59E0B}
+        <style>{`:root{--bp-brand:#1D4ED8;--bp-brand-dark:#1E3A8A;--bp-brand-soft:#E8EFFD;--bp-accent:#FACC15}
 .bp-column{max-width:920px;margin-inline:auto;padding-inline:clamp(0px,4vw,48px);display:flex;flex-direction:column;gap:16px}
 .bp-chips{display:flex;flex-wrap:wrap;gap:6px}
 .bp-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 6px;border-radius:8px;background:#f1f1f1;font-size:13px;line-height:20px;cursor:grab;user-select:none;border:1px solid transparent}
@@ -45,10 +45,10 @@ export default function App() {
 .bp-rule-main{display:flex;flex-direction:column;gap:4px;min-width:0}
 .bp-rule-side{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:none}
 .bp-tile-warn .bp-tile-value{color:#8a6116}
-.bp-ask{border-radius:14px;padding:2px;background:linear-gradient(120deg,var(--bp-brand),#14938A 55%,var(--bp-accent))}
+.bp-ask{border-radius:14px;padding:2px;background:linear-gradient(120deg,var(--bp-brand-dark),var(--bp-brand) 55%,var(--bp-accent))}
 .bp-ask-head{display:flex;align-items:center;gap:8px;color:var(--bp-brand-dark);font-weight:650}
 .bp-ask-mark{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:var(--bp-brand-soft);color:var(--bp-brand)}
-.bp-tile-brand{box-shadow:0 0 0 1px #b9dfda,0 1px 2px rgba(0,0,0,.05);background:linear-gradient(180deg,var(--bp-brand-soft),#fff 70%)}
+.bp-tile-brand{box-shadow:0 0 0 1px #c3d3f8,0 1px 2px rgba(0,0,0,.05);background:linear-gradient(180deg,var(--bp-brand-soft),#fff 70%)}
 .bp-tile-brand .bp-tile-value{color:var(--bp-brand)}
 .bp-tile-brand .bp-tile-label{color:var(--bp-brand-dark)}
 .bp-actionbar{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;margin-top:4px;border-radius:12px;background:#fff;box-shadow:0 -1px 0 #e3e3e3,0 4px 18px rgba(0,0,0,.12)}
