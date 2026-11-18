@@ -1957,8 +1957,8 @@ export function ExportForm({
                 </>
               )}
               <s-url-field
-                label="Upload to FTP (optional)"
-                details="ftp://user:password@host/folder/ — the file is also kept in the app"
+                label="Upload to FTP, SFTP or WebDAV (optional)"
+                details="ftp://, sftp:// or webdavs://user:password@host/folder/ — the file is also kept in the app"
                 value={uploadUrl}
                 onInput={(ev: any) => setUploadUrl(ev.currentTarget.value)}
               />

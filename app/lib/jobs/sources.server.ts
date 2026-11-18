@@ -5,6 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Client as FtpClient } from "basic-ftp";
+import SftpClient from "ssh2-sftp-client";
 import { safeName } from "./storage.server";
 
 /**
@@ -66,11 +67,13 @@ async function assertSafeHost(url: URL) {
 }
 
 /** fetch() that re-checks the host on every redirect hop. */
-async function safeFetch(url: string, hops = 5): Promise<Response> {
+async function safeFetch(url: string, hops = 5, init: RequestInit = {}): Promise<Response> {
+  const origin = new URL(url).origin;
   let current = url;
   for (let i = 0; i <= hops; i++) {
     await assertSafeHost(new URL(current));
-    const res = await fetch(current, { redirect: "manual" });
+    // Credentials are never forwarded to another host on a redirect.
+    const res = await fetch(current, { ...(new URL(current).origin === origin ? init : {}), redirect: "manual" });
     const loc = res.headers.get("location");
     if (res.status >= 300 && res.status < 400 && loc) {
       current = new URL(loc, current).toString();
@@ -81,9 +84,27 @@ async function safeFetch(url: string, hops = 5): Promise<Response> {
   throw new Error("Too many redirects");
 }
 
+/** Protocols an import can be read from, and an export result uploaded to. */
+export const SOURCE_PROTOCOLS = ["http:", "https:", "ftp:", "ftps:", "sftp:", "webdav:", "webdavs:", "dav:", "davs:"];
+export const UPLOAD_PROTOCOLS = ["ftp:", "ftps:", "sftp:", "webdav:", "webdavs:", "dav:", "davs:"];
+
+const isWebDav = (url: URL) => ["webdav:", "webdavs:", "dav:", "davs:"].includes(url.protocol);
+
+/** webdav(s)://user:pass@host/path -> the http(s) URL and its Basic auth header. */
+export function webDavRequest(url: URL): { href: string; headers: Record<string, string> } {
+  const secure = url.protocol === "webdavs:" || url.protocol === "davs:";
+  const http = new URL(`${secure ? "https" : "http"}://${url.host}${url.pathname}${url.search}`);
+  const headers: Record<string, string> = {};
+  if (url.username) {
+    headers.Authorization = `Basic ${Buffer.from(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`).toString("base64")}`;
+  }
+  return { href: http.toString(), headers };
+}
+
 /**
- * Downloads an import file from http(s) or ftp(s) into `dir`. Returns the local
- * path and the original file name (used to detect the entity of CSV files).
+ * Downloads an import file from http(s), ftp(s), sftp or WebDAV into `dir`.
+ * Returns the local path and the original file name (used to detect the entity
+ * of CSV files).
  */
 export async function downloadSource(source: string, dir: string): Promise<{ file: string; name: string }> {
   const url = new URL(source);
@@ -95,28 +116,87 @@ export async function downloadSource(source: string, dir: string): Promise<{ fil
     await pipeline(Readable.fromWeb(res.body as any), fs.createWriteStream(file));
     return { file, name };
   }
-  if (url.protocol === "ftp:" || url.protocol === "ftps:") {
+  if (isWebDav(url)) {
+    const { href, headers } = webDavRequest(url);
+    const res = await safeFetch(href, 5, { headers });
+    if (res.status === 401 || res.status === 403) throw new Error("WebDAV download failed: the user name or password was refused");
+    if (!res.ok || !res.body) throw new Error(`WebDAV download failed: HTTP ${res.status}`);
+    const name = fileNameFor(href, res.headers.get("content-type"), res.headers.get("content-disposition"));
+    const file = path.join(dir, `input-${name}`);
+    await pipeline(Readable.fromWeb(res.body as any), fs.createWriteStream(file));
+    return { file, name };
+  }
+  if (url.protocol === "ftp:" || url.protocol === "ftps:" || url.protocol === "sftp:") {
     const name = safeName(decodeURIComponent(url.pathname.split("/").pop() || "import.csv"));
     const file = path.join(dir, `input-${name}`);
     await assertSafeHost(url);
-    await withFtp(url, (c) => c.downloadTo(file, decodeURIComponent(url.pathname)));
+    if (url.protocol === "sftp:") await withSftp(url, (c) => c.fastGet(decodeURIComponent(url.pathname), file));
+    else await withFtp(url, (c) => c.downloadTo(file, decodeURIComponent(url.pathname)));
     return { file, name };
   }
   throw new Error(`Unsupported source protocol ${url.protocol}`);
 }
 
-/** Uploads a result file to an ftp(s):// URL; a URL ending in "/" keeps the file name. */
+/** Uploads a result file to an ftp(s), sftp or WebDAV URL; a URL ending in "/" keeps the file name. */
 export async function uploadResult(file: string, target: string): Promise<string> {
   const url = new URL(target);
+  if (!UPLOAD_PROTOCOLS.includes(url.protocol)) throw new Error("Upload target must be ftp://, ftps://, sftp:// or webdav(s)://");
   await assertSafeHost(url);
-  if (url.protocol !== "ftp:" && url.protocol !== "ftps:") throw new Error("Upload target must be ftp:// or ftps://");
-  let remote = decodeURIComponent(url.pathname || "/");
-  if (remote.endsWith("/")) remote += path.basename(file);
+  if (url.pathname.endsWith("/") || !url.pathname) url.pathname = `${url.pathname || "/"}${encodeURIComponent(path.basename(file))}`;
+  const remote = decodeURIComponent(url.pathname);
+  if (isWebDav(url)) {
+    const { href, headers } = webDavRequest(url);
+    const put = () =>
+      fetch(href, { method: "PUT", headers: { ...headers, "Content-Type": "application/octet-stream" }, body: fs.readFileSync(file), redirect: "manual" });
+    let res = await put();
+    // 409 = a folder on the way doesn't exist yet: create the folders, then retry once.
+    if (res.status === 409) {
+      const parts = new URL(href).pathname.split("/").filter(Boolean).slice(0, -1);
+      let dirPath = "";
+      for (const part of parts) {
+        dirPath += `/${part}`;
+        await fetch(new URL(`${dirPath}/`, href), { method: "MKCOL", headers, redirect: "manual" });
+      }
+      res = await put();
+    }
+    if (res.status === 401 || res.status === 403) throw new Error("WebDAV upload failed: the user name or password was refused");
+    if (!res.ok) throw new Error(`WebDAV upload failed: HTTP ${res.status}`);
+    return remote;
+  }
+  if (url.protocol === "sftp:") {
+    await withSftp(url, async (c) => {
+      const folder = path.posix.dirname(remote);
+      if (folder !== "/" && folder !== "." && !(await c.exists(folder))) await c.mkdir(folder, true);
+      await c.fastPut(file, remote);
+    });
+    return remote;
+  }
   await withFtp(url, async (c) => {
     await c.ensureDir(path.posix.dirname(remote));
     await c.uploadFrom(file, path.posix.basename(remote));
   });
   return remote;
+}
+
+/** Password sign-in only (sftp://user:password@host[:port]/path). */
+async function withSftp(url: URL, fn: (c: SftpClient) => Promise<unknown>) {
+  if (!url.username) throw new Error("SFTP needs a user name and password in the link: sftp://user:password@host/path");
+  const client = new SftpClient();
+  try {
+    await client.connect({
+      host: url.hostname,
+      port: url.port ? Number(url.port) : 22,
+      username: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      readyTimeout: 30_000,
+    });
+    await fn(client);
+  } catch (e: any) {
+    if (/authentication/i.test(e?.message ?? "")) throw new Error("SFTP sign-in failed: the user name or password was refused");
+    throw e;
+  } finally {
+    await client.end().catch(() => {});
+  }
 }
 
 async function withFtp(url: URL, fn: (c: FtpClient) => Promise<unknown>) {

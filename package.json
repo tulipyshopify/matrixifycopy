@@ -45,6 +45,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router": "7.18.2",
+    "ssh2-sftp-client": "^12.1.1",
     "vite-tsconfig-paths": "^6.0.4",
     "zod": "^3.25.76"
   },
@@ -56,6 +57,7 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/ssh2-sftp-client": "^9.0.6",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.1",

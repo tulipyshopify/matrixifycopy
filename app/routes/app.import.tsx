@@ -64,7 +64,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
         return redirect("/app/schedules");
       }
-      if (!/^(https?|ftps?):\/\//i.test(url)) throw new Error("Enter an http(s):// or ftp:// URL");
+      if (!/^(https?|ftps?|sftp|webdavs?|davs?):\/\//i.test(url)) throw new Error("Enter a link starting with https://, ftp://, sftp:// or webdavs://");
       const job = await createUrlImportJob(session.shop, url, options);
       return redirect(`/app/jobs/${job.id}`);
     }

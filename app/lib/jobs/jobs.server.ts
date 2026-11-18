@@ -11,7 +11,7 @@ import { INVENTORY_COLUMN } from "../core/exporter";
 import type { ExportConfig, ImportConfig } from "./runner.server";
 import { PREVIEW_FILE } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
-import { redactUrl } from "./sources.server";
+import { SOURCE_PROTOCOLS, UPLOAD_PROTOCOLS, redactUrl } from "./sources.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
 
 /** Entity metadata safe to send to the browser. */
@@ -521,7 +521,10 @@ function checkUrl(u: string | undefined, protocols: string[], what: string): str
   } catch {
     throw new Error(`${what} is not a valid URL`);
   }
-  if (!protocols.includes(url.protocol)) throw new Error(`${what} must start with ${protocols.join(" or ")}`);
+  if (!protocols.includes(url.protocol)) {
+    const names = [...new Set(protocols.map((x) => (x.startsWith("dav") ? "webdav" + x.slice(3) : x)))].map((x) => `${x}//`);
+    throw new Error(`${what} must start with ${names.slice(0, -1).join(", ")} or ${names.at(-1)}`);
+  }
   return url.toString();
 }
 
@@ -529,8 +532,8 @@ function checkUrl(u: string | undefined, protocols: string[], what: string): str
 function scheduleSettings(input: ScheduleInput) {
   const interval = Math.floor(Number(input.intervalMinutes));
   if (!(interval >= 15)) throw new Error("Interval must be at least 15 minutes");
-  const sourceUrl = checkUrl(input.sourceUrl, ["http:", "https:", "ftp:", "ftps:"], "Source URL");
-  const uploadUrl = checkUrl(input.uploadUrl, ["ftp:", "ftps:"], "Upload URL");
+  const sourceUrl = checkUrl(input.sourceUrl, SOURCE_PROTOCOLS, "Source URL");
+  const uploadUrl = checkUrl(input.uploadUrl, UPLOAD_PROTOCOLS, "Upload URL");
   // Exact time of day (daily and weekly schedules only).
   let timing: { runAt: string; timezone: string; weekday: number | null } | null = null;
   if (input.runAt?.trim()) {

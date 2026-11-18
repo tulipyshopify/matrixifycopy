@@ -94,7 +94,8 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
           <div className="bp-url-row">
             <s-url-field
               label="Or import from a link"
-              placeholder="https://… or ftp://user:password@host/file.xlsx"
+              details="Web link, Google Sheets, Google Drive or Dropbox share link, ftp://, sftp:// or webdavs://"
+              placeholder="https://… or sftp://user:password@host/file.xlsx"
               value={url}
               onInput={(ev: any) => setUrl(ev.currentTarget.value)}
             />
