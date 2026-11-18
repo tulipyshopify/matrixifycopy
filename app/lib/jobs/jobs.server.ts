@@ -282,6 +282,44 @@ export function listJobs(shop: string, take = 50, filter: JobFilter = "all") {
   });
 }
 
+/** Numbers for the home dashboard: the last 7 days at a glance. */
+export async function homeStats(shop: string, now = new Date()) {
+  const since = new Date(now.getTime() - 7 * 86400_000);
+  const week = await prisma.job.findMany({
+    where: { shop, kind: "job", createdAt: { gte: since } },
+    select: { type: true, status: true, stats: true, problems: true, config: true },
+  });
+  let exported = 0;
+  let changed = 0;
+  for (const j of week) {
+    if (j.status !== "finished") continue;
+    let stats: any[] = [];
+    try {
+      stats = JSON.parse(j.stats);
+    } catch {
+      // unreadable stats count as nothing
+    }
+    if (j.type === "export") exported += stats.reduce((n, s) => n + (Number(s?.items) || 0), 0);
+    // Previews change nothing.
+    else if (!j.config.includes('"dryRun":true')) changed += stats.reduce((n, s) => n + (Number(s?.ok) || 0), 0);
+  }
+  const [everRan, nextSchedule, lastBackup] = await Promise.all([
+    prisma.job.count({ where: { shop } }),
+    prisma.schedule.findFirst({ where: { shop, kind: "job", enabled: true, intervalMinutes: { gt: 0 } }, orderBy: { nextRunAt: "asc" }, select: { name: true, nextRunAt: true } }),
+    prisma.job.findFirst({ where: { shop, kind: "backup", status: "finished" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+  ]);
+  return {
+    exports: week.filter((j) => j.type === "export").length,
+    imports: week.filter((j) => j.type === "import").length,
+    exported,
+    changed,
+    problems: week.filter((j) => j.status === "failed" || (j.status === "finished" && j.problems > 0)).length,
+    firstRun: everRan === 0,
+    nextSchedule,
+    lastBackupAt: lastBackup?.createdAt ?? null,
+  };
+}
+
 /** Days a failed job keeps asking for attention on the home screen. */
 const ATTENTION_DAYS = 14;
 

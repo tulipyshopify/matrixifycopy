@@ -4,12 +4,14 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { EXPORT_HISTORY_DAYS, type JobFilter, cancelJob, countJobs, downloadLinks, listJobs, markReviewed, needsAttention, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
+import { EXPORT_HISTORY_DAYS, type JobFilter, homeStats, cancelJob, countJobs, downloadLinks, listJobs, markReviewed, needsAttention, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
 import { describeSchedule } from "../lib/jobs/schedule-time";
 import { HealthBadge, formatDate, isActive, jobRow } from "../components/jobs";
 import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 import { AskBox } from "../components/AskBox";
+import { EXPORT_TEMPLATES } from "../lib/jobs/templates";
+import { backupsAllowed } from "../lib/jobs/backups.server";
 import { assistantAllowed } from "../lib/ai/assistant.server";
 
 /** Jobs shown per page of the history. */
@@ -22,7 +24,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const filter = (["export", "import", "problems", "scheduled"].includes(url.searchParams.get("show") ?? "") ? url.searchParams.get("show") : "all") as JobFilter;
   const take = Math.min(500, Math.max(PAGE, Number(url.searchParams.get("n")) || PAGE));
-  const [jobs, schedules, attention, total] = await Promise.all([
+  const [stats, jobs, schedules, attention, total] = await Promise.all([
+    homeStats(session.shop),
     listJobs(session.shop, take, filter),
     listSchedules(session.shop),
     needsAttention(session.shop),
@@ -46,6 +49,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scheduled: !!j.scheduleId,
       };
     }),
+    stats,
+    templates: EXPORT_TEMPLATES.map(({ key, title, description, icon }) => ({ key, title, description, icon })),
+    backupsEnabled: backupsAllowed(session.shop),
     filter,
     total,
     askEnabled: assistantAllowed(session.shop),
@@ -65,6 +71,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { ok: true };
 };
 
+/** "today", "yesterday", "3 days ago". */
+function daysAgo(d: string | Date): string {
+  const n = Math.floor((Date.now() - new Date(d).getTime()) / 86400_000);
+  return n <= 0 ? "Today" : n === 1 ? "Yesterday" : `${n} days ago`;
+}
+
+/** One number of the dashboard, optionally a link. */
+function Tile({ label, value, note, tone, href, onClick }: { label: string; value: number | string; note?: string; tone?: "critical" | "warn" | "ok"; href?: string; onClick?: () => void }) {
+  const body = (
+    <div className={`bp-tile${tone ? ` bp-tile-${tone}` : ""}`}>
+      <span className="bp-tile-label">{label}</span>
+      <span className="bp-tile-value">{typeof value === "number" ? value.toLocaleString("en") : value}</span>
+      {note ? <span className="bp-tile-note">{note}</span> : null}
+    </div>
+  );
+  return (
+    <div role="listitem">
+      {href || onClick ? (
+        <s-clickable href={href} onClick={onClick} borderRadius="large">
+          {body}
+        </s-clickable>
+      ) : (
+        body
+      )}
+    </div>
+  );
+}
+
 const HISTORY_FILTERS: Array<{ key: JobFilter; label: string }> = [
   { key: "all", label: "All" },
   { key: "export", label: "Exports" },
@@ -74,7 +108,7 @@ const HISTORY_FILTERS: Array<{ key: JobFilter; label: string }> = [
 ];
 
 export default function Home() {
-  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled } = useLoaderData<typeof loader>();
+  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled, stats, templates, backupsEnabled } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const [params, setParams] = useSearchParams();
@@ -112,32 +146,92 @@ export default function Home() {
         ) : null}
         <AskBox enabled={askEnabled} />
 
-        <s-section heading="Export">
-          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
-            <s-text tone="neutral">Choose data, filters and columns, then download an Excel or CSV file.</s-text>
-            <s-button variant="primary" href="/app/export">
-              New export
-            </s-button>
+        {stats.firstRun ? (
+          <s-section heading="Welcome to Bulkport">
+            <s-stack direction="block" gap="base">
+              <s-text tone="neutral">Edit your store in a spreadsheet, in three steps. Nothing changes in the store until the last one.</s-text>
+              <div className="bp-steps">
+                <div className="bp-step">
+                  <span className="bp-step-n">1</span>
+                  <s-stack direction="block" gap="small-300">
+                    <s-text type="strong">Export</s-text>
+                    <s-text tone="neutral">Pick a template below, or choose your own data and columns.</s-text>
+                  </s-stack>
+                </div>
+                <div className="bp-step">
+                  <span className="bp-step-n">2</span>
+                  <s-stack direction="block" gap="small-300">
+                    <s-text type="strong">Edit the file</s-text>
+                    <s-text tone="neutral">In Excel or Google Sheets. Keep only the rows and columns you change.</s-text>
+                  </s-stack>
+                </div>
+                <div className="bp-step">
+                  <span className="bp-step-n">3</span>
+                  <s-stack direction="block" gap="small-300">
+                    <s-text type="strong">Preview, then import</s-text>
+                    <s-text tone="neutral">See what would change for every row before you apply it.</s-text>
+                  </s-stack>
+                </div>
+              </div>
+            </s-stack>
+          </s-section>
+        ) : (
+          <div className="bp-tiles" role="list" aria-label="Last 7 days">
+            <Tile label="Exports, last 7 days" value={stats.exports} note={stats.exported ? `${stats.exported.toLocaleString("en")} items` : "none yet"} />
+            <Tile label="Imports, last 7 days" value={stats.imports} note={stats.changed ? `${stats.changed.toLocaleString("en")} items changed` : "nothing changed"} />
+            <Tile
+              label="Problems"
+              value={stats.problems}
+              tone={stats.problems ? "critical" : "ok"}
+              note={stats.problems ? "see Problems below" : "all clear"}
+              onClick={stats.problems ? () => setParams({ show: "problems" }, { replace: true, preventScrollReset: true }) : undefined}
+            />
+            <Tile
+              label="Scheduled jobs"
+              value={scheduleCount}
+              href="/app/schedules"
+              note={stats.nextSchedule ? `next: ${formatDate(stats.nextSchedule.nextRunAt)}` : "none set up"}
+            />
+            {backupsEnabled ? (
+              <Tile
+                label="Last backup"
+                value={stats.lastBackupAt ? daysAgo(stats.lastBackupAt) : "—"}
+                href="/app/backups"
+                tone={stats.lastBackupAt ? undefined : "warn"}
+                note={stats.lastBackupAt ? formatDate(stats.lastBackupAt) : "not set up yet"}
+              />
+            ) : null}
+          </div>
+        )}
+
+        <s-section>
+          <s-stack direction="block" gap="base">
+            <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+              <s-stack direction="block" gap="small-300">
+                <s-heading>Export</s-heading>
+                <s-text tone="neutral">Start from a template, or build your own with any data, filters and columns.</s-text>
+              </s-stack>
+              <s-button variant="primary" icon="plus" href="/app/export">
+                New export
+              </s-button>
+            </s-stack>
+            <div className="bp-templates">
+              {templates.map((t) => (
+                <s-clickable key={t.key} href={`/app/export?template=${t.key}`} border="base" borderRadius="base" padding="base">
+                  <s-stack direction="block" gap="small-300">
+                    <s-stack direction="inline" gap="small" alignItems="center">
+                      <s-icon type={t.icon as any} />
+                      <s-text type="strong">{t.title}</s-text>
+                    </s-stack>
+                    <s-text tone="neutral">{t.description}</s-text>
+                  </s-stack>
+                </s-clickable>
+              ))}
+            </div>
           </s-stack>
         </s-section>
 
         <ImportForm maxUploadMb={maxUploadMb} />
-
-        <s-paragraph>
-          {scheduleCount === 0 ? (
-            <>
-              Nothing is scheduled yet. <s-link href="/app/schedules">Schedules</s-link>
-            </>
-          ) : (
-            <>
-              You have{" "}
-              <s-link href="/app/schedules">
-                {scheduleCount} scheduled {scheduleCount === 1 ? "job" : "jobs"}
-              </s-link>
-              .
-            </>
-          )}
-        </s-paragraph>
 
         <s-stack direction="inline" gap="small" alignItems="center">
           <s-heading>History</s-heading>
