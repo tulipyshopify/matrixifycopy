@@ -21,6 +21,7 @@ export default function App() {
         <s-link href="/app">Home</s-link>
         <s-link href="/app/schedules">Schedules</s-link>
         <s-link href="/app/backups">Backups</s-link>
+        <s-link href="/app/check">Data check</s-link>
         <s-link href="/app/help">Sheet reference</s-link>
       </s-app-nav>
       <Outlet />

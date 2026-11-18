@@ -7,6 +7,7 @@ import { createWorkbookOut, readWorkbook, type OutputFormat } from "../core/shee
 import { ENTITIES, getEntity } from "../entities";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
+import { runCheck } from "../check/run";
 
 /** Dry-run preview of an import, in the job's folder. */
 export const PREVIEW_FILE = "preview.json";
@@ -64,6 +65,11 @@ export async function executeJob(
 ): Promise<{ resultFile: string; stats: Array<ExportSummary | ImportSummary> }> {
   const dir = job.kind === "backup" ? backupDir(job.shop, job.id) : jobDir(job.shop, job.id);
   const format: OutputFormat = job.format === "csv" ? "csv" : "xlsx";
+
+  if (job.kind === "check") {
+    const { resultFile, report } = await runCheck(deps, dir);
+    return { resultFile, stats: [report as any] };
+  }
 
   if (job.type === "export") {
     const config = JSON.parse(job.config) as ExportConfig;

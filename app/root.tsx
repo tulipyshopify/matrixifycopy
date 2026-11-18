@@ -40,6 +40,10 @@ export default function App() {
 .bp-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
 .bp-step{display:flex;gap:12px;align-items:flex-start}
 .bp-step-n{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#303030;color:#fff;font-weight:650;font-size:13px}
+.bp-rule{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding-top:12px;border-top:1px solid #ebebeb}
+.bp-rule-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+.bp-rule-side{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:none}
+.bp-tile-warn .bp-tile-value{color:#8a6116}
 .bp-actionbar{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;margin-top:4px;border-radius:12px;background:#fff;box-shadow:0 -1px 0 #e3e3e3,0 4px 18px rgba(0,0,0,.12)}
 .bp-actionbar s-text{min-width:0}
 @media (max-width:600px){.bp-actionbar{flex-direction:column;align-items:stretch}}

@@ -11,6 +11,7 @@ import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 import { AskBox } from "../components/AskBox";
 import { EXPORT_TEMPLATES } from "../lib/jobs/templates";
+import { latestChecks } from "../lib/check/check.server";
 import { DEFAULT_BACKUP_TYPES, backupNow, backupsAllowed, saveBackupSettings } from "../lib/jobs/backups.server";
 import { browserTimeZone } from "../components/ScheduleTime";
 import { assistantAllowed } from "../lib/ai/assistant.server";
@@ -32,6 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     needsAttention(session.shop),
     countJobs(session.shop, filter),
   ]);
+  const checkScore = (await latestChecks(session.shop)).latest?.report?.score ?? null;
   const repeats = new Map(schedules.map((s) => [s.id, describeSchedule(s)]));
   return {
     jobs: jobs.map(({ resultFile, scheduleId, ...j }) => ({
@@ -51,6 +53,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       };
     }),
     stats,
+    checkScore,
     templates: EXPORT_TEMPLATES.map(({ key, title, description, icon }) => ({ key, title, description, icon })),
     backupsEnabled: backupsAllowed(session.shop),
     filter,
@@ -118,7 +121,7 @@ const HISTORY_FILTERS: Array<{ key: JobFilter; label: string }> = [
 ];
 
 export default function Home() {
-  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled, stats, templates, backupsEnabled } = useLoaderData<typeof loader>();
+  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled, stats, templates, backupsEnabled, checkScore } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const [params, setParams] = useSearchParams();
@@ -202,6 +205,13 @@ export default function Home() {
               value={scheduleCount}
               href="/app/schedules"
               note={stats.nextSchedule ? `next: ${formatDate(stats.nextSchedule.nextRunAt)}` : "none set up"}
+            />
+            <Tile
+              label="AI readiness"
+              value={checkScore === null ? "—" : `${checkScore} / 100`}
+              href="/app/check"
+              tone={checkScore === null ? "warn" : checkScore >= 85 ? "ok" : checkScore < 60 ? "critical" : undefined}
+              note={checkScore === null ? "run the data check" : "product data check"}
             />
             {backupsEnabled ? (
               <Tile

@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { createExportJob, createSchedule, editSchedule, entityCatalog, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
 import { askedExport } from "../lib/ai/assistant.server";
+import { fixExport } from "../lib/check/check.server";
 import { getTemplate } from "../lib/jobs/templates";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -28,7 +29,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     presets: await listPresets(session.shop),
     // "Edit and export again" on a job page opens the form with that job's set-up.
     // "Adjust first" from Ask Bulkport opens its set-up; "Edit and export again" a job's.
-    latest: getTemplate(params.get("template"))
+    latest: params.get("check")
+      ? ((await fixExport(session.shop, params.get("check")!, params.get("rule") ?? "")) ?? (await latestExportPreset(session.shop)))
+      : getTemplate(params.get("template"))
       ? { entities: parseExportConfig({ entities: getTemplate(params.get("template"))!.entities }).entities, format: "xlsx" }
       : params.get("ask")
       ? ((await askedExport(session.shop, params.get("ask")!)) ?? (await latestExportPreset(session.shop)))

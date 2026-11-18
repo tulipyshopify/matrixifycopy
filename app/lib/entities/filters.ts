@@ -26,6 +26,7 @@ const onlineStore: FilterField = {
 
 export const FILTERS: Record<string, FilterField[]> = {
   products: [
+    { key: "id", label: "ID", type: "id" },
     title,
     handle,
     { key: "vendor", label: "Vendor", type: "text" },
