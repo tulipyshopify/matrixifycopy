@@ -231,9 +231,32 @@ export async function createUrlImportJob(shop: string, url: string, options: Imp
   });
 }
 
-export function listJobs(shop: string, take = 50) {
+export type JobFilter = "all" | "export" | "import" | "problems" | "scheduled";
+
+/** Where-clause for the job history filters. */
+function jobFilter(filter: JobFilter) {
+  switch (filter) {
+    case "export":
+      return { type: "export" };
+    case "import":
+      return { type: "import" };
+    case "problems":
+      return { OR: [{ status: "failed" }, { status: "finished", problems: { gt: 0 } }] };
+    case "scheduled":
+      return { scheduleId: { not: null } };
+    default:
+      return {};
+  }
+}
+
+/** Jobs matching a history filter, newest first. */
+export function countJobs(shop: string, filter: JobFilter = "all") {
+  return prisma.job.count({ where: { shop, ...jobFilter(filter) } });
+}
+
+export function listJobs(shop: string, take = 50, filter: JobFilter = "all") {
   return prisma.job.findMany({
-    where: { shop },
+    where: { shop, ...jobFilter(filter) },
     orderBy: { createdAt: "desc" },
     take,
     select: {

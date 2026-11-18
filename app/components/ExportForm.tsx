@@ -855,8 +855,60 @@ function ColumnPicker({
   const setGroup = (list: string[], key: string, on: boolean) =>
     on ? [...new Set([...list, key])] : list.filter((x) => x !== key);
 
+  // Finding one column among 200+: a search over every section.
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const found = q ? entity.columns.filter((c) => c.toLowerCase().includes(q)) : [];
+  const sectionOf = (c: string) => sections.secs.find((x) => x.columns.includes(c));
+  const toggleColumn = (c: string, v: boolean) => {
+    const g = sectionOf(c)?.group;
+    onChange({
+      columns: v ? [...new Set([...columns, c])] : columns.filter((x) => x !== c),
+      // Ticking a column of a switched-off section switches its data on.
+      ...(v && g && !groups.includes(g.key) ? { groups: setGroup(groups, g.key, true) } : {}),
+    });
+  };
+  const isOn = (c: string) => {
+    const g = sectionOf(c)?.group;
+    return columns.includes(c) && (!g || groups.includes(g.key));
+  };
+
   return (
     <s-stack direction="block" gap="none">
+      <s-box padding="none none small none">
+        <s-search-field
+          label="Find a column"
+          labelAccessibilityVisibility="exclusive"
+          placeholder={`Find a column (${entity.columns.length} available)`}
+          value={query}
+          onInput={(ev: any) => setQuery(ev.currentTarget.value)}
+        />
+      </s-box>
+      {q ? (
+        <s-box padding="small base">
+          {found.length ? (
+            <s-stack direction="block" gap="small">
+              <s-text tone="neutral">
+                {found.length} {found.length === 1 ? "column matches" : "columns match"}. Tick to include, untick to leave out.
+              </s-text>
+              <s-grid gridTemplateColumns="repeat(auto-fill, minmax(210px, 1fr))" gap="small base">
+                {found.map((c) => (
+                  <s-checkbox
+                    key={c}
+                    label={SLOW_COLUMNS.test(c) ? `${c} (slow)` : c}
+                    details={sectionOf(c)?.name}
+                    checked={isOn(c)}
+                    onChange={(ev: any) => toggleColumn(c, ev.currentTarget.checked)}
+                  />
+                ))}
+              </s-grid>
+            </s-stack>
+          ) : (
+            <s-text tone="neutral">No column matches "{query.trim()}".</s-text>
+          )}
+        </s-box>
+      ) : (
+      <>
       <s-box background="subdued" borderRadius="base" padding="small base">
         <s-checkbox
           label={`${selected} of ${entity.columns.length} columns selected`}
@@ -1063,6 +1115,8 @@ function ColumnPicker({
           <s-divider />
         </Fragment>
       ))}
+      </>
+      )}
       <s-box padding="base none none small-200">
         <s-text tone={missingKeys ? "caution" : "neutral"}>
           {missingKeys
@@ -1166,12 +1220,17 @@ function ColumnOrder({
   };
   const selected = picked && shown.includes(picked) ? picked : null;
   const at = selected ? shown.indexOf(selected) : -1;
+  // Long lists start folded: the first columns, then "Show all".
+  const [open, setOpen] = useState(false);
+  const FOLDED = 14;
+  const visible = open || shown.length <= FOLDED + 4 ? shown : shown.slice(0, FOLDED);
   return (
     <s-stack direction="block" gap="small">
       <s-stack direction="inline" gap="small" alignItems="center">
         <s-text tone="neutral">
-          Drag a column to move it, or click one and use the buttons. The cross
-          takes it out of the file.
+          {shown.length} columns, in file order
+          {order ? " (your own order)" : ""}. Drag a column to move it, or click
+          one and use the buttons. The cross takes it out of the file.
         </s-text>
         {order ? (
           <s-button variant="tertiary" onClick={() => onChange(null)}>
@@ -1247,7 +1306,7 @@ function ColumnOrder({
           setOver(null);
         }}
       >
-        {shown.map((c, i) => (
+        {visible.map((c, i) => (
           <div
             key={c}
             role="listitem"
@@ -1312,6 +1371,13 @@ function ColumnOrder({
           <span className="bp-chip-endmark" aria-hidden="true" />
         ) : null}
       </div>
+      {shown.length > visible.length || open ? (
+        <s-stack direction="inline">
+          <s-button variant="tertiary" icon={open ? "chevron-up" : "chevron-down"} onClick={() => setOpen(!open)}>
+            {open ? "Show fewer" : `Show all ${shown.length} columns`}
+          </s-button>
+        </s-stack>
+      ) : null}
     </s-stack>
   );
 }
@@ -1898,22 +1964,25 @@ export function ExportForm({
               />
             </>
           ) : null}
-          <s-stack direction="inline" justifyContent="end">
-            <s-button
-              variant="primary"
-              onClick={submit}
-              disabled={!selected.length || busy}
-              loading={busy}
-            >
-              {editing
-                ? "Save changes"
-                : scheduled
-                ? "Save schedule"
-                : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
-            </s-button>
-          </s-stack>
         </s-stack>
       </s-section>
+      {/* Always in view while scrolling, so the long column lists don't hide it. */}
+      <div className="bp-actionbar">
+        <s-text tone="neutral">
+          {selected.length
+            ? `${selected
+                .map((e) => {
+                  const st = state[e.key];
+                  const n = e.columns.filter((c) => st.columns.includes(c)).length;
+                  return `${e.sheet}: ${n} of ${e.columns.length} columns`;
+                })
+                .join(" · ")} · ${format === "csv" ? "CSV" : "Excel"}${scheduled ? " · scheduled" : ""}`
+            : "Add a data type to export"}
+        </s-text>
+        <s-button variant="primary" onClick={submit} disabled={!selected.length || busy} loading={busy}>
+          {editing ? "Save changes" : scheduled ? "Save schedule" : `Export ${selected.map((e) => e.sheet).join(", ") || "…"}`}
+        </s-button>
+      </div>
     </>
   );
 }

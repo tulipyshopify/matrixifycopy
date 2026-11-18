@@ -27,6 +27,9 @@ export default function App() {
 .bp-chips{min-height:36px;padding-bottom:10px}
 .bp-movebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:#f6f6f7;position:sticky;top:0;z-index:2}
 .bp-movepos{width:84px}
+.bp-actionbar{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;margin-top:4px;border-radius:12px;background:#fff;box-shadow:0 -1px 0 #e3e3e3,0 4px 18px rgba(0,0,0,.12)}
+.bp-actionbar s-text{min-width:0}
+@media (max-width:600px){.bp-actionbar{flex-direction:column;align-items:stretch}}
 .bp-grip{color:#8a8a8a;font-size:12px}
 .bp-job{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding:14px 16px;border-top:1px solid #ebebeb}
 .bp-job:first-child{border-top:0}

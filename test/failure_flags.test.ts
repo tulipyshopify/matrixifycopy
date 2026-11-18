@@ -109,3 +109,29 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("attention and alerts", asy
     expect((await jobs.scheduleHealth(shop, [fresh], now))[fresh.id]).toEqual({ last: null, failingStreak: 0, overdue: false });
   });
 });
+
+describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("history filters", async () => {
+  const { default: prisma } = await import("../app/db.server");
+  const jobs = await import("../app/lib/jobs/jobs.server");
+  const shop = `history-filter-${Date.now()}.myshopify.com`;
+  afterAll(() => prisma.job.deleteMany({ where: { shop } }));
+
+  it("lists exports, imports, scheduled jobs or problems only", async () => {
+    await prisma.job.createMany({
+      data: [
+        { shop, type: "export", status: "finished", config: "{}" },
+        { shop, type: "export", status: "failed", config: "{}", scheduleId: "s1" },
+        { shop, type: "import", status: "finished", config: "{}", problems: 2 },
+        { shop, type: "import", status: "finished", config: "{}" },
+        { shop, type: "import", status: "running", config: "{}" },
+      ],
+    });
+    const n = async (f: any) => [await jobs.countJobs(shop, f), (await jobs.listJobs(shop, 50, f)).length];
+    expect(await n("all")).toEqual([5, 5]);
+    expect(await n("export")).toEqual([2, 2]);
+    expect(await n("import")).toEqual([3, 3]);
+    expect(await n("scheduled")).toEqual([1, 1]);
+    expect(await n("problems")).toEqual([2, 2]);
+    expect((await jobs.listJobs(shop, 2)).length).toBe(2);
+  });
+});
