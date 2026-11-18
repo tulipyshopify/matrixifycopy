@@ -91,7 +91,7 @@ function daysAgo(d: string | Date): string {
 }
 
 /** One number of the dashboard, optionally a link. */
-function Tile({ label, value, note, tone, href, onClick }: { label: string; value: number | string; note?: string; tone?: "critical" | "warn" | "ok"; href?: string; onClick?: () => void }) {
+function Tile({ label, value, note, tone, href, onClick }: { label: string; value: number | string; note?: string; tone?: "critical" | "warn" | "ok" | "brand"; href?: string; onClick?: () => void }) {
   const body = (
     <div className={`bp-tile${tone ? ` bp-tile-${tone}` : ""}`}>
       <span className="bp-tile-label">{label}</span>
@@ -210,7 +210,7 @@ export default function Home() {
               label="AI readiness"
               value={checkScore === null ? "—" : `${checkScore} / 100`}
               href="/app/check"
-              tone={checkScore === null ? "warn" : checkScore >= 85 ? "ok" : checkScore < 60 ? "critical" : undefined}
+              tone={checkScore === null ? "warn" : checkScore < 60 ? "critical" : "brand"}
               note={checkScore === null ? "run the data check" : "product data check"}
             />
             {backupsEnabled ? (

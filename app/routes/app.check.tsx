@@ -50,7 +50,7 @@ export default function DataCheck() {
     return () => clearInterval(t);
   }, [active, revalidator]);
 
-  const tone = (score: number) => (score >= 85 ? "ok" : score >= 60 ? "warn" : "critical");
+  const tone = (score: number) => (score >= 60 ? "brand" : "critical");
   const trend = latest && previousScore !== null ? latest.score - previousScore : 0;
   const groups = [
     { key: "critical", heading: "Fix first", note: "Products with these problems are likely to be skipped or misdescribed." },

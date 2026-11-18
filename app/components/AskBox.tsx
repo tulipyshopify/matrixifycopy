@@ -28,8 +28,15 @@ export function AskBox({ enabled }: { enabled: boolean }) {
 
   if (!enabled) return null;
   return (
-    <s-section heading="Ask Bulkport">
+    <div className="bp-ask">
+    <s-section accessibilityLabel="Ask Bulkport">
       <s-stack direction="block" gap="base">
+        <div className="bp-ask-head">
+          <span className="bp-ask-mark" aria-hidden="true">
+            ✦
+          </span>
+          Ask Bulkport
+        </div>
         <s-text-area
           label="What do you want to export or change?"
           labelAccessibilityVisibility="exclusive"
@@ -106,5 +113,6 @@ export function AskBox({ enabled }: { enabled: boolean }) {
         )}
       </s-stack>
     </s-section>
+    </div>
   );
 }
