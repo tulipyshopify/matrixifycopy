@@ -8,6 +8,7 @@ import { executeJob } from "./runner.server";
 import { nextRun } from "./schedule-time";
 import { isDryRunConfig, jobHealth } from "./health";
 import { alertIfNeeded } from "./alerts.server";
+import { pruneBackups } from "./backups.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports } from "./jobs.server";
@@ -199,7 +200,7 @@ async function fireSchedules() {
       continue;
     }
     const job = await prisma.job.create({
-      data: { shop: s.shop, type: s.type, config: s.config, format: s.format, name: s.name, scheduleId: s.id },
+      data: { shop: s.shop, type: s.type, config: s.config, format: s.format, name: s.name, scheduleId: s.id, kind: s.kind },
     });
     await prisma.schedule.update({ where: { id: s.id }, data: { nextRunAt, lastJobId: job.id } });
   }
@@ -248,6 +249,8 @@ export function startWorker() {
         const n = await cleanupOldFiles();
         if (n) console.log(`[worker] removed ${n} old job folders`);
         const cleared = await clearOldExports();
+        const pruned = await pruneBackups();
+        if (pruned) console.log(`[worker] removed ${pruned} old backups`);
         if (cleared) console.log(`[worker] cleared ${cleared} exports from the history`);
       }
     } catch (e) {

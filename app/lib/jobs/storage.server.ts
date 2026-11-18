@@ -24,6 +24,13 @@ export function tmpDir(): string {
   return dir;
 }
 
+/** Folder of one store backup; kept apart from job folders and their clean-up. */
+export function backupDir(shop: string, jobId: string): string {
+  const dir = path.join(shopDir(shop), "_backups", jobId.replace(/[^a-z0-9]/gi, ""));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Makes sure a stored path is inside STORAGE_DIR before reading it. */
 export function resolveStored(file: string): string {
   const abs = path.resolve(file);
@@ -90,6 +97,8 @@ export async function cleanupOldFiles(): Promise<number> {
     const sdir = path.join(STORAGE_DIR, shop);
     if (!(await fs.promises.stat(sdir)).isDirectory()) continue;
     for (const job of await fs.promises.readdir(sdir)) {
+      // "_backups" and other "_" folders have their own retention.
+      if (job.startsWith("_")) continue;
       const jdir = path.join(sdir, job);
       const st = await fs.promises.stat(jdir);
       if (st.mtimeMs < cutoff) {

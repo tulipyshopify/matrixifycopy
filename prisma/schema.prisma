@@ -63,6 +63,8 @@ model Job {
   reviewedAt  DateTime?
   /// When an alert email about this job was sent.
   alertedAt   DateTime?
+  /// "job" (export/import someone set up) or "backup" (a store backup).
+  kind        String    @default("job")
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
@@ -96,6 +98,8 @@ model Schedule {
   publicToken     String?   @unique
   linkDownloads   Int       @default(0)
   lastDownloadAt  DateTime?
+  /// "job", or "backup" for the store's backup schedule (one per store).
+  kind            String    @default("job")
   createdAt       DateTime  @default(now())
 
   @@index([enabled, nextRunAt])
@@ -121,5 +125,7 @@ model ShopSetting {
   alertEmail  String?
   /// "scheduled": only jobs started by a schedule; "all": every job.
   alertScope  String   @default("scheduled")
+  /// Days backups are kept (the newest is always kept).
+  backupKeepDays Int   @default(30)
   updatedAt   DateTime @updatedAt
 }

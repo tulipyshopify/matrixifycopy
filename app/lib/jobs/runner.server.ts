@@ -5,7 +5,7 @@ import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary } from "../core/importer";
 import { createWorkbookOut, readWorkbook, type OutputFormat } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
-import { jobDir, tmpDir } from "./storage.server";
+import { backupDir, jobDir, tmpDir } from "./storage.server";
 
 /** Dry-run preview of an import, in the job's folder. */
 export const PREVIEW_FILE = "preview.json";
@@ -27,6 +27,7 @@ export interface JobRecord {
   name: string;
   inputFile: string | null;
   inputName: string | null;
+  kind?: string;
 }
 
 export interface RunnerDeps {
@@ -56,7 +57,7 @@ export async function executeJob(
   job: JobRecord,
   deps: RunnerDeps,
 ): Promise<{ resultFile: string; stats: Array<ExportSummary | ImportSummary> }> {
-  const dir = jobDir(job.shop, job.id);
+  const dir = job.kind === "backup" ? backupDir(job.shop, job.id) : jobDir(job.shop, job.id);
   const format: OutputFormat = job.format === "csv" ? "csv" : "xlsx";
 
   if (job.type === "export") {

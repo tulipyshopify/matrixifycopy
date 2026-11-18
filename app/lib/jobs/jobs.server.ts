@@ -251,12 +251,12 @@ function jobFilter(filter: JobFilter) {
 
 /** Jobs matching a history filter, newest first. */
 export function countJobs(shop: string, filter: JobFilter = "all") {
-  return prisma.job.count({ where: { shop, ...jobFilter(filter) } });
+  return prisma.job.count({ where: { shop, kind: "job", ...jobFilter(filter) } });
 }
 
 export function listJobs(shop: string, take = 50, filter: JobFilter = "all") {
   return prisma.job.findMany({
-    where: { shop, ...jobFilter(filter) },
+    where: { shop, kind: "job", ...jobFilter(filter) },
     orderBy: { createdAt: "desc" },
     take,
     select: {
@@ -351,7 +351,7 @@ export async function clearOldExports(days = EXPORT_HISTORY_DAYS, now = new Date
   if (!(days > 0)) return 0;
   const cutoff = new Date(now.getTime() - days * 86400_000);
   const old = await prisma.job.findMany({
-    where: { type: "export", status: { in: ["finished", "failed", "cancelled"] }, createdAt: { lt: cutoff } },
+    where: { type: "export", kind: "job", status: { in: ["finished", "failed", "cancelled"] }, createdAt: { lt: cutoff } },
     select: { id: true, shop: true, scheduleId: true },
     take: 1000,
   });
@@ -402,6 +402,7 @@ export async function rerunJob(shop: string, id: string) {
       inputFile: job.inputFile,
       inputName: job.inputName,
       scheduleId: job.scheduleId,
+      kind: job.kind,
     },
   });
 }
@@ -656,7 +657,7 @@ export async function latestPublicFile(token: string) {
 }
 
 export async function listSchedules(shop: string) {
-  return prisma.schedule.findMany({ where: { shop, intervalMinutes: { gt: 0 } }, orderBy: { createdAt: "desc" } });
+  return prisma.schedule.findMany({ where: { shop, kind: "job", intervalMinutes: { gt: 0 } }, orderBy: { createdAt: "desc" } });
 }
 
 export async function updateSchedule(shop: string, id: string, data: { enabled?: boolean; runNow?: boolean }) {
@@ -680,6 +681,7 @@ export async function purgeShop(shop: string) {
   await prisma.job.deleteMany({ where: { shop } });
   await prisma.schedule.deleteMany({ where: { shop } });
   await prisma.preset.deleteMany({ where: { shop } });
+  await prisma.shopSetting.deleteMany({ where: { shop } });
   const fs = await import("node:fs");
   const path = await import("node:path");
   const dir = path.dirname(jobDir(shop, "_"));
@@ -719,7 +721,7 @@ export async function deletePreset(shop: string, id: string) {
 /** The set-up of the most recent export job, offered as "Latest export". */
 export async function latestExportPreset(shop: string, jobId?: string): Promise<PresetData | null> {
   const job = await prisma.job.findFirst({
-    where: { shop, type: "export", ...(jobId ? { id: jobId } : {}) },
+    where: { shop, type: "export", kind: "job", ...(jobId ? { id: jobId } : {}) },
     orderBy: { createdAt: "desc" },
   });
   if (!job) return null;

@@ -76,7 +76,7 @@ export async function alertIfNeeded(jobId: string, send?: Mailer): Promise<boole
   if (!deliver) return false;
 
   const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId } }) : null;
-  const what = `${dryRun ? "Preview" : job.type === "export" ? "Export" : "Import"}${schedule && schedule.intervalMinutes > 0 ? ` "${schedule.name}"` : job.inputName ? ` of ${job.inputName}` : ""}`;
+  const what = `${job.kind === "backup" ? "Store backup" : dryRun ? "Preview" : job.type === "export" ? "Export" : "Import"}${schedule && schedule.intervalMinutes > 0 && job.kind !== "backup" ? ` "${schedule.name}"` : job.inputName ? ` of ${job.inputName}` : ""}`;
   const subject = `Bulkport: ${what} ${job.status === "failed" ? "failed" : "had problems"} (${job.shop.replace(/\.myshopify\.com$/, "")})`;
   const text = [
     `${what} on ${job.shop} ${job.status === "failed" ? "failed" : "finished with problems"}.`,
