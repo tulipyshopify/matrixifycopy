@@ -1,0 +1,24 @@
+# The TEST copy of Bulkport (app "Bulkport Test", https://bulk-test.tulipy.app).
+# Lives in its own folder (/opt/bulkport-staging) on the "staging" branch, so
+# new versions can be tried before the live stores get them. It has no web
+# server of its own: the live Caddy forwards bulk-test.tulipy.app to it over
+# the live copy's network. Set up with scripts/add-staging.sh.
+services:
+  app-staging:
+    build: .
+    image: bulkport-staging:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      PORT: "3000"
+      NODE_OPTIONS: "--max-old-space-size=1024"
+    mem_limit: 1536m
+    volumes:
+      - ./data:/data
+    expose:
+      - "3000"
+
+networks:
+  default:
+    name: bulkport_default
+    external: true

@@ -165,6 +165,28 @@ cd /opt/bulkport && git fetch && git checkout v2 && git pull && docker compose u
 and to go back to version 1: `git checkout main && docker compose up -d --build`. Version 2 adds database columns;
 version 1 ignores them, so going back is safe.
 
+## Test copy (try updates before the live stores get them)
+
+Two copies run side by side:
+
+| Folder | Branch | Address | Stores |
+|---|---|---|---|
+| `/opt/bulkport` | `v2` | bulk.tulipy.app, bulk-planters…, bulk-roots… | live stores |
+| `/opt/bulkport-staging` | `staging` | bulk-test.tulipy.app | a test store only |
+
+New versions are pushed to `staging` first. Update the test copy, check it, and only then update live:
+
+```shell
+# test copy
+cd /opt/bulkport-staging && git pull && docker compose up -d --build
+# live, once the test copy looks right (the new version is first moved to v2)
+cd /opt/bulkport && git pull && docker compose up -d --build
+```
+
+Set-up (once): create a development store for testing, then on the server
+`cd /opt/bulkport && git pull && scripts/add-staging.sh` and follow what it prints. Install "Bulkport Test" on the
+test store from its Installs card in the Dev Dashboard (never on a live store).
+
 ## Backups
 
 Everything the app stores is in `/opt/bulkport/data`: the database (job history, schedules, Shopify sessions) and job
