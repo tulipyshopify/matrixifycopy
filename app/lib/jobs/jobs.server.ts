@@ -303,7 +303,8 @@ export async function homeStats(shop: string, now = new Date()) {
     // Previews change nothing.
     else if (!j.config.includes('"dryRun":true')) changed += stats.reduce((n, s) => n + (Number(s?.ok) || 0), 0);
   }
-  const [everRan, nextSchedule, lastBackup] = await Promise.all([
+  const [backupSchedule, everRan, nextSchedule, lastBackup] = await Promise.all([
+    prisma.schedule.findFirst({ where: { shop, kind: "backup" }, select: { enabled: true, nextRunAt: true } }),
     prisma.job.count({ where: { shop } }),
     prisma.schedule.findFirst({ where: { shop, kind: "job", enabled: true, intervalMinutes: { gt: 0 } }, orderBy: { nextRunAt: "asc" }, select: { name: true, nextRunAt: true } }),
     prisma.job.findFirst({ where: { shop, kind: "backup", status: "finished" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
@@ -317,6 +318,8 @@ export async function homeStats(shop: string, now = new Date()) {
     firstRun: everRan === 0,
     nextSchedule,
     lastBackupAt: lastBackup?.createdAt ?? null,
+    backupOn: !!backupSchedule?.enabled,
+    nextBackupAt: backupSchedule?.enabled ? backupSchedule.nextRunAt : null,
   };
 }
 

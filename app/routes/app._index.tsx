@@ -11,7 +11,8 @@ import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 import { AskBox } from "../components/AskBox";
 import { EXPORT_TEMPLATES } from "../lib/jobs/templates";
-import { backupsAllowed } from "../lib/jobs/backups.server";
+import { DEFAULT_BACKUP_TYPES, backupNow, backupsAllowed, saveBackupSettings } from "../lib/jobs/backups.server";
+import { browserTimeZone } from "../components/ScheduleTime";
 import { assistantAllowed } from "../lib/ai/assistant.server";
 
 /** Jobs shown per page of the history. */
@@ -68,6 +69,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (form.get("intent") === "cancel") await cancelJob(session.shop, id);
   if (form.get("intent") === "rerun") await rerunJob(session.shop, id);
   if (form.get("intent") === "seen-all") await markReviewed(session.shop);
+  if (form.get("intent") === "enable-backups") {
+    // One click: every data type, daily at 02:30 in the merchant's time zone, kept 30 days, first backup now.
+    try {
+      await saveBackupSettings(session.shop, { enabled: true, runAt: "02:30", timezone: String(form.get("timezone") || "UTC"), types: DEFAULT_BACKUP_TYPES, keepDays: 30 });
+      await backupNow(session.shop).catch(() => {});
+    } catch (e: any) {
+      return { error: e.message as string };
+    }
+  }
   return { ok: true };
 };
 
@@ -112,6 +122,7 @@ export default function Home() {
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const [params, setParams] = useSearchParams();
+  const pendingIntent = fetcher.state !== "idle" ? String(fetcher.formData?.get("intent") ?? "") : "";
   // The job whose button was just pressed, until the list has refreshed.
   const pendingId = fetcher.state !== "idle" ? String(fetcher.formData?.get("id") ?? "") || null : null;
   const anyActive = jobs.some((j) => isActive(j.status));
@@ -197,12 +208,41 @@ export default function Home() {
                 label="Last backup"
                 value={stats.lastBackupAt ? daysAgo(stats.lastBackupAt) : "—"}
                 href="/app/backups"
-                tone={stats.lastBackupAt ? undefined : "warn"}
-                note={stats.lastBackupAt ? formatDate(stats.lastBackupAt) : "not set up yet"}
+                tone={stats.backupOn ? undefined : "warn"}
+                note={stats.backupOn ? (stats.nextBackupAt ? `next: ${formatDate(stats.nextBackupAt)}` : "daily") : "daily backups are off"}
               />
             ) : null}
           </div>
         )}
+
+        {backupsEnabled && !stats.backupOn ? (
+          <s-section>
+            <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+              <s-stack direction="inline" gap="base" alignItems="center">
+                <s-icon type="shield-check-mark" />
+                <s-stack direction="block" gap="small-300">
+                  <s-heading>Set up daily backups</s-heading>
+                  <s-text tone="neutral">
+                    {stats.lastBackupAt
+                      ? `Daily backups are off. Your last backup was ${daysAgo(stats.lastBackupAt).toLowerCase()}.`
+                      : "Keep a daily copy of your products, customers, orders and more, so a bad import or a mistake can be undone."}
+                  </s-text>
+                </s-stack>
+              </s-stack>
+              <s-stack direction="inline" gap="small">
+                <s-button href="/app/backups">Choose options</s-button>
+                <s-button
+                  variant="primary"
+                  loading={pendingIntent === "enable-backups"}
+                  disabled={pendingIntent === "enable-backups"}
+                  onClick={() => fetcher.submit({ intent: "enable-backups", id: "", timezone: browserTimeZone() }, { method: "post" })}
+                >
+                  Turn on daily backups
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-section>
+        ) : null}
 
         <s-section>
           <s-stack direction="block" gap="base">
