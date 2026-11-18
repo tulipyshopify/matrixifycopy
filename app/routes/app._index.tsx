@@ -50,7 +50,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: `${row.kind} #${row.number}: ${row.title}`,
       summary: jobHealth({ ...j, dryRun: isDryRunConfig(j.config) }).summary,
       createdAt: j.createdAt,
-      scheduled: !!j.scheduleId,
+      // A one-off import from a link also carries a (hidden) schedule: not "scheduled".
+      scheduled: !!j.scheduleId && repeats.has(j.scheduleId),
       };
     }),
     stats,
