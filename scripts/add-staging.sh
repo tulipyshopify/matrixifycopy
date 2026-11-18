@@ -12,11 +12,20 @@ STAGING="${STAGING_DIR:-/opt/bulkport-staging}"
 DOMAIN="bulk-v2.tulipy.app"
 CLIENT_ID="3cd3c0dd33e83bbeb9f5110ba0f30e98"
 
-if [[ ! -d "$STAGING/.git" ]]; then
-  git clone --branch staging "$(git remote get-url origin)" "$STAGING"
-else
-  git -C "$STAGING" fetch && git -C "$STAGING" checkout staging && git -C "$STAGING" pull
+# The test folder is a second working copy of this repository (git worktree):
+# it uses the same GitHub access as the live folder, no new key needed.
+git fetch origin staging
+if [[ ! -e "$STAGING/.git" ]]; then
+  if [[ -d "$STAGING" ]] && [[ -n "$(ls -A "$STAGING" 2>/dev/null)" ]]; then
+    echo "$STAGING exists and isn't empty; move it away first." >&2; exit 1
+  fi
+  if git show-ref --verify --quiet refs/heads/staging; then
+    git worktree add "$STAGING" staging
+  else
+    git worktree add --track -b staging "$STAGING" origin/staging
+  fi
 fi
+git -C "$STAGING" pull --ff-only
 
 secret="${INSTANCE_SECRET:-}"
 if [[ -z "$secret" ]]; then
