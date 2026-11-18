@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import ExcelJS from "exceljs";
 import Papa from "papaparse";
-import { unzipSync, Zip, ZipDeflate } from "fflate";
+import { inflateSync, unzipSync, Zip, ZipDeflate } from "fflate";
 import type { Logger, Row } from "./types";
 
 export interface Sheet {
@@ -63,7 +63,88 @@ export function parseCsv(text: string): { headers: string[]; rows: Row[] } {
   return rowsFromMatrix(parsed.data as string[][]);
 }
 
-async function readXlsx(input: string | Buffer): Promise<Sheet[]> {
+/**
+ * Reads one small entry of a zip (e.g. "xl/workbook.xml") through the zip's
+ * central directory, without unpacking the rest. Null when it isn't there or
+ * the archive uses a layout this doesn't cover (zip64).
+ */
+export async function readZipEntry(input: string | Buffer, name: string): Promise<Buffer | null> {
+  return (await zipDirectory(input, name))?.data ?? null;
+}
+
+/** Names of every entry in a zip, from its central directory; null when unreadable. */
+export async function zipEntryNames(input: string | Buffer): Promise<string[] | null> {
+  return (await zipDirectory(input, null))?.names ?? null;
+}
+
+async function zipDirectory(input: string | Buffer, want: string | null): Promise<{ names: string[]; data: Buffer | null } | null> {
+  const fh = typeof input === "string" ? await fs.promises.open(input, "r") : null;
+  try {
+    const size = fh ? (await fh.stat()).size : (input as Buffer).length;
+    const read = async (pos: number, len: number) => {
+      if (!fh) return (input as Buffer).subarray(pos, pos + len);
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, pos);
+      return buf;
+    };
+    // End of central directory: in the last 64 KB + 22 bytes.
+    const tailLen = Math.min(size, 65_557);
+    const tail = await read(size - tailLen, tailLen);
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail.readUInt32LE(i) === 0x06054b50) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) return null;
+    const names: string[] = [];
+    const count = tail.readUInt16LE(eocd + 10);
+    const dirSize = tail.readUInt32LE(eocd + 12);
+    const dirOffset = tail.readUInt32LE(eocd + 16);
+    if (dirOffset === 0xffffffff || dirOffset + dirSize > size) return null;
+    const dir = await read(dirOffset, dirSize);
+    for (let p = 0, n = 0; n < count && p + 46 <= dir.length; n++) {
+      if (dir.readUInt32LE(p) !== 0x02014b50) return null;
+      const method = dir.readUInt16LE(p + 10);
+      const compSize = dir.readUInt32LE(p + 20);
+      const nameLen = dir.readUInt16LE(p + 28);
+      const extraLen = dir.readUInt16LE(p + 30);
+      const commentLen = dir.readUInt16LE(p + 32);
+      const local = dir.readUInt32LE(p + 42);
+      const entryName = dir.subarray(p + 46, p + 46 + nameLen).toString("utf8");
+      names.push(entryName);
+      if (entryName === want) {
+        const head = await read(local, 30);
+        if (head.readUInt32LE(0) !== 0x04034b50) return null;
+        const start = local + 30 + head.readUInt16LE(26) + head.readUInt16LE(28);
+        const data = await read(start, compSize);
+        if (method === 0) return { names, data: Buffer.from(data) };
+        if (method === 8) return { names, data: Buffer.from(inflateSync(data)) };
+        return null;
+      }
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return want ? null : { names, data: null };
+  } finally {
+    await fh?.close();
+  }
+}
+
+const XML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** Sheet names an .xlsx says it has, in order; null when that can't be read. */
+export async function xlsxSheetNames(input: string | Buffer): Promise<string[] | null> {
+  const xml = await readZipEntry(input, "xl/workbook.xml").catch(() => null);
+  if (!xml) return null;
+  return [...xml.toString("utf8").matchAll(/<sheet\b[^>]*?\bname="([^"]*)"/g)].map((m) =>
+    m[1].replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (_, e: string) =>
+      e[0] === "#" ? String.fromCodePoint(parseInt(e.slice(e[1] === "x" ? 2 : 1), e[1] === "x" ? 16 : 10)) : XML_ENTITIES[e.toLowerCase()],
+    ),
+  );
+}
+
+async function streamXlsx(input: string | Buffer): Promise<Sheet[]> {
   const stream = typeof input === "string" ? fs.createReadStream(input) : Readable.from(input);
   const reader = new ExcelJS.stream.xlsx.WorkbookReader(stream as any, {
     sharedStrings: "cache",
@@ -86,6 +167,28 @@ async function readXlsx(input: string | Buffer): Promise<Sheet[]> {
     sheets.push({ name: ws.name ?? `Sheet${sheets.length + 1}`, headers, rows });
   }
   return sheets;
+}
+
+/**
+ * Reads an .xlsx. The streaming reader can stop early and return only the
+ * first sheet, unnamed, without an error; so the result is checked against
+ * the sheet list in the file itself, read once more if it doesn't match, and
+ * refused rather than imported half.
+ */
+async function readXlsx(input: string | Buffer): Promise<Sheet[]> {
+  // What the file holds: its worksheet files, and the tab names (chart tabs included).
+  const entries = await zipEntryNames(input).catch(() => null);
+  const worksheetCount = entries?.filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).length ?? null;
+  const names = await xlsxSheetNames(input);
+  const complete = (sheets: Sheet[]) =>
+    worksheetCount === null || !names || (sheets.length === worksheetCount && sheets.every((s) => names.includes(s.name)));
+  let sheets = await streamXlsx(input);
+  if (complete(sheets)) return sheets;
+  sheets = await streamXlsx(input);
+  if (complete(sheets)) return sheets;
+  throw new Error(
+    `This Excel file couldn't be read completely (found ${sheets.length} of its ${worksheetCount} sheets). Save it again in Excel, or use CSV, and import it again.`,
+  );
 }
 
 /**
