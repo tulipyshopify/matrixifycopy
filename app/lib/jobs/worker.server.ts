@@ -114,7 +114,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     const bulk = createBulkRunner(gql, { log, isCancelled, onRoots: (n) => bulkEvents.onRoots(n) });
 
     // Imports scheduled from a URL fetch their file at run time.
-    if (job.type === "import" && !job.inputFile) {
+    if (job.type === "import" && !job.inputFile && !JSON.parse(job.config).generate) {
       const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId } }) : null;
       const sourceUrl = openSecret(schedule?.sourceUrl);
       if (!sourceUrl) throw new Error("No input file");
@@ -137,6 +137,11 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       isCancelled,
       bulkEvents,
       timezone: () => shopTimezone(gql),
+      // A change asked for in plain English builds its file: keep it, so
+      // "Import for real" applies exactly what was previewed.
+      onInput: async (file, name) => {
+        await prisma.job.update({ where: { id: job.id }, data: { inputFile: file, inputName: name } });
+      },
       count: async (entity, options) => {
         const r = await countItems(gql, entity, options);
         return r && !r.unfiltered && r.precision === "EXACT" ? r.count : null;

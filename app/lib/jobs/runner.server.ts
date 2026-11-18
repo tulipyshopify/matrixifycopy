@@ -6,6 +6,7 @@ import { runImport, type ImportSummary } from "../core/importer";
 import { createWorkbookOut, readWorkbook, type OutputFormat } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
+import { generateChangeFile, type GenerateSpec } from "../ai/generate";
 
 /** Dry-run preview of an import, in the job's folder. */
 export const PREVIEW_FILE = "preview.json";
@@ -16,6 +17,8 @@ export interface ExportConfig {
 
 export interface ImportConfig {
   options: ImportOptions;
+  /** A change asked for in plain English: the input file is built when the job runs. */
+  generate?: GenerateSpec;
 }
 
 export interface JobRecord {
@@ -40,6 +43,8 @@ export interface RunnerDeps {
   isCancelled: () => Promise<boolean>;
   /** The shop's IANA time zone. */
   timezone?: () => Promise<string>;
+  /** Called when a job builds its own input file, so it can be saved on the job. */
+  onInput?: (file: string, name: string) => Promise<void>;
   /** Expected number of items for an entity's export, or null when unknown. */
   count?: (entity: string, options: ExportOptions) => Promise<number | null>;
   /** The worker's bulk runner reports prepared root items through this hook. */
@@ -127,8 +132,15 @@ export async function executeJob(
   }
 
   if (job.type === "import") {
-    if (!job.inputFile) throw new Error("No input file");
     const config = JSON.parse(job.config) as ImportConfig;
+    if (!job.inputFile && config.generate) {
+      const timezone = deps.timezone ? await deps.timezone() : "UTC";
+      const made = await generateChangeFile(config.generate, { ...deps, timezone }, dir);
+      job.inputFile = made.file;
+      job.inputName = made.name;
+      await deps.onInput?.(made.file, made.name);
+    }
+    if (!job.inputFile) throw new Error("No input file");
     deps.log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
     const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
     deps.log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);

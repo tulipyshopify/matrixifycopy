@@ -4,6 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { createExportJob, createSchedule, editSchedule, entityCatalog, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
+import { askedExport } from "../lib/ai/assistant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -25,7 +26,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     entities: entityCatalog().filter((e) => e.canExport),
     presets: await listPresets(session.shop),
     // "Edit and export again" on a job page opens the form with that job's set-up.
-    latest: await latestExportPreset(session.shop, params.get("from") ?? undefined),
+    // "Adjust first" from Ask Bulkport opens its set-up; "Edit and export again" a job's.
+    latest: params.get("ask")
+      ? ((await askedExport(session.shop, params.get("ask")!)) ?? (await latestExportPreset(session.shop)))
+      : await latestExportPreset(session.shop, params.get("from") ?? undefined),
   };
 };
 

@@ -148,6 +148,24 @@ Updating stays the same command and updates every copy. The second copy's data i
 (add it to the backup). Each copy may use up to about 1.5 GB of memory while a big job runs, so on a 4 GB server avoid
 running very large exports in both at the same time.
 
+## Version 2 features: alerts, backups, Ask Bulkport
+
+Version 2 is on the `v2` branch (the live version stays on `main`; `release-v1.0` is a copy of 1.0). It adds three
+optional settings to `.env.production` (see `.env.production.example`):
+
+* `SMTP_URL` and `ALERT_FROM`: email account used for failure alerts (Settings page in the app).
+* `BACKUP_SHOPS`: which stores get the Backups page (`*` for all).
+* `ANTHROPIC_API_KEY` and `ASSIST_SHOPS`: switch on the "Ask Bulkport" box. Each request is a call to the Claude API.
+
+To try version 2 on the server:
+
+```shell
+cd /opt/bulkport && git fetch && git checkout v2 && git pull && docker compose up -d --build
+```
+
+and to go back to version 1: `git checkout main && docker compose up -d --build`. Version 2 adds database columns;
+version 1 ignores them, so going back is safe.
+
 ## Backups
 
 Everything the app stores is in `/opt/bulkport/data`: the database (job history, schedules, Shopify sessions) and job

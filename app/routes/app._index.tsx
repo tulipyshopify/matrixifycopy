@@ -9,6 +9,8 @@ import { describeSchedule } from "../lib/jobs/schedule-time";
 import { HealthBadge, formatDate, isActive, jobRow } from "../components/jobs";
 import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
+import { AskBox } from "../components/AskBox";
+import { assistantAllowed } from "../lib/ai/assistant.server";
 
 /** Jobs shown per page of the history. */
 const PAGE = 30;
@@ -46,6 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     filter,
     total,
+    askEnabled: assistantAllowed(session.shop),
     scheduleCount: schedules.filter((s) => s.enabled).length,
     maxUploadMb: MAX_UPLOAD_MB,
     historyDays: EXPORT_HISTORY_DAYS,
@@ -71,7 +74,7 @@ const HISTORY_FILTERS: Array<{ key: JobFilter; label: string }> = [
 ];
 
 export default function Home() {
-  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays } = useLoaderData<typeof loader>();
+  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   const [params, setParams] = useSearchParams();
@@ -107,6 +110,8 @@ export default function Home() {
             </s-stack>
           </s-banner>
         ) : null}
+        <AskBox enabled={askEnabled} />
+
         <s-section heading="Export">
           <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
             <s-text tone="neutral">Choose data, filters and columns, then download an Excel or CSV file.</s-text>

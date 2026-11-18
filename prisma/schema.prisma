@@ -129,3 +129,17 @@ model ShopSetting {
   backupKeepDays Int   @default(30)
   updatedAt   DateTime @updatedAt
 }
+
+/// Plain-English requests ("Ask Bulkport") and the plan each became.
+model AskLog {
+  id        String   @id @default(cuid())
+  shop      String
+  prompt    String
+  /// "export" | "change" | "unclear" | "error"
+  kind      String
+  /// JSON: the checked plan (export set-up or change), or the error message.
+  result    String
+  createdAt DateTime @default(now())
+
+  @@index([shop, createdAt])
+}

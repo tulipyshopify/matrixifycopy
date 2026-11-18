@@ -16,7 +16,7 @@ interface ExportedEntity {
   };
 }
 
-function dateRangeText(e: EntityInfo, r: DateRange): string {
+export function dateRangeText(e: EntityInfo, r: DateRange): string {
   const field = e.filters.find((f) => f.key === r.field)?.label ?? r.field;
   if (r.preset === "last_n_days") return `${field}: last ${r.days ?? "?"} days`;
   if (r.preset === "last_n") return `${field}: last ${r.amount ?? "?"} ${r.unit ?? "days"}`;
@@ -24,7 +24,7 @@ function dateRangeText(e: EntityInfo, r: DateRange): string {
   return `${field}: ${r.from ? `from ${r.from}` : ""}${r.from && r.to ? " " : ""}${r.to ? `to ${r.to}` : ""}`;
 }
 
-function filterText(e: EntityInfo, f: FilterCondition): string {
+export function filterText(e: EntityInfo, f: FilterCondition): string {
   const field = e.filters.find((x) => x.key === f.field);
   if (!field) return `${f.field} ${f.op} ${f.value}`;
   const label = (v: string) => field.options?.find((o) => o.value === v)?.label ?? v;
