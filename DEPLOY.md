@@ -172,7 +172,7 @@ Two copies run side by side:
 | Folder | Branch | Address | Stores |
 |---|---|---|---|
 | `/opt/bulkport` | `v2` | bulk.tulipy.app, bulk-planters…, bulk-roots… | live stores |
-| `/opt/bulkport-staging` | `staging` | bulk-test.tulipy.app | a test store only |
+| `/opt/bulkport-staging` | `staging` | bulk-v2.tulipy.app | a test store only |
 
 New versions are pushed to `staging` first. Update the test copy, check it, and only then update live:
 
@@ -184,7 +184,7 @@ cd /opt/bulkport && git pull && docker compose up -d --build
 ```
 
 Set-up (once): create a development store for testing, then on the server
-`cd /opt/bulkport && git pull && scripts/add-staging.sh` and follow what it prints. Install "Bulkport Test" on the
+`cd /opt/bulkport && git pull && scripts/add-staging.sh` and follow what it prints. Install "Bulk v2" on the
 test store from its Installs card in the Dev Dashboard (never on a live store).
 
 ## Backups

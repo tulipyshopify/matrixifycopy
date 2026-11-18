@@ -1,7 +1,7 @@
-# The TEST copy of Bulkport (app "Bulkport Test", https://bulk-test.tulipy.app).
+# The TEST copy of Bulkport (app "Bulk v2", https://bulk-v2.tulipy.app).
 # Lives in its own folder (/opt/bulkport-staging) on the "staging" branch, so
 # new versions can be tried before the live stores get them. It has no web
-# server of its own: the live Caddy forwards bulk-test.tulipy.app to it over
+# server of its own: the live Caddy forwards bulk-v2.tulipy.app to it over
 # the live copy's network. Set up with scripts/add-staging.sh.
 services:
   app-staging:

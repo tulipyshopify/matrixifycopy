@@ -1,8 +1,8 @@
 # This file stores configurations for your Shopify app.
-# The TEST copy: app "Bulkport Test" in the Tulipy Ltd organization (62416664). Runs the staging branch. client_id is not a secret.
+# The TEST copy: app "Bulk v2" in the Tulipy Ltd organization (62416664). Runs the staging branch. client_id is not a secret.
 client_id = "3cd3c0dd33e83bbeb9f5110ba0f30e98"
-name = "Bulkport Test"
-application_url = "https://bulk-test.tulipy.app"
+name = "Bulk v2"
+application_url = "https://bulk-v2.tulipy.app"
 embedded = true
 
 [build]
@@ -10,9 +10,9 @@ automatically_update_urls_on_dev = false
 
 [auth]
 redirect_urls = [
-  "https://bulk-test.tulipy.app/auth/callback",
-  "https://bulk-test.tulipy.app/auth/shopify/callback",
-  "https://bulk-test.tulipy.app/api/auth/callback",
+  "https://bulk-v2.tulipy.app/auth/callback",
+  "https://bulk-v2.tulipy.app/auth/shopify/callback",
+  "https://bulk-v2.tulipy.app/api/auth/callback",
 ]
 
 [access_scopes]
