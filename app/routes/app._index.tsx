@@ -4,16 +4,17 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { EXPORT_HISTORY_DAYS, cancelJob, downloadLinks, listJobs, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
+import { EXPORT_HISTORY_DAYS, cancelJob, downloadLinks, listJobs, markReviewed, needsAttention, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
 import { describeSchedule } from "../lib/jobs/schedule-time";
-import { StatusBadge, formatDate, isActive, jobRow } from "../components/jobs";
+import { HealthBadge, formatDate, isActive, jobRow } from "../components/jobs";
+import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const [jobs, schedules] = await Promise.all([listJobs(session.shop), listSchedules(session.shop)]);
+  const [jobs, schedules, attention] = await Promise.all([listJobs(session.shop), listSchedules(session.shop), needsAttention(session.shop)]);
   const repeats = new Map(schedules.map((s) => [s.id, describeSchedule(s)]));
   return {
     jobs: jobs.map(({ resultFile, scheduleId, ...j }) => ({
@@ -22,6 +23,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       fileName: resultFile ? path.basename(resultFile) : null,
       repeat: scheduleId ? (repeats.get(scheduleId) ?? null) : null,
     })),
+    attention: attention.map((j) => {
+      const row = jobRow({ ...j, format: "", progress: 0, total: 0, startedAt: null, finishedAt: null });
+      return {
+      id: j.id,
+      title: `${row.kind} #${row.number}: ${row.title}`,
+      summary: jobHealth({ ...j, dryRun: isDryRunConfig(j.config) }).summary,
+      createdAt: j.createdAt,
+      scheduled: !!j.scheduleId,
+      };
+    }),
     scheduleCount: schedules.filter((s) => s.enabled).length,
     maxUploadMb: MAX_UPLOAD_MB,
     historyDays: EXPORT_HISTORY_DAYS,
@@ -34,11 +45,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const id = String(form.get("id"));
   if (form.get("intent") === "cancel") await cancelJob(session.shop, id);
   if (form.get("intent") === "rerun") await rerunJob(session.shop, id);
+  if (form.get("intent") === "seen-all") await markReviewed(session.shop);
   return { ok: true };
 };
 
 export default function Home() {
-  const { jobs, scheduleCount, maxUploadMb, historyDays } = useLoaderData<typeof loader>();
+  const { jobs, attention, scheduleCount, maxUploadMb, historyDays } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const fetcher = useFetcher();
   // The job whose button was just pressed, until the list has refreshed.
@@ -57,6 +69,22 @@ export default function Home() {
   return (
     <s-page heading="Bulkport" inlineSize="large">
       <div className="bp-column">
+        {attention.length ? (
+          <s-banner tone="critical" heading={`${attention.length} ${attention.length === 1 ? "job needs" : "jobs need"} your attention`}>
+            <s-stack direction="block" gap="small">
+              {attention.slice(0, 5).map((a) => (
+                <s-text key={a.id}>
+                  <s-link href={`/app/jobs/${a.id}`}>{a.title}</s-link>
+                  {a.scheduled ? " (scheduled)" : ""} · {formatDate(a.createdAt)}: {a.summary}
+                </s-text>
+              ))}
+              {attention.length > 5 ? <s-text tone="neutral">…and {attention.length - 5} more in the list below.</s-text> : null}
+              <s-stack direction="inline" gap="small">
+                <s-button onClick={() => fetcher.submit({ intent: "seen-all", id: "" }, { method: "post" })}>Mark all as seen</s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        ) : null}
         <s-section heading="Export">
           <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
             <s-text tone="neutral">Choose data, filters and columns, then download an Excel or CSV file.</s-text>
@@ -115,12 +143,16 @@ export default function Home() {
                         {row.took ? <span>{row.took}</span> : null}
                         {job.repeat ? <span>↻ {job.repeat}</span> : null}
                       </div>
-                      {job.error ? <s-text tone="critical">{job.error}</s-text> : null}
+                      {job.error ? (
+                        <s-text tone="critical">{job.error}</s-text>
+                      ) : job.problems ? (
+                        <s-text tone="critical">{jobHealth({ ...job, dryRun: isDryRunConfig(job.config) }).summary}</s-text>
+                      ) : null}
                     </div>
                     <div className="bp-job-side">
                       <div className="bp-job-line bp-job-end">
                         <s-badge>{row.format}</s-badge>
-                        <StatusBadge status={job.status} />
+                        <HealthBadge job={job} />
                       </div>
                       <div className="bp-job-line bp-job-end">
                         {job.links.result ? (

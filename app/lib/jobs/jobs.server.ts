@@ -253,8 +253,67 @@ export function listJobs(shop: string, take = 50) {
       stats: true,
       startedAt: true,
       scheduleId: true,
+      problems: true,
+      reviewedAt: true,
     },
   });
+}
+
+/** Days a failed job keeps asking for attention on the home screen. */
+const ATTENTION_DAYS = 14;
+
+/** Jobs that failed or finished with problems and nobody has opened since. */
+export function needsAttention(shop: string) {
+  return prisma.job.findMany({
+    where: {
+      shop,
+      reviewedAt: null,
+      createdAt: { gte: new Date(Date.now() - ATTENTION_DAYS * 86400_000) },
+      OR: [{ status: "failed" }, { status: "finished", problems: { gt: 0 } }],
+    },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { id: true, type: true, status: true, name: true, inputName: true, config: true, stats: true, error: true, createdAt: true, scheduleId: true },
+  });
+}
+
+/** Marks a job (or every job of the store) as seen, so it stops asking for attention. */
+export async function markReviewed(shop: string, id?: string) {
+  await prisma.job.updateMany({ where: { shop, reviewedAt: null, ...(id ? { id } : {}) }, data: { reviewedAt: new Date() } });
+}
+
+export interface ScheduleHealth {
+  /** Status of the most recent run, null if it never ran. */
+  last: { id: string; status: string; problems: number; finishedAt: Date | null; error: string | null } | null;
+  /** Runs in a row (newest first) that failed or had problems. */
+  failingStreak: number;
+  /** Enabled, and its run time is more than 30 minutes past. */
+  overdue: boolean;
+}
+
+/** Last run, failing streak and overdue flag for each of a store's schedules. */
+export async function scheduleHealth(shop: string, schedules: Array<{ id: string; enabled: boolean; nextRunAt: Date }>, now = new Date()) {
+  const runs = await prisma.job.findMany({
+    where: { shop, scheduleId: { in: schedules.map((s) => s.id) }, createdAt: { gte: new Date(now.getTime() - 60 * 86400_000) } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, scheduleId: true, status: true, problems: true, finishedAt: true, error: true },
+  });
+  const out: Record<string, ScheduleHealth> = {};
+  for (const s of schedules) {
+    const mine = runs.filter((r) => r.scheduleId === s.id && r.status !== "queued" && r.status !== "running");
+    let failingStreak = 0;
+    for (const r of mine) {
+      if (r.status === "failed" || (r.status === "finished" && r.problems > 0)) failingStreak++;
+      else break;
+    }
+    const last = mine[0] ?? null;
+    out[s.id] = {
+      last: last ? { id: last.id, status: last.status, problems: last.problems, finishedAt: last.finishedAt, error: last.error } : null,
+      failingStreak,
+      overdue: s.enabled && s.nextRunAt.getTime() < now.getTime() - 30 * 60_000,
+    };
+  }
+  return out;
 }
 
 /** Days an export stays in the history (and its file on the server). */

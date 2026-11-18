@@ -57,6 +57,12 @@ model Job {
   /// Times the worker started this job (restarts re-queue exports).
   attempts    Int       @default(0)
   scheduleId  String?
+  /// Rows that failed, plus rows of sheets that couldn't be imported (finished jobs).
+  problems    Int       @default(0)
+  /// When someone opened the job after it failed or finished with problems.
+  reviewedAt  DateTime?
+  /// When an alert email about this job was sent.
+  alertedAt   DateTime?
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
@@ -106,4 +112,14 @@ model Preset {
   updatedAt DateTime @updatedAt
 
   @@unique([shop, name])
+}
+
+/// Per-store settings.
+model ShopSetting {
+  shop        String   @id
+  /// Where failure alerts are emailed; empty = no emails.
+  alertEmail  String?
+  /// "scheduled": only jobs started by a schedule; "all": every job.
+  alertScope  String   @default("scheduled")
+  updatedAt   DateTime @updatedAt
 }

@@ -12,6 +12,7 @@ import {
   disablePublicLink,
   hasPersonalData,
   listSchedules,
+  scheduleHealth,
   publicFileUrl,
   resetPublicToken,
   updateSchedule,
@@ -24,6 +25,7 @@ import { formatDate } from "../components/jobs";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const schedules = await listSchedules(session.shop);
+  const health = await scheduleHealth(session.shop, schedules);
   return {
     schedules: schedules.map((s) => ({
       id: s.id,
@@ -41,6 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       lastDownloadAt: s.lastDownloadAt,
       format: s.format,
       fileUrl: publicFileUrl(s),
+      health: health[s.id],
     })),
   };
 };
@@ -95,6 +98,7 @@ export default function Schedules() {
           <s-table>
             <s-table-header-row>
               <s-table-header listSlot="primary">Name</s-table-header>
+              <s-table-header>Last run</s-table-header>
               <s-table-header>Repeats</s-table-header>
               <s-table-header>Next run</s-table-header>
               <s-table-header>Actions</s-table-header>
@@ -193,12 +197,52 @@ export default function Schedules() {
                           </s-text>
                         </s-stack>
                       ) : null}
-                      {s.lastJobId ? (
-                        <s-link href={`/app/jobs/${s.lastJobId}`}>
-                          Last run
-                        </s-link>
+                      {s.health.failingStreak >= 2 ? (
+                        <s-text tone="critical">
+                          The last {s.health.failingStreak} runs all failed or
+                          had problems.
+                        </s-text>
+                      ) : null}
+                      {s.health.overdue ? (
+                        <s-text tone="caution">
+                          Overdue: it should have run at{" "}
+                          {formatDate(s.nextRunAt)}. If the server was off,
+                          it runs as soon as it's back.
+                        </s-text>
                       ) : null}
                     </s-stack>
+                  </s-table-cell>
+                  <s-table-cell>
+                    {s.health.last ? (
+                      <s-stack direction="block" gap="small-500">
+                        <s-link href={`/app/jobs/${s.health.last.id}`}>
+                          <s-badge
+                            tone={
+                              s.health.last.status === "failed"
+                                ? "critical"
+                                : s.health.last.problems
+                                  ? "critical"
+                                  : s.health.last.status === "cancelled"
+                                    ? "warning"
+                                    : "success"
+                            }
+                          >
+                            {s.health.last.status === "failed"
+                              ? "Failed"
+                              : s.health.last.problems
+                                ? `${s.health.last.problems} problems`
+                                : s.health.last.status === "cancelled"
+                                  ? "Cancelled"
+                                  : "OK"}
+                          </s-badge>
+                        </s-link>
+                        <s-text tone="neutral">
+                          {formatDate(s.health.last.finishedAt)}
+                        </s-text>
+                      </s-stack>
+                    ) : (
+                      <s-text tone="neutral">Not run yet</s-text>
+                    )}
                   </s-table-cell>
                   <s-table-cell>{s.repeats}</s-table-cell>
                   <s-table-cell>

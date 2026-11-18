@@ -3,14 +3,17 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyDryRun, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
+import { applyDryRun, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
 import { DryRunPreview } from "../components/DryRunPreview";
+import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
-import { StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
+import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const job = await getJob(session.shop, params.id!);
+  // Opening a failed job counts as seeing it: it stops asking for attention.
+  if (!job.reviewedAt && (job.status === "failed" || job.problems > 0)) await markReviewed(session.shop, job.id);
   let dryRun = false;
   try {
     dryRun = job.type === "import" && !!JSON.parse(job.config).options?.dryRun;
@@ -32,6 +35,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       progress: job.progress,
       total: job.total,
       stats: JSON.parse(job.stats) as any[],
+      statsRaw: job.stats,
+      problems: job.problems,
       log: job.log,
       error: job.error,
       cancelRequested: job.cancelRequested,
@@ -94,6 +99,7 @@ export default function JobDetail() {
     const t = setInterval(() => setTiming(jobTiming(job)), 1000);
     return () => clearInterval(t);
   }, [job, active]);
+  const health = jobHealth({ type: job.type, status: job.status, stats: job.statsRaw, dryRun });
   const pct = job.total ? Math.min(100, Math.floor((job.progress / job.total) * 100)) : null;
   const heading = `${job.type === "export" ? "Export" : dryRun ? "Preview (dry run)" : "Import"}: ${jobSummary(job)}`;
 
@@ -154,6 +160,19 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
+      {!job.error && job.status === "finished" && health.problems > 0 ? (
+        <s-banner tone={dryRun ? "warning" : "critical"} heading={dryRun ? "The preview found problems" : "Finished with errors"}>
+          <s-stack direction="block" gap="small">
+            <s-text>{health.summary}.</s-text>
+            <s-text>
+              {dryRun
+                ? "See the Problems filter in the preview below. Fix the file and preview it again, or import for real to apply the rows that are fine."
+                : "The rest went through. The reason for each failed row is in the log below and in the results file (Import Comment column). Fix those rows and import them again."}
+            </s-text>
+          </s-stack>
+        </s-banner>
+      ) : null}
+
       {job.error ? (
         <s-banner tone="critical" heading="Job failed">
           {job.error}
@@ -164,7 +183,11 @@ export default function JobDetail() {
         <s-stack direction="block" gap="base">
           <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
             <s-stack direction="inline" gap="base" alignItems="center">
-              <StatusBadge status={job.cancelRequested && active ? "stopping" : job.status} />
+              {job.cancelRequested && active ? (
+                <StatusBadge status="stopping" />
+              ) : (
+                <HealthBadge job={{ type: job.type, status: job.status, error: job.error, stats: job.statsRaw, config: job.config }} />
+              )}
               <s-text>{progressText(job)}</s-text>
               {timing ? <s-text tone="neutral">{timing}</s-text> : null}
             </s-stack>

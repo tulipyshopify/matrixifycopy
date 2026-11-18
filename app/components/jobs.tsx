@@ -1,3 +1,4 @@
+import { HEALTH_TONE, isDryRunConfig, jobHealth } from "../lib/jobs/health";
 const TONES: Record<string, "info" | "success" | "critical" | "warning" | "neutral"> = {
   queued: "neutral",
   uploading: "neutral",
@@ -150,4 +151,10 @@ export function jobRow(job: JobRowInput): {
     format: ext === "xlsx" ? "Excel" : ext.toUpperCase(),
     took,
   };
+}
+
+/** Status badge that also flags problems ("Finished with errors"). */
+export function HealthBadge({ job }: { job: { type: string; status: string; error?: string | null; stats?: string | null; config?: string | null } }) {
+  const h = jobHealth({ ...job, dryRun: isDryRunConfig(job.config) });
+  return <s-badge tone={HEALTH_TONE[h.level]}>{h.label}</s-badge>;
 }
