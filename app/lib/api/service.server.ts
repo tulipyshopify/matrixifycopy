@@ -89,6 +89,10 @@ export interface ImportRequest {
   command?: string;
   /** Run for real. Needs a key that allows imports; otherwise it's a preview. */
   apply?: boolean;
+  /** Batch mode for sheets of only ID + Metafield columns. */
+  batch?: boolean;
+  /** Items sent at once, 1-8. */
+  concurrency?: number;
 }
 
 export function assertCanImport(auth: KeyAuth) {
@@ -101,7 +105,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   if (input.apply) assertCanImport(auth);
   let options;
   try {
-    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : undefined, dryRun: !input.apply });
+    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : undefined, dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined });
   } catch (e: any) {
     throw new ApiError(400, e.message);
   }

@@ -31,6 +31,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         sourceUrl: found.sourceUrl,
         defaultCommand: String(found.config?.options?.defaultCommand ?? "MERGE"),
         dryRun: !!found.config?.options?.dryRun,
+        concurrency: Number(found.config?.options?.concurrency ?? 4),
+        batch: !!found.config?.options?.batch,
       }
     : null;
   return { editing, entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };

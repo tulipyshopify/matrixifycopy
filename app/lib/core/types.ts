@@ -200,6 +200,8 @@ export interface ImportOptions {
   defaultCommand?: Command;
   /** Parallel items processed at once. */
   concurrency?: number;
+  /** Batch mode: sheets that qualify go to Shopify as one bulk operation (see batch.ts). */
+  batch?: boolean;
 }
 
 export interface ImportContext {

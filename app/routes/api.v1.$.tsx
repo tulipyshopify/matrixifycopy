@@ -102,12 +102,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             url: form.get("url") ? String(form.get("url")) : undefined,
             command: form.get("command") ? String(form.get("command")) : undefined,
             apply: String(form.get("apply") ?? "") === "true",
+            batch: String(form.get("batch") ?? "") === "true",
+            concurrency: form.get("concurrency") ? Number(form.get("concurrency")) : undefined,
           }),
           201,
         );
       }
       const b2 = (await body()) as any;
-      return json(await startImport(auth, { csv: b2.csv, fileName: b2.file_name, url: b2.url, command: b2.command, apply: b2.apply === true }), 201);
+      return json(await startImport(auth, { csv: b2.csv, fileName: b2.file_name, url: b2.url, command: b2.command, apply: b2.apply === true, batch: b2.batch === true, concurrency: b2.concurrency }), 201);
     }
     if (a === "jobs" && b && c === "apply") return json(await applyPreview(auth, b), 201);
     if (a === "jobs" && b && c === "cancel") return json(await cancel(auth, b));

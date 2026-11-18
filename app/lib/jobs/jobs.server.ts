@@ -188,6 +188,7 @@ export function parseImportOptions(raw: unknown): ImportOptions {
     o.defaultCommand = input.defaultCommand;
   }
   if (input.dryRun) o.dryRun = true;
+  if (input.batch) o.batch = true;
   if (input.concurrency) o.concurrency = Math.min(8, Math.max(1, Math.floor(Number(input.concurrency))));
   return o;
 }

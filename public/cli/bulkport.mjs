@@ -43,6 +43,9 @@ Import:
     nothing is changed. It prints what each row would do.
     --apply                       run for real (the key must allow imports)
     --command UPDATE              for rows without a Command column
+    --batch                       batch mode: sheets of only ID + Metafield columns go to
+                                  Shopify as one bulk job (much faster for thousands of rows)
+    --threads 8                   items sent at once, 1-8 (default 4)
     --no-wait
   bulkport apply <job>            run a finished preview for real
   bulkport preview <job>          show a preview again
@@ -62,7 +65,7 @@ function fail(message, code = 1) {
 function parseArgs(argv) {
   const flags = { filter: [] };
   const rest = [];
-  const takesValue = new Set(["columns", "groups", "filter", "last", "date-field", "limit", "format", "out", "command"]);
+  const takesValue = new Set(["columns", "groups", "filter", "last", "date-field", "limit", "format", "out", "command", "threads"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-o") flags.out = argv[++i];
@@ -241,13 +244,15 @@ async function main() {
     if (!a) fail("Usage: bulkport import <file or link> [--apply]. See: bulkport help");
     let job;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(a)) {
-      job = await api("POST", "imports", { url: a, command: flags.command, apply: !!flags.apply });
+      job = await api("POST", "imports", { url: a, command: flags.command, apply: !!flags.apply, batch: !!flags.batch, concurrency: flags.threads ? Number(flags.threads) : undefined });
     } else {
       if (!fs.existsSync(a)) fail(`No such file: ${a}`);
       const form = new FormData();
       form.set("file", new Blob([fs.readFileSync(a)]), path.basename(a));
       if (flags.command) form.set("command", flags.command);
       if (flags.apply) form.set("apply", "true");
+      if (flags.batch) form.set("batch", "true");
+      if (flags.threads) form.set("concurrency", String(flags.threads));
       job = await api("POST", "imports", form);
     }
     if (flags["no-wait"]) return print(job, job.id);

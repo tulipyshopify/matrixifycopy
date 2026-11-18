@@ -3,6 +3,8 @@ import { ImportError } from "./types";
 import { cell, gidToId, mapLimit, parseCommand } from "./util";
 import type { Sheet, WorkbookOut } from "./sheets";
 import { detectEntity, detectEntityByIds, detectEntityByMetafields } from "./registry";
+import type { BatchIo } from "./batch";
+import { planBatch, runBatch } from "./batch";
 
 export const RESULT_COLUMN = "Import Result";
 export const COMMENT_COLUMN = "Import Comment";
@@ -169,6 +171,8 @@ export interface RunImportArgs {
   log: Logger;
   progress?: (done: number, total: number) => void;
   isCancelled?: () => boolean | Promise<boolean>;
+  /** Batch mode plumbing (tests replace the upload and download). */
+  batchIo?: BatchIo;
 }
 
 export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
@@ -237,7 +241,34 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     const results: Array<{ item: ImportItem; result: ItemResult }> = [];
     const previews = new Map<ImportItem, Pick<PreviewItem, "action" | "changes">>();
     let cancelled = false;
-    await mapLimit(items, Math.max(1, ctx.options.concurrency ?? 4), async (item) => {
+    // Batch mode (opt-in, never for dry runs): the sheet goes to Shopify as one
+    // bulk operation when it qualifies; otherwise it runs the normal way below.
+    let batched = false;
+    if (ctx.options.batch && !ctx.options.dryRun) {
+      const batch = planBatch(entity, sheet.headers, items, defaultCommand);
+      if ("reason" in batch) {
+        log(`Sheet "${sheet.name}": not using batch mode (${batch.reason}).`);
+      } else {
+        const base = done;
+        const batchResults = await runBatch(ctx.gql, batch, {
+          ...args.batchIo,
+          log,
+          isCancelled: args.isCancelled,
+          onProgress: (n) => args.progress?.(base + Math.min(n, items.length), total),
+        });
+        batchResults.forEach((result, i) => {
+          results.push({ item: items[i], result });
+          if (result.status === "OK") summary.ok++;
+          else if (result.status === "Failed") summary.failed++;
+          else summary.skipped++;
+          summary.byCommand[result.command] = (summary.byCommand[result.command] ?? 0) + 1;
+        });
+        done += items.length;
+        args.progress?.(done, total);
+        batched = true;
+      }
+    }
+    await mapLimit(batched ? [] : items, Math.max(1, ctx.options.concurrency ?? 4), async (item) => {
       let result: ItemResult;
       let command: Command = defaultCommand;
       if (cancelled || (args.isCancelled && (await args.isCancelled()))) {

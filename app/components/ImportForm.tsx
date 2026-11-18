@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useFetcher } from "react-router";
 import { ScheduleTimeFields, browserTimeZone } from "./ScheduleTime";
 
@@ -18,6 +18,8 @@ export interface ImportScheduleBeingEdited {
   sourceUrl: string;
   defaultCommand: string;
   dryRun: boolean;
+  concurrency?: number;
+  batch?: boolean;
 }
 
 export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: number; editing?: ImportScheduleBeingEdited | null }) {
@@ -31,6 +33,12 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
   };
   const [defaultCommand, setDefaultCommand] = useState(editing?.defaultCommand ?? "MERGE");
   const [dryRun, setDryRun] = useState(editing?.dryRun ?? false);
+  // Server-rendered selects show their first option until remounted in the browser.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const selectKey = mounted ? "client" : "server";
+  const [concurrency, setConcurrency] = useState(String(editing?.concurrency ?? 4));
+  const [batch, setBatch] = useState(editing?.batch ?? false);
   const [runAt, setRunAt] = useState(editing?.runAt ?? "");
   const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
   const [scheduled, setScheduled] = useState(!!editing);
@@ -47,7 +55,7 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
     if (!source) return;
     setPreviewing(preview);
     form.set("source", source);
-    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun) }));
+    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch }));
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
@@ -118,6 +126,7 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
       <s-section heading="Import options">
         <s-stack direction="block" gap="base">
           <s-select
+            key={`command-${selectKey}`}
             label="Command for rows with an empty Command column"
             value={defaultCommand}
             onChange={(ev: any) => setDefaultCommand(ev.currentTarget.value)}
@@ -128,6 +137,24 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
             <s-option value="REPLACE">REPLACE: delete and re-create</s-option>
             <s-option value="DELETE">DELETE: delete the items</s-option>
           </s-select>
+          <s-select
+            key={`speed-${selectKey}`}
+            label="Speed"
+            details="How many items are sent to Shopify at once. Lower it if other apps on the store are being slowed down."
+            value={concurrency}
+            onChange={(ev: any) => setConcurrency(ev.currentTarget.value)}
+          >
+            <s-option value="1">1 at a time (gentlest)</s-option>
+            <s-option value="2">2 at a time</s-option>
+            <s-option value="4">4 at a time (standard)</s-option>
+            <s-option value="8">8 at a time (fastest)</s-option>
+          </s-select>
+          <s-checkbox
+            label="Batch mode for large metafield updates"
+            details="A sheet with only ID and Metafield columns, 50 rows or more, is handed to Shopify as one bulk job instead of row by row: much faster for thousands of rows. Other sheets import the normal way, and the log says why."
+            checked={batch}
+            onChange={(ev: any) => setBatch(ev.currentTarget.checked)}
+          />
           {repeating ? (
             <s-checkbox
               label="Dry run every time"
@@ -151,7 +178,7 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
           )}
           {repeating ? (
             <>
-              <s-select label="How often" value={String(interval)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
+              <s-select key={`often-${selectKey}`} label="How often" value={String(interval)} onChange={(ev: any) => setIntervalMinutes(Number(ev.currentTarget.value))}>
                 <s-option value="60">Every hour</s-option>
                 <s-option value="360">Every 6 hours</s-option>
                 <s-option value="1440">Every day</s-option>
