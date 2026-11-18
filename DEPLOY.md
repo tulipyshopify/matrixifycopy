@@ -148,12 +148,11 @@ Updating stays the same command and updates every copy. The second copy's data i
 (add it to the backup). Each copy may use up to about 1.5 GB of memory while a big job runs, so on a 4 GB server avoid
 running very large exports in both at the same time.
 
-## Version 2 features: alerts, backups, Ask Bulkport
+## Version 2 features: failure flags, backups, Ask Bulkport
 
-Version 2 is on the `v2` branch (the live version stays on `main`; `release-v1.0` is a copy of 1.0). It adds three
+Version 2 is on the `v2` branch (the live version stays on `main`; `release-v1.0` is a copy of 1.0). It adds two
 optional settings to `.env.production` (see `.env.production.example`):
 
-* `SMTP_URL` and `ALERT_FROM`: email account used for failure alerts (Settings page in the app).
 * `BACKUP_SHOPS`: which stores get the Backups page (`*` for all).
 * `ANTHROPIC_API_KEY` and `ASSIST_SHOPS`: switch on the "Ask Bulkport" box. Each request is a call to the Claude API.
 

@@ -32,12 +32,10 @@ describe("job health", () => {
 
 process.env.DATABASE_URL ??= "file:dev.sqlite";
 process.env.SHOPIFY_API_SECRET ??= "test-secret";
-process.env.SHOPIFY_API_KEY ??= "key123";
 
-describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("attention and alerts", async () => {
+describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("attention and schedule health", async () => {
   const { default: prisma } = await import("../app/db.server");
   const jobs = await import("../app/lib/jobs/jobs.server");
-  const alerts = await import("../app/lib/jobs/alerts.server");
   const shop = `alerts-test-${Date.now()}.myshopify.com`;
   afterAll(async () => {
     await prisma.job.deleteMany({ where: { shop } });
@@ -60,40 +58,6 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("attention and alerts", asy
     await jobs.markReviewed(shop);
     expect(await ids()).toEqual([]);
     expect([ok.id, old.id]).toHaveLength(2);
-  });
-
-  it("emails once about a failed scheduled job, and only when asked to", async () => {
-    const sent: any[] = [];
-    const mail = async (m: any) => void sent.push(m);
-    const schedule = await prisma.schedule.create({ data: { shop, name: "Nightly carriers", type: "import", config: "{}", intervalMinutes: 1440, nextRunAt: new Date() } });
-    const job = await prisma.job.create({ data: { shop, type: "import", status: "finished", config: "{}", stats: failedStats, problems: 1, scheduleId: schedule.id } });
-    // No address saved: nothing sent.
-    expect(await alerts.alertIfNeeded(job.id, mail)).toBe(false);
-    await expect(alerts.saveSettings(shop, { alertEmail: "ops@example.com, not-an-email" })).rejects.toThrow(/not an email/);
-    await alerts.saveSettings(shop, { alertEmail: "ops@example.com; mat@example.com", alertScope: "scheduled" });
-    expect(await alerts.alertIfNeeded(job.id, mail)).toBe(true);
-    expect(sent[0].to).toBe("ops@example.com, mat@example.com");
-    expect(sent[0].subject).toBe(`Bulkport: Import "Nightly carriers" had problems (${shop.replace(".myshopify.com", "")})`);
-    expect(sent[0].text).toMatch(/1 item failed/);
-    expect(sent[0].text).toContain(`/apps/key123/app/jobs/${job.id}`);
-    // Once only.
-    expect(await alerts.alertIfNeeded(job.id, mail)).toBe(false);
-    // A job someone started by hand: only with "every job".
-    const manual = await prisma.job.create({ data: { shop, type: "export", status: "failed", config: "{}", error: "Throttled" } });
-    expect(await alerts.alertIfNeeded(manual.id, mail)).toBe(false);
-    await alerts.saveSettings(shop, { alertEmail: "ops@example.com", alertScope: "all" });
-    expect(await alerts.alertIfNeeded(manual.id, mail)).toBe(true);
-    expect(sent[1].subject).toMatch(/Export failed/);
-    // Fine or cancelled jobs never alert.
-    const fine = await prisma.job.create({ data: { shop, type: "import", status: "finished", config: "{}", stats: "[]" } });
-    const cancelled = await prisma.job.create({ data: { shop, type: "export", status: "cancelled", config: "{}" } });
-    expect(await alerts.alertIfNeeded(fine.id, mail)).toBe(false);
-    expect(await alerts.alertIfNeeded(cancelled.id, mail)).toBe(false);
-    // A mail server error doesn't mark it as sent.
-    const again = await prisma.job.create({ data: { shop, type: "export", status: "failed", config: "{}" } });
-    expect(await alerts.alertIfNeeded(again.id, async () => { throw new Error("SMTP down"); })).toBe(false);
-    expect((await prisma.job.findUnique({ where: { id: again.id } }))!.alertedAt).toBeNull();
-    expect(sent).toHaveLength(2);
   });
 
   it("shows each schedule's last run, failing streak and whether it is overdue", async () => {

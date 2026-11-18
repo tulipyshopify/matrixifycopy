@@ -42,8 +42,6 @@ SCOPES=$scopes
 EXPORT_HISTORY_DAYS=7
 MAX_UPLOAD_MB=200
 ENV
-# Email alerts use the same mail account as the first copy.
-if [[ -f .env.production ]]; then grep -E '^(SMTP_URL|ALERT_FROM)=' .env.production >> "instances/$name.env" || true; fi
 umask 022
 
 cat > "instances/$name.yml" <<YML

@@ -61,8 +61,6 @@ model Job {
   problems    Int       @default(0)
   /// When someone opened the job after it failed or finished with problems.
   reviewedAt  DateTime?
-  /// When an alert email about this job was sent.
-  alertedAt   DateTime?
   /// "job" (export/import someone set up) or "backup" (a store backup).
   kind        String    @default("job")
   createdAt   DateTime  @default(now())
@@ -121,10 +119,6 @@ model Preset {
 /// Per-store settings.
 model ShopSetting {
   shop        String   @id
-  /// Where failure alerts are emailed; empty = no emails.
-  alertEmail  String?
-  /// "scheduled": only jobs started by a schedule; "all": every job.
-  alertScope  String   @default("scheduled")
   /// Days backups are kept (the newest is always kept).
   backupKeepDays Int   @default(30)
   updatedAt   DateTime @updatedAt

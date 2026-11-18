@@ -7,7 +7,6 @@ import { shopTimezone } from "../core/lookups";
 import { executeJob } from "./runner.server";
 import { nextRun } from "./schedule-time";
 import { isDryRunConfig, jobHealth } from "./health";
-import { alertIfNeeded } from "./alerts.server";
 import { pruneBackups } from "./backups.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
@@ -184,8 +183,6 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
         : { status: message === "Cancelled" ? "cancelled" : "failed", error: message, finishedAt: new Date() },
     });
   } finally {
-    // Tell someone when it went wrong (alerts.server decides whether and who).
-    await alertIfNeeded(job.id).catch((e) => console.error("[worker] alert failed", e));
     clearInterval(timer);
     running.delete(job.id);
     runningShops.delete(slot(job));
@@ -215,10 +212,6 @@ async function recoverInterrupted() {
   // Exports are safe to retry; imports may have partially applied, so fail them.
   // …but only so often: an export that was running at several restarts is
   // probably what brought the server down, so it is not started again.
-  const stuck = await prisma.job.findMany({
-    where: { status: "running", OR: [{ type: "import" }, { type: "export", attempts: { gte: MAX_ATTEMPTS } }] },
-    select: { id: true },
-  });
   await prisma.job.updateMany({
     where: { status: "running", type: "export", attempts: { gte: MAX_ATTEMPTS } },
     data: {
@@ -232,7 +225,6 @@ async function recoverInterrupted() {
     where: { status: "running", type: "import" },
     data: { status: "failed", error: "Interrupted by a server restart. Check the store before re-running.", finishedAt: new Date() },
   });
-  for (const { id } of stuck) await alertIfNeeded(id).catch(() => {});
 }
 
 let started = false;

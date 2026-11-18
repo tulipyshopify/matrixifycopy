@@ -13,7 +13,7 @@ import {
   restorePreview,
   saveBackupSettings,
 } from "../lib/jobs/backups.server";
-import { getSettings } from "../lib/jobs/alerts.server";
+import prisma from "../db.server";
 import { downloadLinks } from "../lib/jobs/jobs.server";
 import { HealthBadge, formatDate, isActive } from "../components/jobs";
 import { browserTimeZone } from "../components/ScheduleTime";
@@ -22,7 +22,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const allowed = backupsAllowed(session.shop);
   if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES };
-  const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), getSettings(session.shop)]);
+  const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), prisma.shopSetting.findUnique({ where: { shop: session.shop } })]);
   let types = DEFAULT_BACKUP_TYPES;
   try {
     if (schedule) types = JSON.parse(schedule.config).entities.map((e: any) => e.entity);
@@ -32,7 +32,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     allowed,
     types: BACKUP_TYPES,
-    keepDays: "backupKeepDays" in settings ? settings.backupKeepDays : 30,
+    keepDays: settings?.backupKeepDays ?? 30,
     schedule: schedule
       ? { enabled: schedule.enabled, runAt: schedule.runAt ?? "02:30", timezone: schedule.timezone ?? "", nextRunAt: schedule.nextRunAt, types }
       : null,
