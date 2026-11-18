@@ -41,6 +41,8 @@ export default function App() {
 .bp-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
 .bp-step{display:flex;gap:12px;align-items:flex-start}
 .bp-step-n{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--bp-brand);color:#fff;font-weight:650;font-size:13px}
+.bp-code{display:flex;gap:8px;align-items:flex-start;background:#f6f6f7;border:1px solid #e3e3e3;border-radius:8px;padding:8px 10px;margin:6px 0}
+.bp-code pre{margin:0;flex:1;min-width:0;overflow-x:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}
 .bp-rule{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding-top:12px;border-top:1px solid #ebebeb}
 .bp-rule-main{display:flex;flex-direction:column;gap:4px;min-width:0}
 .bp-rule-side{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:none}

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body { font: 13px/1.45 Arial, sans-serif; color: #1f2937; margin: 12px; }
+      h3 { font-size: 13px; margin: 18px 0 6px; }
+      label { display: block; margin: 8px 0 3px; color: #4b5563; font-size: 12px; }
+      input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
+      textarea { height: 60px; }
+      button { margin-top: 10px; padding: 7px 12px; border: 0; border-radius: 6px; background: #1d4ed8; color: #fff; font: inherit; cursor: pointer; }
+      button.plain { background: #e8effd; color: #1e3a8a; }
+      button.danger { background: #b91c1c; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .note { color: #6b7280; font-size: 12px; margin-top: 6px; }
+      .box { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; margin-top: 10px; max-height: 260px; overflow: auto; }
+      .err { color: #b91c1c; }
+      .ok { color: #047857; }
+      .item { border-bottom: 1px solid #f1f5f9; padding: 4px 0; }
+      .item small { color: #6b7280; display: block; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="setup" class="hidden">
+      <h3>Connect your store</h3>
+      <div class="note">In the Bulkport app open Connect, create an access key and paste it here.</div>
+      <label>App address</label>
+      <input id="url" placeholder="https://…" />
+      <label>Access key</label>
+      <input id="key" type="password" placeholder="bp_…" />
+      <button onclick="saveSetup()">Connect</button>
+    </div>
+
+    <div id="main" class="hidden">
+      <h3>Export into a tab</h3>
+      <label>What</label>
+      <select id="sheet" onchange="pickSheet()"></select>
+      <label>Columns (leave empty for the basic ones)</label>
+      <textarea id="columns" placeholder="ID, Title, Tags"></textarea>
+      <label>Filter (optional)</label>
+      <div style="display: flex; gap: 4px">
+        <select id="ffield"><option value="">No filter</option></select>
+        <select id="fop" style="width: 90px">
+          <option value="is">is</option>
+          <option value="is_not">is not</option>
+          <option value="contains">contains</option>
+          <option value="any_of">is one of</option>
+        </select>
+      </div>
+      <input id="fvalue" placeholder="value" style="margin-top: 4px" />
+      <label>Limit (optional)</label>
+      <input id="limit" type="number" min="1" placeholder="all" />
+      <button id="exportBtn" onclick="runExport()">Export</button>
+
+      <h3>Import this tab</h3>
+      <div class="note">First a preview: the rows are checked against your store and nothing is changed.</div>
+      <label>Rows without a Command column</label>
+      <select id="command">
+        <option value="">Update if it exists, otherwise create (MERGE)</option>
+        <option value="UPDATE">Only update existing (UPDATE)</option>
+        <option value="NEW">Only create new (NEW)</option>
+      </select>
+      <button id="previewBtn" onclick="runPreview()">Preview import</button>
+      <button id="applyBtn" class="danger hidden" onclick="runApply()">Import for real</button>
+
+      <div id="status" class="note"></div>
+      <div id="preview" class="box hidden"></div>
+      <p><a href="#" onclick="forget(); return false">Disconnect</a></p>
+    </div>
+
+    <script>
+      var info = {};
+      var previewJob = null;
+      var $ = function (id) { return document.getElementById(id); };
+      var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+      function say(text, cls) { $('status').className = 'note ' + (cls || ''); $('status').textContent = text; }
+      function oops(e) { say(e.message || String(e), 'err'); busy(false); }
+      function busy(on) { ['exportBtn', 'previewBtn', 'applyBtn'].forEach(function (b) { $(b).disabled = on; }); }
+      function call(name) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        return new Promise(function (resolve, reject) {
+          var run = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+          run[name].apply(run, args);
+        });
+      }
+      function show(settings) {
+        var ready = settings.url && settings.hasKey;
+        $('setup').className = ready ? 'hidden' : '';
+        $('main').className = ready ? '' : 'hidden';
+        $('url').value = settings.url;
+        if (ready) loadSheets();
+      }
+      function saveSetup() { call('saveSettings', $('url').value, $('key').value).then(show).catch(function (e) { alert(e.message); }); }
+      function forget() { call('forgetSettings').then(show); }
+      function loadSheets() {
+        call('listSheets').then(function (sheets) {
+          $('sheet').innerHTML = sheets.filter(function (s) { return s.can_export; }).map(function (s) { return '<option>' + esc(s.sheet) + '</option>'; }).join('');
+          pickSheet();
+        }).catch(oops);
+      }
+      function pickSheet() {
+        call('sheetInfo', $('sheet').value).then(function (i) {
+          info = i;
+          $('ffield').innerHTML = '<option value="">No filter</option>' + i.filters.map(function (f) { return '<option value="' + esc(f.field) + '">' + esc(f.label) + '</option>'; }).join('');
+          $('columns').placeholder = i.columns.slice(0, 4).join(', ') + '…';
+        }).catch(oops);
+      }
+      function waitFor(job, each) {
+        return new Promise(function (resolve, reject) {
+          (function poll(j) {
+            if (['finished', 'failed', 'cancelled'].indexOf(j.status) >= 0) return resolve(j);
+            each(j);
+            setTimeout(function () { call('jobStatus', j.id).then(poll).catch(reject); }, 2000);
+          })(job);
+        });
+      }
+      function runExport() {
+        var request = { sheet: $('sheet').value, limit: $('limit').value };
+        request.columns = $('columns').value.split(/[,\n]/).map(function (c) { return c.trim(); }).filter(Boolean);
+        if ($('ffield').value && $('fvalue').value) request.filters = [{ field: $('ffield').value, op: $('fop').value, value: $('fvalue').value }];
+        busy(true); say('Starting…');
+        call('startExport', request)
+          .then(function (job) { return waitFor(job, function (j) { say('Exporting… ' + (j.progress || '')); }); })
+          .then(function (job) {
+            if (job.status !== 'finished') throw new Error(job.error || job.outcome);
+            say('Writing the tab…');
+            return call('loadResult', job.id, request.sheet);
+          })
+          .then(function (r) { say(r.rows + ' rows written to the "' + r.tab + '" tab.', 'ok'); busy(false); })
+          .catch(oops);
+      }
+      function runPreview() {
+        busy(true); say('Sending this tab…'); previewJob = null;
+        $('applyBtn').className = 'danger hidden'; $('preview').className = 'box hidden';
+        call('previewImport', $('command').value)
+          .then(function (job) { return waitFor(job, function (j) { say('Checking… ' + (j.progress || '')); }); })
+          .then(function (job) {
+            if (job.status !== 'finished') throw new Error(job.error || job.outcome);
+            previewJob = job;
+            say(job.outcome + (job.summary ? ': ' + job.summary : '') + '. Nothing was changed.', job.problems ? 'err' : 'ok');
+            return call('previewItems', job.id);
+          })
+          .then(function (sheets) {
+            var html = '';
+            sheets.forEach(function (s) {
+              html += '<b>' + esc(s.sheet) + (s.recognised_as ? ' → ' + esc(s.recognised_as) : ' (not recognised)') + '</b>';
+              s.items.forEach(function (it) {
+                html += '<div class="item">Row ' + it.row + ': <b>' + esc(it.action) + '</b> ' + esc(it.item) + '<small>' + esc(it.message || it.changes.slice(0, 4).join('; ')) + '</small></div>';
+              });
+            });
+            $('preview').innerHTML = html || 'Nothing to show';
+            $('preview').className = 'box';
+            $('applyBtn').className = 'danger';
+            busy(false);
+          })
+          .catch(oops);
+      }
+      function runApply() {
+        if (!previewJob || !confirm('Import for real? This changes your store.')) return;
+        busy(true); say('Importing…');
+        call('applyImport', previewJob.id)
+          .then(function (job) { return waitFor(job, function (j) { say('Importing… ' + (j.progress || '')); }); })
+          .then(function (job) {
+            say(job.outcome + (job.summary ? ': ' + job.summary : ''), job.status === 'finished' && !job.problems ? 'ok' : 'err');
+            $('applyBtn').className = 'danger hidden'; previewJob = null; busy(false);
+          })
+          .catch(oops);
+      }
+      call('getSettings').then(show).catch(oops);
+    </script>
+  </body>
+</html>

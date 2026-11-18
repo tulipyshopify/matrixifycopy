@@ -1,0 +1,149 @@
+/**
+ * Bulkport for Google Sheets.
+ *
+ * Export store data straight into a tab, edit it, and import the tab back -
+ * always as a preview first.
+ *
+ * Install: in your spreadsheet choose Extensions > Apps Script, paste this
+ * file as Code.gs and Sidebar.html as an HTML file named "Sidebar", save, and
+ * reload the spreadsheet. A "Bulkport" menu appears.
+ */
+
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Bulkport').addItem('Open', 'showSidebar').addToUi();
+}
+
+function showSidebar() {
+  SpreadsheetApp.getUi().showSidebar(HtmlService.createHtmlOutputFromFile('Sidebar').setTitle('Bulkport'));
+}
+
+// --- Settings (kept per Google user, not in the spreadsheet) -----------------
+
+function getSettings() {
+  var p = PropertiesService.getUserProperties();
+  return { url: p.getProperty('BULKPORT_URL') || '', hasKey: !!p.getProperty('BULKPORT_KEY') };
+}
+
+function saveSettings(url, key) {
+  url = String(url || '').trim().replace(/\/+$/, '');
+  key = String(key || '').trim();
+  if (!/^https:\/\//.test(url)) throw new Error('The app address starts with https://');
+  var p = PropertiesService.getUserProperties();
+  p.setProperty('BULKPORT_URL', url);
+  if (key) p.setProperty('BULKPORT_KEY', key);
+  api_('get', 'jobs?limit=1'); // fails loudly if the address or key is wrong
+  return getSettings();
+}
+
+function forgetSettings() {
+  PropertiesService.getUserProperties().deleteAllProperties();
+  return getSettings();
+}
+
+// --- Talking to the app ------------------------------------------------------
+
+function api_(method, path, body, raw) {
+  var p = PropertiesService.getUserProperties();
+  var url = p.getProperty('BULKPORT_URL');
+  var key = p.getProperty('BULKPORT_KEY');
+  if (!url || !key) throw new Error('Enter the app address and access key first');
+  var options = { method: method, headers: { Authorization: 'Bearer ' + key }, muteHttpExceptions: true };
+  if (body) {
+    options.contentType = 'application/json';
+    options.payload = JSON.stringify(body);
+  }
+  var res = UrlFetchApp.fetch(url + '/api/v1/' + path, options);
+  var code = res.getResponseCode();
+  if (raw && code < 300) return res.getContentText('UTF-8');
+  var data;
+  try {
+    data = JSON.parse(res.getContentText());
+  } catch (e) {
+    throw new Error('The app answered with an error (' + code + ')');
+  }
+  if (code >= 300) throw new Error(data.error || 'The app answered with an error (' + code + ')');
+  return data;
+}
+
+function listSheets() {
+  return api_('get', 'sheets').sheets;
+}
+
+function sheetInfo(name) {
+  return api_('get', 'sheets/' + encodeURIComponent(name));
+}
+
+function jobStatus(id) {
+  return api_('get', 'jobs/' + id);
+}
+
+// --- Export into a tab -------------------------------------------------------
+
+/** request: { sheet, columns: [..], groups: [..], filters: [{field, op, value}], limit } */
+function startExport(request) {
+  var sheet = { sheet: request.sheet };
+  if (request.columns && request.columns.length) sheet.columns = request.columns;
+  if (request.groups && request.groups.length) sheet.groups = request.groups;
+  if (request.filters && request.filters.length) sheet.filters = request.filters;
+  if (request.limit) sheet.limit = Number(request.limit);
+  return api_('post', 'exports', { sheets: [sheet], format: 'csv' });
+}
+
+/** Writes a finished export into a tab named after the sheet (replacing that tab's contents). */
+function loadResult(jobId, tabName) {
+  var csv = api_('get', 'jobs/' + jobId + '/result', null, true);
+  var rows = Utilities.parseCsv(csv.replace(/^﻿/, ''));
+  if (!rows.length) throw new Error('The export is empty');
+  var book = SpreadsheetApp.getActiveSpreadsheet();
+  var tab = book.getSheetByName(tabName) || book.insertSheet(tabName);
+  tab.clearContents();
+  var width = rows[0].length;
+  for (var i = 0; i < rows.length; i++) while (rows[i].length < width) rows[i].push('');
+  if (tab.getMaxRows() < rows.length) tab.insertRowsAfter(tab.getMaxRows(), rows.length - tab.getMaxRows());
+  if (tab.getMaxColumns() < width) tab.insertColumnsAfter(tab.getMaxColumns(), width - tab.getMaxColumns());
+  var range = tab.getRange(1, 1, rows.length, width);
+  // Plain text, so IDs, barcodes and SKUs with leading zeros stay exactly as exported.
+  range.setNumberFormat('@');
+  range.setValues(rows);
+  tab.setFrozenRows(1);
+  book.setActiveSheet(tab);
+  return { tab: tabName, rows: rows.length - 1, columns: width };
+}
+
+// --- Import the current tab --------------------------------------------------
+
+function csvCell_(v) {
+  v = v === null || v === undefined ? '' : String(v);
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+
+/** The active tab as CSV: what you see in the cells, skipping fully empty rows. */
+function tabAsCsv_() {
+  var tab = SpreadsheetApp.getActiveSheet();
+  var values = tab.getDataRange().getDisplayValues();
+  var lines = [];
+  for (var r = 0; r < values.length; r++) {
+    if (r > 0 && values[r].join('') === '') continue;
+    lines.push(values[r].map(csvCell_).join(','));
+  }
+  if (lines.length < 2) throw new Error('This tab has no rows to import');
+  return { name: tab.getName(), csv: lines.join('\n') + '\n', rows: lines.length - 1 };
+}
+
+/** Checks the active tab against the store. Changes nothing. */
+function previewImport(command) {
+  var tab = tabAsCsv_();
+  var job = api_('post', 'imports', { csv: tab.csv, file_name: tab.name + '.csv', command: command || undefined });
+  job.tab = tab.name;
+  job.rows = tab.rows;
+  return job;
+}
+
+function previewItems(jobId) {
+  return api_('get', 'jobs/' + jobId + '/preview?limit=30').sheets;
+}
+
+/** Runs a finished preview for real. The access key must allow imports. */
+function applyImport(jobId) {
+  return api_('post', 'jobs/' + jobId + '/apply');
+}

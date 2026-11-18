@@ -727,6 +727,7 @@ export async function purgeShop(shop: string) {
   await prisma.schedule.deleteMany({ where: { shop } });
   await prisma.preset.deleteMany({ where: { shop } });
   await prisma.shopSetting.deleteMany({ where: { shop } });
+  await prisma.apiKey.deleteMany({ where: { shop } });
   const fs = await import("node:fs");
   const path = await import("node:path");
   const dir = path.dirname(jobDir(shop, "_"));

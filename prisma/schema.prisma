@@ -137,3 +137,21 @@ model AskLog {
 
   @@index([shop, createdAt])
 }
+
+/// An access key for the API, the MCP server, the CLI and the Sheets add-on.
+/// Only a hash of the key is stored; the key itself is shown once.
+model ApiKey {
+  id         String    @id @default(cuid())
+  shop       String
+  name       String
+  /// First characters of the key, to tell keys apart in the list.
+  prefix     String
+  hash       String    @unique
+  /// May run imports for real (otherwise previews only).
+  canImport  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([shop])
+}
