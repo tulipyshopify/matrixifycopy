@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { parseCsv, readWorkbook } from "../app/lib/core/sheets";
 import { detectEntity } from "../app/lib/core/registry";
 import { ENTITIES } from "../app/lib/entities";
+import type { AssistantPlan } from "../app/lib/ai/assistant.server";
 
 process.env.DATABASE_URL ??= "file:dev.sqlite";
 process.env.SHOPIFY_API_SECRET ??= "test-secret";
@@ -12,7 +13,7 @@ process.env.SHOPIFY_API_SECRET ??= "test-secret";
 const ai = await import("../app/lib/ai/assistant.server");
 const { generateChangeFile } = await import("../app/lib/ai/generate");
 
-const plan = (p: Partial<ai.AssistantPlan>): ai.AssistantPlan => ({
+const plan = (p: Partial<AssistantPlan>): AssistantPlan => ({
   kind: "export",
   explanation: "x",
   entity: "products",
@@ -127,7 +128,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("requests", async () => {
     await prisma.job.deleteMany({ where: { shop } });
   });
   const gql = (async () => ({ shop: { ianaTimezone: "Europe/London" } })) as any;
-  const reply = (p: ai.AssistantPlan) => ({ beta: { messages: { parse: async () => ({ stop_reason: "end_turn", parsed_output: p }) } } }) as any;
+  const reply = (p: AssistantPlan) => ({ beta: { messages: { parse: async () => ({ stop_reason: "end_turn", parsed_output: p }) } } }) as any;
 
   it("records each request; a change starts as a preview", async () => {
     process.env.ANTHROPIC_API_KEY ??= "test-key";
