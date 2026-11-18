@@ -113,7 +113,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     const bulk = createBulkRunner(gql, { log, isCancelled, onRoots: (n) => bulkEvents.onRoots(n) });
 
     // Imports scheduled from a URL fetch their file at run time.
-    if (job.type === "import" && !job.inputFile && !JSON.parse(job.config).generate) {
+    if (job.type === "import" && !job.inputFile && !JSON.parse(job.config).generate && !JSON.parse(job.config).aiFix) {
       const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId } }) : null;
       const sourceUrl = openSecret(schedule?.sourceUrl);
       if (!sourceUrl) throw new Error("No input file");

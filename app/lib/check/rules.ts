@@ -26,6 +26,18 @@ export interface ProductRows {
   top: Row;
   variants: Row[];
   images: Row[];
+  /** Category attributes filled in (Shopify's standard "shopify.*" metafields: colour, material, size…). */
+  attributes: number;
+}
+
+/** True for a GTIN-8, UPC-12, EAN-13 or GTIN-14 with a correct check digit. */
+export function validGtin(code: string): boolean {
+  const d = code.replace(/[\s-]/g, "");
+  if (!/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(d)) return false;
+  const digits = [...d].map(Number);
+  const check = digits.pop()!;
+  const sum = digits.reverse().reduce((n, x, i) => n + x * (i % 2 === 0 ? 3 : 1), 0);
+  return (10 - (sum % 10)) % 10 === check;
 }
 
 const text = (html: string | undefined) => (html ?? "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
@@ -131,6 +143,67 @@ export const RULES: Rule[] = [
     fixColumns: ["Handle", "Variant ID", "Variant SKU", "Variant Weight", "Variant Weight Unit"],
     test: (p) => p.variants.some((v) => /^true$/i.test(v["Variant Requires Shipping"] ?? "") && !(Number(v["Variant Weight"]) > 0)),
   },
+  {
+    key: "short_description",
+    title: "Description under 150 characters",
+    severity: "recommended",
+    why: "Shopify's catalogue sends the description to ChatGPT, Copilot and other agents. A couple of sentences on what it is, who it's for and what it's made of gives them something to match.",
+    fixColumns: ["Handle", "Body HTML"],
+    test: (p) => {
+      const n = text(p.top["Body HTML"]).length;
+      return n >= 50 && n < 150;
+    },
+  },
+  {
+    key: "no_attributes",
+    title: "Category set, but no attributes (colour, material, size…)",
+    severity: "recommended",
+    why: "Attributes are how an agent answers \"a green wooden planter under £50\". They come with the product category and are filled in on the product page.",
+    fixColumns: ["Handle", "Category: Name"],
+    test: (p) => has(p.top["Category: Name"]) && p.attributes === 0,
+  },
+  {
+    key: "bad_gtin",
+    title: "A barcode that isn't a valid GTIN",
+    severity: "recommended",
+    why: "The catalogue groups identical products across shops by GTIN. A mistyped one (wrong length or check digit) is ignored, or matches the wrong product.",
+    fixColumns: ["Handle", "Variant ID", "Variant SKU", "Variant Barcode"],
+    test: (p) => p.variants.some((v) => has(v["Variant Barcode"]) && !validGtin(v["Variant Barcode"])),
+  },
+  {
+    key: "one_image",
+    title: "Only one image",
+    severity: "recommended",
+    why: "Agents show several pictures when they have them; one image looks thin next to competitors.",
+    fixColumns: ["Handle", "Image Src", "Image Alt Text"],
+    test: (p) => p.images.length === 1,
+  },
+  {
+    key: "out_of_stock",
+    title: "Active but out of stock",
+    severity: "recommended",
+    why: "Availability is sent live to the agents: a product with nothing to sell is not offered. Restock it, allow overselling, or set it to draft.",
+    fixColumns: ["Handle", "Variant ID", "Variant SKU", "Variant Inventory Qty", "Variant Inventory Policy"],
+    test: (p) =>
+      p.variants.length > 0 &&
+      p.variants.every((v) => has(v["Variant Inventory Tracker"]) && (v["Variant Inventory Policy"] ?? "").toLowerCase() !== "continue" && !(Number(v["Variant Inventory Qty"]) > 0)),
+  },
+  {
+    key: "not_published",
+    title: "Active but not on the Online Store",
+    severity: "recommended",
+    why: "Agents send shoppers to the product page. A product that isn't published to the Online Store has no page to send them to.",
+    fixColumns: ["Handle", "Published"],
+    test: (p) => /^false$/i.test(p.top.Published ?? ""),
+  },
+  {
+    key: "compare_at",
+    title: "Compare-at price not above the price",
+    severity: "recommended",
+    why: "Agents can show the compare-at price struck through as the list price. One that is equal or lower shows no saving, or a confusing one.",
+    fixColumns: ["Handle", "Variant ID", "Variant SKU", "Variant Price", "Variant Compare At Price"],
+    test: (p) => p.variants.some((v) => has(v["Variant Compare At Price"]) && Number(v["Variant Compare At Price"]) > 0 && Number(v["Variant Compare At Price"]) <= Number(v["Variant Price"])),
+  },
 ];
 
 /** Added by the checker itself: the same SKU on more than one product. */
@@ -171,6 +244,8 @@ export function createChecker() {
   const skuOwner = new Map<string, { id: string; title: string; flagged: boolean }>();
   const notReady = new Set<string>();
   let products = 0;
+  // If no product at all shows attributes, the store's attributes can't be read: don't flag every product.
+  let sawAttributes = false;
   const hit = (key: string, id: string, title: string, critical: boolean) => {
     const r = results.get(key)!;
     r.count++;
@@ -184,7 +259,9 @@ export function createChecker() {
       const top = rows.find((r) => /^true$/i.test(r["Top Row"] ?? "")) ?? rows[0];
       if (!top?.ID) return [];
       products++;
-      const p: ProductRows = { top, variants: rows.filter((r) => has(r["Variant ID"])), images: rows.filter((r) => has(r["Image Src"])) };
+      const attributes = Object.keys(top).filter((k) => /^Metafield: shopify\./.test(k) && has(top[k])).length;
+      if (attributes) sawAttributes = true;
+      const p: ProductRows = { top, variants: rows.filter((r) => has(r["Variant ID"])), images: rows.filter((r) => has(r["Image Src"])), attributes };
       const id = top.ID;
       const title = top.Title ?? "";
       const found: string[] = [];
@@ -208,7 +285,7 @@ export function createChecker() {
       return found;
     },
     report(): CheckReport {
-      const rules = ALL_RULES.map((r) => results.get(r.key)!);
+      const rules = ALL_RULES.map((r) => (r.key === "no_attributes" && !sawAttributes ? { key: r.key, count: 0, examples: [], ids: [] } : results.get(r.key)!));
       const weight = (k: string) => (ALL_RULES.find((r) => r.key === k)!.severity === "critical" ? 3 : 1);
       const worst = ALL_RULES.reduce((n, r) => n + weight(r.key), 0) * products;
       const lost = rules.reduce((n, r) => n + weight(r.key) * Math.min(r.count, products), 0);

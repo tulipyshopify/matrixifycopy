@@ -3,7 +3,10 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { latestChecks, startCheck } from "../lib/check/check.server";
+import { getCheckSchedule, latestChecks, markCheckSeen, setWeeklyCheck, startAiFix, startCheck } from "../lib/check/check.server";
+import { AI_FIXABLE, MAX_AI_PRODUCTS } from "../lib/check/aifix";
+import { assistantAllowed } from "../lib/ai/assistant.server";
+import { browserTimeZone } from "../components/ScheduleTime";
 import { ALL_RULES } from "../lib/check/rules";
 import { downloadLinks } from "../lib/jobs/jobs.server";
 import { formatDate } from "../components/jobs";
@@ -11,7 +14,13 @@ import { formatDate } from "../components/jobs";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { active, latest, previous, failed } = await latestChecks(session.shop);
+  const schedule = await getCheckSchedule(session.shop);
+  // Seeing this page clears the "score dropped" note on the home screen.
+  await markCheckSeen(session.shop);
   return {
+    weekly: schedule?.enabled ? { nextRunAt: schedule.nextRunAt } : null,
+    aiEnabled: assistantAllowed(session.shop),
+    aiMax: MAX_AI_PRODUCTS,
     active: active ? { progress: active.progress } : null,
     failed: failed ? (failed.error ?? "The check stopped with an error.") : null,
     previousScore: previous?.report?.score ?? null,
@@ -25,7 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           score: latest.report!.score,
           rules: ALL_RULES.map((r) => {
             const res = latest.report!.rules.find((x) => x.key === r.key);
-            return { key: r.key, title: r.title, severity: r.severity, why: r.why, count: res?.count ?? 0, examples: res?.examples ?? [], more: (res?.count ?? 0) > (res?.ids.length ?? 0) };
+            return { key: r.key, title: r.title, severity: r.severity, why: r.why, ai: !!AI_FIXABLE[r.key], count: res?.count ?? 0, examples: res?.examples ?? [], more: (res?.count ?? 0) > (res?.ids.length ?? 0) };
           }),
         }
       : null,
@@ -33,16 +42,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  await startCheck(session.shop);
-  return { ok: true };
+  const { session, redirect } = await authenticate.admin(request);
+  const form = await request.formData();
+  try {
+    if (form.get("intent") === "weekly") {
+      await setWeeklyCheck(session.shop, form.get("enabled") === "true", String(form.get("timezone") ?? ""));
+      return { ok: true };
+    }
+    if (form.get("intent") === "ai") {
+      const job = await startAiFix(session.shop, String(form.get("id")), String(form.get("rule")));
+      return redirect(`/app/jobs/${job.id}`);
+    }
+    await startCheck(session.shop);
+    return { ok: true };
+  } catch (e: any) {
+    if (e instanceof Response) throw e;
+    return { error: e.message as string };
+  }
 };
 
 export default function DataCheck() {
-  const { active, latest, previousScore, failed } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher();
+  const { active, latest, previousScore, failed, weekly, aiEnabled, aiMax } = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<{ error?: string }>();
+  const intent = fetcher.state !== "idle" ? String(fetcher.formData?.get("intent") ?? "") : "";
+  const aiRule = intent === "ai" ? String(fetcher.formData?.get("rule")) : "";
   const revalidator = useRevalidator();
-  const busy = !!active || fetcher.state !== "idle";
+  const busy = !!active || intent === "run";
 
   useEffect(() => {
     if (!active) return;
@@ -59,10 +84,15 @@ export default function DataCheck() {
 
   return (
     <s-page heading="Data check" inlineSize="base">
-      <s-button slot="primary-action" variant="primary" loading={busy} disabled={busy} onClick={() => fetcher.submit({}, { method: "post" })}>
+      <s-button slot="primary-action" variant="primary" loading={busy} disabled={busy} onClick={() => fetcher.submit({ intent: "run" }, { method: "post" })}>
         {latest ? "Check again" : "Run the check"}
       </s-button>
 
+      {fetcher.data?.error ? (
+        <s-banner tone="critical" heading="That didn't work">
+          {fetcher.data.error}
+        </s-banner>
+      ) : null}
       {failed && !active ? (
         <s-banner tone="critical" heading="The last check didn't finish">
           {failed}
@@ -76,6 +106,16 @@ export default function DataCheck() {
             AI assistants and shopping agents recommend products from their data: description, category, images, identifiers, price. They don't
             see your storefront design. This check reads every active product and shows what's missing. It changes nothing in your store.
           </s-paragraph>
+          <s-switch
+            label="Check every week"
+            details={
+              weekly
+                ? `Next check: ${formatDate(weekly.nextRunAt)}. The home screen tells you if the score drops.`
+                : "Runs every Monday at 06:00 and tells you on the home screen if the score drops, for example after new products are added."
+            }
+            checked={!!weekly}
+            onChange={(ev: any) => fetcher.submit({ intent: "weekly", enabled: String(ev.currentTarget.checked), timezone: browserTimeZone() }, { method: "post" })}
+          />
           {active ? <s-text tone="neutral">Checking… {active.progress ? `${active.progress.toLocaleString("en")} products so far` : "starting"}</s-text> : null}
         </s-stack>
       </s-section>
@@ -139,8 +179,19 @@ export default function DataCheck() {
                       </div>
                       {r.count ? (
                         <div className="bp-rule-side">
+                          {r.ai && aiEnabled ? (
+                            <s-button
+                              variant="primary"
+                              icon="wand"
+                              loading={aiRule === r.key}
+                              disabled={intent === "ai"}
+                              onClick={() => fetcher.submit({ intent: "ai", id: latest.id, rule: r.key }, { method: "post" })}
+                            >
+                              Draft with AI
+                            </s-button>
+                          ) : null}
                           <s-button href={`/app/export?check=${latest.id}&rule=${r.key}`}>Export to fix</s-button>
-                          {r.more ? <s-text tone="neutral">first 250</s-text> : null}
+                          {r.ai && aiEnabled && r.count > aiMax ? <s-text tone="neutral">AI: first {aiMax} per run</s-text> : r.more ? <s-text tone="neutral">first 250</s-text> : null}
                         </div>
                       ) : null}
                     </div>
@@ -152,6 +203,13 @@ export default function DataCheck() {
 
           <s-section heading="How to fix in bulk">
             <s-stack direction="block" gap="small">
+              {aiEnabled ? (
+                <s-paragraph>
+                  "Draft with AI" writes the missing text for up to {aiMax} products at a time, using only each product's own details. You
+                  see every draft in a preview, can download and edit the file, and nothing is saved to the store until you press "Import
+                  for real".
+                </s-paragraph>
+              ) : null}
               <s-paragraph>
                 "Export to fix" opens an export of just those products, with only the columns that need filling. Fill them in Excel or Google
                 Sheets, then import the file with Preview first.

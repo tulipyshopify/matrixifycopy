@@ -22,8 +22,8 @@ export async function runCheck(
     {
       gql: deps.gql,
       bulk: deps.bulk,
-      // Only what the rules read: no inventory levels or metafields.
-      options: { groups: ["variants", "images", "seo"], filters: [{ field: "status", op: "is", value: "active" }] },
+      // Only what the rules read: no inventory levels or variant metafields.
+      options: { groups: ["variants", "images", "seo", "metafields"], filters: [{ field: "status", op: "is", value: "active" }] },
       log: deps.log,
       cache: new Map(),
       progress: () => {},

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { ALL_RULES, RULES, createChecker } from "../app/lib/check/rules";
+import { ALL_RULES, RULES, createChecker, validGtin } from "../app/lib/check/rules";
 import { getEntity } from "../app/lib/entities";
 
 process.env.DATABASE_URL ??= "file:dev.sqlite";
@@ -12,13 +12,16 @@ process.env.STORAGE_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), "bulkport-chec
 const jobs = await import("../app/lib/jobs/jobs.server");
 const check = await import("../app/lib/check/check.server");
 
-const good = (id: string, sku = `SKU-${id}`) => [
+const good = (id: string, sku = `SKU-${id}`): Array<Record<string, string>> => [
   {
-    ID: id, "Top Row": "TRUE", Title: "Easy Fill Wooden Compost Bin", "Body HTML": `<p>${"A sturdy slatted bin for garden waste. ".repeat(3)}</p>`, Vendor: "Woven Wood", Type: "Compost Bins",
+    "Metafield: shopify.color-pattern [list.metaobject_reference]": "gid://shopify/Metaobject/9",
+    ID: id, "Top Row": "TRUE", Title: "Easy Fill Wooden Compost Bin", "Body HTML": `<p>${"A sturdy slatted bin for garden waste. ".repeat(5)}</p>`, Vendor: "Woven Wood", Type: "Compost Bins",
     "Category: Name": "Compost Bins", "SEO Title": "Compost bin", "SEO Description": "Wooden compost bin",
-    "Variant ID": `${id}1`, "Variant SKU": sku, "Variant Barcode": "5012345678900", "Variant Price": "49.00", "Variant Requires Shipping": "TRUE", "Variant Weight": "12",
+    "Variant ID": `${id}1`, "Variant SKU": sku, "Variant Barcode": "4006381333931", "Variant Price": "49.00", "Variant Requires Shipping": "TRUE", "Variant Weight": "12",
+    "Variant Inventory Tracker": "shopify", "Variant Inventory Policy": "deny", "Variant Inventory Qty": "8", Published: "TRUE",
     "Image Src": "https://cdn/x.jpg", "Image Alt Text": "Compost bin in a garden",
   },
+  { ID: id, "Image Src": "https://cdn/y.jpg", "Image Alt Text": "Compost bin, side view" },
 ];
 
 describe("product data rules", () => {
@@ -31,13 +34,14 @@ describe("product data rules", () => {
   it("finds each kind of gap", () => {
     const problems = (patch: Record<string, string>, extraRows: any[] = []) => {
       const c = createChecker();
-      return c.add([{ ...good("1")[0], ...patch }, ...extraRows]);
+      return c.add([{ ...good("1")[0], ...patch }, good("1")[1], ...extraRows]);
     };
     expect(problems({ "Body HTML": "<p>Nice bin</p>" })).toEqual(["No description, or a very short one"]);
-    expect(problems({ "Image Src": "", "Image Alt Text": "" })).toEqual(["No image"]);
+    const noImages = createChecker().add([{ ...good("1")[0], "Image Src": "", "Image Alt Text": "" }]);
+    expect(noImages).toEqual(["No image"]);
     expect(problems({ "Category: Name": "" })).toEqual(["No product category"]);
     expect(problems({ "Variant Price": "0.00" })).toEqual(["A variant with no price"]);
-    expect(problems({}, [{ ID: "1", "Variant ID": "12", "Variant SKU": "", "Variant Barcode": "1", "Variant Price": "5" }])).toEqual(["A variant without a SKU"]);
+    expect(problems({}, [{ ID: "1", "Variant ID": "12", "Variant SKU": "", "Variant Barcode": "036000291452", "Variant Price": "5" }])).toEqual(["A variant without a SKU"]);
     expect(problems({ "Variant Barcode": "" })).toEqual(["A variant without a barcode (GTIN)"]);
     expect(problems({ "Image Alt Text": "" })).toEqual(["Images without alt text"]);
     expect(problems({ Title: "Bin" })).toEqual(["Title too short or too long"]);
@@ -45,6 +49,35 @@ describe("product data rules", () => {
     expect(problems({ "SEO Description": "" })).toEqual(["No search title or description"]);
     expect(problems({ "Variant Weight": "0" })).toEqual(["A shipped variant with no weight"]);
     expect(problems({ "Variant Weight": "0", "Variant Requires Shipping": "FALSE" })).toEqual([]);
+    // The rules added for Shopify's agentic channels.
+    expect(problems({ "Body HTML": `<p>${"Sturdy bin. ".repeat(8)}</p>` })).toEqual(["Description under 150 characters"]);
+    expect(problems({ "Variant Barcode": "4006381333932" })).toEqual(["A barcode that isn't a valid GTIN"]);
+    expect(problems({ "Variant Barcode": "ABC-123" })).toEqual(["A barcode that isn't a valid GTIN"]);
+    expect(createChecker().add([good("1")[0]])).toEqual(["Only one image"]);
+    expect(problems({ "Variant Inventory Qty": "0" })).toEqual(["Active but out of stock"]);
+    expect(problems({ "Variant Inventory Qty": "0", "Variant Inventory Policy": "continue" })).toEqual([]);
+    expect(problems({ "Variant Inventory Qty": "0", "Variant Inventory Tracker": "" })).toEqual([]);
+    expect(problems({ Published: "FALSE" })).toEqual(["Active but not on the Online Store"]);
+    expect(problems({ "Variant Compare At Price": "49.00" })).toEqual(["Compare-at price not above the price"]);
+    expect(problems({ "Variant Compare At Price": "59.00" })).toEqual([]);
+  });
+
+  it("checks GTIN check digits", () => {
+    for (const ok of ["4006381333931", "036000291452", "96385074", "10614141000415"]) expect(validGtin(ok), ok).toBe(true);
+    for (const bad of ["4006381333930", "12345", "ABC", ""]) expect(validGtin(bad), bad).toBe(false);
+  });
+
+  it("flags missing category attributes only when the store's attributes can be read", () => {
+    const bare = (id: string) => good(id).map((r) => ({ ...r, "Metafield: shopify.color-pattern [list.metaobject_reference]": "" }));
+    const c = createChecker();
+    c.add(good("1"));
+    expect(c.add(bare("2"))).toEqual(["Category set, but no attributes (colour, material, size…)"]);
+    expect(c.report().rules.find((r) => r.key === "no_attributes")!.count).toBe(1);
+    // No product shows any attribute: it can't be told apart from "not readable", so nothing is flagged.
+    const blind = createChecker();
+    blind.add(bare("1"));
+    blind.add(bare("2"));
+    expect(blind.report().rules.find((r) => r.key === "no_attributes")!.count).toBe(0);
   });
 
   it("flags both products that share a SKU, and scores critical gaps three times as heavy", () => {
@@ -52,13 +85,14 @@ describe("product data rules", () => {
     c.add(good("1", "DUP"));
     c.add(good("2", "dup"));
     c.add(good("3"));
-    c.add([{ ...good("4")[0], Vendor: "" }]);
+    c.add([{ ...good("4")[0], Vendor: "" }, good("4")[1]]);
     const r = c.report();
     expect(r.rules.find((x) => x.key === "duplicate_sku")).toMatchObject({ count: 2, ids: ["1", "2"] });
     expect(r).toMatchObject({ products: 4, ready: 2 });
-    // 4 products; possible loss = (6 critical x3 + 7 recommended x1) x 4 = 100; lost = 2x3 + 1 = 7.
+    // 4 products; possible loss = (6 critical x3 + 14 recommended x1) x 4 = 128; lost = 2x3 + 1 = 7.
     expect(ALL_RULES.filter((x) => x.severity === "critical")).toHaveLength(6);
-    expect(r.score).toBe(93);
+    expect(ALL_RULES).toHaveLength(20);
+    expect(r.score).toBe(95);
   });
 
   it("only asks for columns that exist, so 'Export to fix' is always valid", () => {
@@ -87,7 +121,7 @@ describe("running a check", () => {
       },
     );
     expect(query).toContain('status:\\"active\\"');
-    expect(query).not.toMatch(/inventoryLevels|metafields/);
+    expect(query).not.toMatch(/inventoryLevels/);
     expect(mutations).toEqual([]);
     const report = r.stats[0] as any;
     expect(report).toMatchObject({ products: 1, ready: 0 });

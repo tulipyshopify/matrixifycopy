@@ -1,6 +1,9 @@
 import prisma from "../../db.server";
 import { OPTIONS_VERSION } from "../jobs/jobs.server";
 import { ALL_RULES, type CheckReport } from "./rules";
+import { isValidTimeZone, nextRun } from "../jobs/schedule-time";
+import { assistantAllowed } from "../ai/assistant.server";
+import { AI_FIXABLE, MAX_AI_PRODUCTS } from "./aifix";
 
 /** Starts a data check (one at a time per store). */
 export async function startCheck(shop: string) {
@@ -46,4 +49,56 @@ export async function fixExport(shop: string, jobId: string, ruleKey: string) {
     entities: [{ entity: "products", options: { v: OPTIONS_VERSION, groups, columns, filters: [{ field: "id", op: "any_of" as const, value: ids.join(",") }] } }],
     format: "xlsx",
   };
+}
+
+// --- Weekly check -------------------------------------------------------------
+
+
+export async function getCheckSchedule(shop: string) {
+  return prisma.schedule.findFirst({ where: { shop, kind: "check" } });
+}
+
+/** Switches the weekly check on (Mondays 06:00 in the merchant's time zone) or off. */
+export async function setWeeklyCheck(shop: string, enabled: boolean, timezone: string) {
+  const tz = isValidTimeZone(timezone) ? timezone : "UTC";
+  const timing = { intervalMinutes: 10080, runAt: "06:00", timezone: tz, weekday: 1 };
+  const data = { name: "Weekly data check", type: "export", kind: "check", format: "csv", config: "{}", ...timing, enabled, nextRunAt: nextRun(timing, new Date()) };
+  const existing = await getCheckSchedule(shop);
+  return existing ? prisma.schedule.update({ where: { id: existing.id }, data }) : prisma.schedule.create({ data: { shop, ...data } });
+}
+
+/**
+ * For the home screen: the latest check scored lower than the one before and
+ * nobody has opened the Data check page since.
+ */
+export async function scoreDrop(shop: string): Promise<{ from: number; to: number } | null> {
+  const { latest, previous } = await latestChecks(shop);
+  if (!latest || !previous || latest.job.reviewedAt) return null;
+  const to = latest.report!.score;
+  const from = previous.report!.score;
+  return to < from ? { from, to } : null;
+}
+
+/** Opening the Data check page counts as seeing the latest result. */
+export async function markCheckSeen(shop: string) {
+  await prisma.job.updateMany({ where: { shop, kind: "check", reviewedAt: null, status: { in: ["finished", "failed"] } }, data: { reviewedAt: new Date() } });
+}
+
+// --- AI-drafted fixes -----------------------------------------------------------
+
+/** Starts a preview import of AI drafts for the products a rule flagged (first MAX_AI_PRODUCTS). */
+export async function startAiFix(shop: string, jobId: string, ruleKey: string) {
+  if (!assistantAllowed(shop)) throw new Error("AI drafts need the Claude API key on the server");
+  const job = await prisma.job.findFirst({ where: { id: jobId, shop, kind: "check", status: "finished" } });
+  const rule = ALL_RULES.find((r) => r.key === ruleKey);
+  const ids = (job && reportOf(job.stats)?.rules.find((r) => r.key === ruleKey)?.ids) ?? [];
+  if (!rule || !AI_FIXABLE[ruleKey] || !ids.length) throw new Error("There is nothing to draft for that problem");
+  return prisma.job.create({
+    data: {
+      shop,
+      type: "import",
+      name: `AI drafts: ${rule.title.toLowerCase()}`,
+      config: JSON.stringify({ options: { dryRun: true, defaultCommand: "UPDATE" }, aiFix: { rule: ruleKey, ids: ids.slice(0, MAX_AI_PRODUCTS) } }),
+    },
+  });
 }

@@ -8,6 +8,7 @@ import { ENTITIES, getEntity } from "../entities";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
 import { runCheck } from "../check/run";
+import { generateAiFixFile, type AiFixSpec } from "../check/aifix";
 
 /** Dry-run preview of an import, in the job's folder. */
 export const PREVIEW_FILE = "preview.json";
@@ -20,6 +21,8 @@ export interface ImportConfig {
   options: ImportOptions;
   /** A change asked for in plain English: the input file is built when the job runs. */
   generate?: GenerateSpec;
+  /** AI-drafted fixes from the data check: likewise built when the job runs. */
+  aiFix?: AiFixSpec;
 }
 
 export interface JobRecord {
@@ -44,6 +47,8 @@ export interface RunnerDeps {
   isCancelled: () => Promise<boolean>;
   /** The shop's IANA time zone. */
   timezone?: () => Promise<string>;
+  /** Claude API client; only tests pass one. */
+  anthropic?: any;
   /** Called when a job builds its own input file, so it can be saved on the job. */
   onInput?: (file: string, name: string) => Promise<void>;
   /** Expected number of items for an entity's export, or null when unknown. */
@@ -142,6 +147,12 @@ export async function executeJob(
     if (!job.inputFile && config.generate) {
       const timezone = deps.timezone ? await deps.timezone() : "UTC";
       const made = await generateChangeFile(config.generate, { ...deps, timezone }, dir);
+      job.inputFile = made.file;
+      job.inputName = made.name;
+      await deps.onInput?.(made.file, made.name);
+    }
+    if (!job.inputFile && config.aiFix) {
+      const made = await generateAiFixFile(config.aiFix, deps, dir);
       job.inputFile = made.file;
       job.inputName = made.name;
       await deps.onInput?.(made.file, made.name);

@@ -331,6 +331,7 @@ export function needsAttention(shop: string) {
   return prisma.job.findMany({
     where: {
       shop,
+      kind: { not: "check" },
       reviewedAt: null,
       createdAt: { gte: new Date(Date.now() - ATTENTION_DAYS * 86400_000) },
       OR: [{ status: "failed" }, { status: "finished", problems: { gt: 0 } }],
