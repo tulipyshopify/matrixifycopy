@@ -258,6 +258,19 @@ function newCondition(field: FilterField): FilterCondition {
 }
 
 /** Value input(s) for one filter row, chosen by field type and operator. */
+/** True on a phone-width screen (false while rendering on the server). */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const m = window.matchMedia("(max-width: 640px)");
+    const set = () => setNarrow(m.matches);
+    set();
+    m.addEventListener("change", set);
+    return () => m.removeEventListener("change", set);
+  }, []);
+  return narrow;
+}
+
 function FilterValue({
   field,
   cond,
@@ -386,6 +399,7 @@ function FilterBuilder({
   filters: FilterCondition[];
   onChange: (filters: FilterCondition[]) => void;
 }) {
+  const narrow = useNarrow();
   const fields = entity.filters;
   const byKey = new Map(fields.map((f) => [f.key, f]));
   const isLocal = (f: FilterCondition) =>
@@ -401,7 +415,7 @@ function FilterBuilder({
         return (
           <s-grid
             key={i}
-            gridTemplateColumns="minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto"
+            gridTemplateColumns={narrow ? "1fr 1fr" : "minmax(160px, 1fr) minmax(140px, 0.8fr) 2fr auto"}
             gap="base"
             alignItems="center"
           >
@@ -527,6 +541,7 @@ function DateRangeFilter({
   value: DateRange | null;
   onChange: (r: DateRange | null) => void;
 }) {
+  const narrow = useNarrow();
   const dateFields = entity.filters.filter((f) => f.type === "date");
   if (!dateFields.length) return null;
   const field =
@@ -535,11 +550,13 @@ function DateRangeFilter({
   return (
     <s-grid
       gridTemplateColumns={
-        value?.preset === "custom"
-          ? "1fr 1fr 1fr 1fr"
-          : value?.preset === "last_n"
+        narrow
+          ? "1fr 1fr"
+          : value?.preset === "custom"
             ? "1fr 1fr 1fr 1fr"
-            : "1fr 1fr 2fr"
+            : value?.preset === "last_n"
+              ? "1fr 1fr 1fr 1fr"
+              : "1fr 1fr 2fr"
       }
       gap="base"
       alignItems="end"
@@ -1719,6 +1736,7 @@ export function ExportForm({
   editing?: ScheduleBeingEdited | null;
 }) {
   const fetcher = useFetcher<{ error?: string }>();
+  const narrow = useNarrow();
   const [presets, setPresets] = useState(initialPresets);
   // "latest" | "blank" | preset id
   const [presetId, setPresetId] = useState(latest ? "latest" : "blank");
@@ -1860,7 +1878,7 @@ export function ExportForm({
       <s-section heading="Preset">
         <s-stack direction="block" gap="base">
           <s-grid
-            gridTemplateColumns="1fr 1fr auto auto"
+            gridTemplateColumns={narrow ? "1fr" : "1fr 1fr auto auto"}
             gap="base"
             alignItems="end"
           >
@@ -1917,7 +1935,7 @@ export function ExportForm({
 
       <s-box padding="base small-200 none small-200">
         <s-grid
-          gridTemplateColumns="1fr minmax(220px, 280px)"
+          gridTemplateColumns={narrow ? "1fr" : "1fr minmax(220px, 280px)"}
           gap="base"
           alignItems="center"
         >

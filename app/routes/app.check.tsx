@@ -8,7 +8,7 @@ import { checkExclusions, getCheckSchedule, latestChecks, markCheckSeen, saveChe
 import { AI_FIXABLE, MAX_AI_PRODUCTS } from "../lib/check/aifix";
 import { assistantAllowed } from "../lib/ai/assistant.server";
 import { browserTimeZone } from "../components/ScheduleTime";
-import { ALL_RULES } from "../lib/check/rules";
+import { ALL_RULES, CHANNELS, channelScores } from "../lib/check/rules";
 import { downloadLinks } from "../lib/jobs/jobs.server";
 import { formatDate } from "../components/jobs";
 
@@ -34,6 +34,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           products: latest.report!.products,
           ready: latest.report!.ready,
           score: latest.report!.score,
+          channels: channelScores(latest.report!),
+          weights: CHANNELS.map((c) => ({ label: c.label, rules: Object.entries(c.weights).sort((a, b) => b[1] - a[1]).map(([k, w]) => `${ALL_RULES.find((r) => r.key === k)?.title ?? k} ×${w}`).join(", ") })),
           rules: ALL_RULES.map((r) => {
             const res = latest.report!.rules.find((x) => x.key === r.key);
             return { key: r.key, title: r.title, severity: r.severity, why: r.why, ai: !!AI_FIXABLE[r.key], count: res?.count ?? 0, examples: res?.examples ?? [], more: (res?.count ?? 0) > (res?.ids.length ?? 0) };
@@ -173,9 +175,36 @@ export default function DataCheck() {
             </div>
           </div>
 
+          <s-section heading="By channel">
+            <s-stack direction="block" gap="base">
+              <div className="bp-tiles" role="list">
+                {latest.channels.map((c) => (
+                  <div role="listitem" key={c.key}>
+                    <div className={`bp-tile bp-tile-${c.score >= 80 ? "brand" : c.score >= 60 ? "warn" : "critical"}`}>
+                      <span className="bp-tile-label">{c.label}</span>
+                      <span className="bp-tile-value">{c.score} / 100</span>
+                      <span className="bp-tile-note">{c.worst.length ? `Held back most by: ${c.worst.map((w) => `${w.title.toLowerCase()} (${w.count.toLocaleString("en")})`).join("; ")}` : "Nothing holding it back"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <details>
+                <summary style={{ cursor: "pointer", fontSize: 13 }}>What each channel's score counts</summary>
+                <s-stack direction="block" gap="small">
+                  {latest.channels.map((c, i) => (
+                    <s-text key={c.key} tone="neutral">
+                      <s-text type="strong">{c.label}.</s-text> {c.note} Weights: {latest.weights[i].rules}.
+                    </s-text>
+                  ))}
+                  <s-text tone="neutral">These are Bulkport's reading of each channel's product-data rules, not figures from the channels themselves. ×3 means a listing is usually refused or hidden without it.</s-text>
+                </s-stack>
+              </details>
+            </s-stack>
+          </s-section>
+
           <s-section>
             <s-text tone="neutral">
-              How the score works: each rule below counts by the share of products that pass it, and a "Fix first" rule counts three times as much as a "Worth improving" one. So a gap on most of the catalogue lowers the score more than the same gap on a few products, and the percentage beside each rule shows how much of the catalogue it affects. "Ready products" is a separate count: products with no "Fix first" problem.
+              How the overall score works: each rule below counts by the share of products that pass it, and a "Fix first" rule counts three times as much as a "Worth improving" one. So a gap on most of the catalogue lowers the score more than the same gap on a few products, and the percentage beside each rule shows how much of the catalogue it affects. "Ready products" is a separate count: products with no "Fix first" problem.
             </s-text>
           </s-section>
 

@@ -1,4 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { useState } from "react";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -18,8 +19,14 @@ const COMMANDS: Array<[string, string]> = [
   ["IGNORE", "Skip these rows."],
 ];
 
+/** A CSV with just the header row, as a link the browser can save. */
+const templateHref = (columns: string[]) => `data:text/csv;charset=utf-8,${encodeURIComponent(columns.map((c) => (/[",]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(",") + "\n")}`;
+
 export default function Help() {
   const { entities } = useLoaderData<typeof loader>();
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shown = q ? entities.filter((e) => e.sheet.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || e.columns.some((c) => c.toLowerCase().includes(q))) : entities;
   return (
     <s-page heading="Help: sheets and columns">
       <s-section heading="How files work">
@@ -80,23 +87,53 @@ export default function Help() {
           </s-table-body>
         </s-table>
       </s-section>
-      {entities.map((e) => (
-        <s-section key={e.key} heading={e.sheet}>
-          <s-stack direction="block" gap="small">
-            <s-paragraph>{e.description}</s-paragraph>
-            <s-stack direction="inline" gap="small">
-              {e.canExport ? <s-badge tone="info">Export</s-badge> : null}
-              {e.canImport ? <s-badge tone="success">Import</s-badge> : <s-badge>Export only</s-badge>}
-            </s-stack>
-            {e.keyColumns.length ? (
-              <s-text>
-                Matched by: <code>{e.keyColumns.join(", then ")}</code>
-              </s-text>
-            ) : null}
-            <s-text tone="neutral">Columns: {e.columns.join(" · ")}</s-text>
+      <s-section heading="Data types">
+        <s-stack direction="block" gap="small">
+          <s-search-field
+            label="Find a data type or column"
+            labelAccessibilityVisibility="exclusive"
+            placeholder="Find a data type or a column, e.g. barcode"
+            value={query}
+            onInput={(ev: any) => setQuery(ev.currentTarget.value)}
+          />
+          <s-stack direction="inline" gap="small-200">
+            {shown.map((e) => (
+              <s-link key={e.key} href={`#sheet-${e.key}`}>
+                {e.sheet}
+              </s-link>
+            ))}
           </s-stack>
-        </s-section>
-      ))}
+          {q && !shown.length ? <s-text tone="neutral">Nothing matches "{query.trim()}".</s-text> : null}
+        </s-stack>
+      </s-section>
+      {shown.map((e) => {
+        const hits = q ? e.columns.filter((c) => c.toLowerCase().includes(q)) : [];
+        return (
+          <div key={e.key} id={`sheet-${e.key}`}>
+            <s-section heading={e.sheet}>
+              <s-stack direction="block" gap="small">
+                <s-paragraph>{e.description}</s-paragraph>
+                <s-stack direction="inline" gap="small" alignItems="center">
+                  {e.canExport ? <s-badge tone="info">Export</s-badge> : null}
+                  {e.canImport ? <s-badge tone="success">Import</s-badge> : <s-badge>Export only</s-badge>}
+                  {e.canImport ? (
+                    <s-link href={templateHref(e.columns)} download={`${e.sheet}.csv`}>
+                      Download an empty {e.sheet}.csv template
+                    </s-link>
+                  ) : null}
+                </s-stack>
+                {e.keyColumns.length ? (
+                  <s-text>
+                    Matched by: <code>{e.keyColumns.join(", then ")}</code>
+                  </s-text>
+                ) : null}
+                {hits.length ? <s-text>Columns matching "{query.trim()}": {hits.join(" · ")}</s-text> : null}
+                <s-text tone="neutral">Columns: {e.columns.join(" · ")}</s-text>
+              </s-stack>
+            </s-section>
+          </div>
+        );
+      })}
     </s-page>
   );
 }

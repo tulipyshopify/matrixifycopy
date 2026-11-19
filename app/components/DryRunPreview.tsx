@@ -124,11 +124,15 @@ export function ImportReview({
   const [typed, setTyped] = useState("");
   const [rest, setRest] = useState(false);
 
+  // Plain updates are included unless set to Skip; risky rows are skipped unless set to Include.
+  const isOn = (x: { id: string; kind: PreviewKind }) => included[x.id] ?? x.kind === "update";
   const risky = all.filter((x) => RISKY.has(x.kind));
-  const inc = risky.filter((x) => included[x.id]);
-  const skipped = risky.length - inc.length;
+  const inc = risky.filter(isOn);
+  const updatesOff = all.filter((x) => x.kind === "update" && !isOn(x));
+  const skipped = risky.length - inc.length + updatesOff.length;
   const count = (k: PreviewKind) => inc.filter((x) => x.kind === k).length;
-  const applying = totals.update + inc.length + (rest ? unlistedRisky : 0);
+  const updating = totals.update - updatesOff.length;
+  const applying = updating + inc.length + (rest ? unlistedRisky : 0);
   const deletesIncluded = count("delete") + (rest ? Math.max(0, totals.delete - (listed.delete ?? 0)) : 0);
   const setAll = (kind: PreviewKind, on: boolean) => setIncluded((cur) => ({ ...cur, ...Object.fromEntries(risky.filter((x) => x.kind === kind).map((x) => [x.id, on])) }));
 
@@ -138,7 +142,7 @@ export function ImportReview({
       for (const x of list) if (x.item.key) (out[x.sheet] ??= []).push(x.item.key);
       return out;
     };
-    onImport({ exclude: group(risky.filter((x) => !included[x.id])), include: group(inc), deletes: typed, rest });
+    onImport({ exclude: group([...risky.filter((x) => !isOn(x)), ...updatesOff]), include: group(inc), deletes: typed, rest });
   };
 
   const compared = all.some((x) => x.item.compared);
@@ -234,7 +238,7 @@ export function ImportReview({
                     <s-stack direction="inline" gap="small" alignItems="center">
                       <s-text color="subdued">All at once:</s-text>
                       {riskyHere.map((k) => {
-                        const on = items.filter((x) => x.kind === k).every((x) => included[x.id]);
+                        const on = items.filter((x) => x.kind === k).every(isOn);
                         return (
                           <s-button key={k} variant="tertiary" onClick={() => setAll(k, !on)}>
                             {on ? "Skip" : "Include"} every {k === "look" ? "warning" : k}
@@ -248,9 +252,9 @@ export function ImportReview({
                   {items.slice(0, shown).map(({ item: i, kind, id }) => {
                     const a = actionOf(i.action);
                     const errors = i.errors?.length ? i.errors : kind === "failed" ? [i.message || "Can't be applied"] : [];
-                    const on = !!included[id];
+                    const on = isOn({ id, kind });
                     return (
-                      <div key={id} role="listitem" className={`bp-row bp-row-${kind}${RISKY.has(kind) && !on ? " bp-row-off" : ""}`}>
+                      <div key={id} role="listitem" className={`bp-row bp-row-${kind}${(RISKY.has(kind) || kind === "update") && !on ? " bp-row-off" : ""}`}>
                         <div className="bp-row-n" title="Row in the sheet (the header is row 1)">
                           {i.row}
                         </div>
@@ -274,10 +278,10 @@ export function ImportReview({
                           {!errors.length && !i.changes.length ? <s-text color="subdued">{kind === "none" ? "Same as the store" : i.message || "—"}</s-text> : null}
                         </div>
                         <div className="bp-row-do">
-                          {RISKY.has(kind) && canApply ? (
+                          {(RISKY.has(kind) || kind === "update") && canApply ? (
                             <div className="bp-choice" role="group" aria-label={`${i.item}: include or skip`}>
                               <button type="button" className={on ? "bp-choice-on" : ""} aria-pressed={on} onClick={() => setIncluded((c) => ({ ...c, [id]: true }))}>
-                                {kind === "delete" ? "Delete" : kind === "create" ? "Create" : "Include"}
+                                {kind === "delete" ? "Delete" : kind === "create" ? "Create" : kind === "update" ? "Update" : "Include"}
                               </button>
                               <button type="button" className={!on ? "bp-choice-on" : ""} aria-pressed={!on} onClick={() => setIncluded((c) => ({ ...c, [id]: false }))}>
                                 Skip
@@ -323,7 +327,7 @@ export function ImportReview({
         <s-section heading={`Apply ${plural(applying, "change")} to your store?`}>
           <s-stack direction="block" gap="base">
             <div className="bp-sum">
-              <div><b>{n(totals.update)}</b><s-badge tone="info">Update</s-badge><span>items changed as shown in the preview</span></div>
+              <div><b>{n(updating)}</b><s-badge tone="info">Update</s-badge><span>items changed as shown in the preview</span></div>
               {count("look") ? <div><b>{n(count("look"))}</b><s-badge tone="warning">Accepted warning</s-badge><span>{inc.filter((x) => x.kind === "look").slice(0, 3).map((x) => x.item.title || x.item.item).join("; ")}{count("look") > 3 ? "…" : ""}</span></div> : null}
               {totals.create ? <div><b>{n(count("create"))}</b><s-badge tone="warning">Create</s-badge><span>{count("create") ? "new items, as drafts unless the file says otherwise" : `${plural(totals.create, "possible new item")} not included`}</span></div> : null}
               {totals.delete ? <div><b>{n(count("delete"))}</b><s-badge tone="critical">Delete</s-badge><span>{count("delete") ? inc.filter((x) => x.kind === "delete").slice(0, 3).map((x) => x.item.title || x.item.item).join("; ") : `${plural(totals.delete, "deletion")} not included`}</span></div> : null}
@@ -368,7 +372,7 @@ export function ImportReview({
             <s-text color="subdued">
               {needs.changes
                 ? [
-                    `${n(totals.update)} ${totals.update === 1 ? "update" : "updates"}`,
+                    `${n(updating)} ${updating === 1 ? "update" : "updates"}`,
                     count("look") ? `${n(count("look"))} accepted ${count("look") === 1 ? "warning" : "warnings"}` : "",
                     count("create") ? `${n(count("create"))} ${count("create") === 1 ? "create" : "creates"}` : "",
                     count("delete") ? `${n(count("delete"))} ${count("delete") === 1 ? "deletion" : "deletions"}` : "",

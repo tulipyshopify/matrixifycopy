@@ -160,3 +160,19 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("check reports", async () =
     expect(await check.fixExport("other.myshopify.com", a.id, "no_barcode")).toBeNull();
   });
 });
+
+describe("scores per channel", () => {
+  it("weighs each rule by how much the channel cares, and names what holds it back", async () => {
+    const { channelScores } = await import("../app/lib/check/rules");
+    const report = { products: 1000, rules: [{ key: "no_alt", count: 850, examples: [], ids: [] }, { key: "no_barcode", count: 400, examples: [], ids: [] }, { key: "no_description", count: 10, examples: [], ids: [] }] };
+    const [google, social, ai] = channelScores(report as any);
+    // Missing GTINs hurt Google most; alt text only matters to the agents; neither matters to social.
+    expect(google.worst[0]).toMatchObject({ rule: "no_barcode", count: 400, weight: 3 });
+    expect(google.score).toBe(95);
+    expect(social.score).toBe(100);
+    expect(social.worst.map((w) => w.rule)).toEqual(["no_description"]);
+    expect(ai.worst.map((w) => w.rule)).toEqual(["no_alt", "no_barcode", "no_description"]);
+    expect(ai.score).toBe(95);
+    expect(channelScores({ products: 0, rules: [] } as any).map((c) => c.score)).toEqual([100, 100, 100]);
+  });
+});

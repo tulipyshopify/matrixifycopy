@@ -301,3 +301,56 @@ export function createChecker() {
     },
   };
 }
+
+// --- Scores per channel -------------------------------------------------------
+
+/**
+ * How much each rule matters to a channel (0 = not at all, 3 = a listing is
+ * usually refused or hidden without it). The weights are a judgement from the
+ * channels' published product-data requirements, stated on the page so the
+ * score can be argued with.
+ */
+export const CHANNELS: Array<{ key: string; label: string; note: string; weights: Record<string, number> }> = [
+  {
+    key: "google",
+    label: "Google Shopping",
+    note: "Needs an image, a price, a brand and a valid GTIN; titles and categories decide where a product shows.",
+    weights: { no_image: 3, no_price: 3, no_barcode: 3, bad_gtin: 3, no_vendor: 2, no_description: 2, no_category: 2, title_length: 2, short_description: 1, one_image: 1, out_of_stock: 1, compare_at: 1 },
+  },
+  {
+    key: "social",
+    label: "Meta and TikTok",
+    note: "Image-led: products need good pictures, a price, stock and a product page to send people to.",
+    weights: { no_image: 3, no_price: 3, one_image: 2, no_description: 2, title_length: 2, out_of_stock: 2, not_published: 2, no_category: 1, no_vendor: 1, compare_at: 1 },
+  },
+  {
+    key: "ai",
+    label: "AI shopping agents",
+    note: "Agents answer from structured data: description, category and attributes matter most, then identifiers.",
+    weights: { no_description: 3, no_category: 3, no_price: 3, short_description: 2, no_attributes: 2, no_image: 2, no_sku: 2, duplicate_sku: 2, not_published: 2, no_alt: 1, no_seo: 1, no_barcode: 1, bad_gtin: 1, out_of_stock: 1 },
+  },
+];
+
+/** A 0–100 score per channel from a report: each rule counts by its weight and by the share of products that pass it. */
+export function channelScores(report: Pick<CheckReport, "products" | "rules">): Array<{ key: string; label: string; note: string; score: number; worst: Array<{ rule: string; title: string; count: number; weight: number }> }> {
+  return CHANNELS.map((c) => {
+    let total = 0;
+    let lost = 0;
+    const hits: Array<{ rule: string; title: string; count: number; weight: number; cost: number }> = [];
+    for (const [rule, weight] of Object.entries(c.weights)) {
+      const count = Math.min(report.rules.find((r) => r.key === rule)?.count ?? 0, report.products);
+      total += weight;
+      const cost = report.products ? (weight * count) / report.products : 0;
+      lost += cost;
+      if (count) hits.push({ rule, title: ALL_RULES.find((r) => r.key === rule)?.title ?? rule, count, weight, cost });
+    }
+    return {
+      key: c.key,
+      label: c.label,
+      note: c.note,
+      score: total ? Math.round(100 * (1 - lost / total)) : 100,
+      // What costs this channel's score the most, biggest first.
+      worst: hits.sort((a, b) => b.cost - a.cost).slice(0, 3).map(({ cost: _c, ...h }) => h),
+    };
+  });
+}
