@@ -36,6 +36,25 @@ export interface ImportConfig {
   onlyItems?: string[];
   /** Items the person chose to skip at the preview, by sheet name. */
   exclude?: Record<string, string[]>;
+  /** Failures the preview already announced, by sheet name: not counted towards stopping early. */
+  expectedFailed?: Record<string, number>;
+  /** Stop a sheet when more than this share of its items fail unexpectedly (see runImport). */
+  stopAtFailedPercent?: number;
+  /** This import undoes another one (the job it puts back). */
+  undoOf?: string;
+}
+
+/** The file that undoes an import, in the job's folder (its sheets are named after their data types). */
+export const UNDO_DIR = "undo";
+
+/** Path of a job's undo file, or null when it has none. */
+export function undoFileOf(dir: string): string | null {
+  try {
+    const name = fs.readdirSync(path.join(dir, UNDO_DIR)).find((f) => /\.(csv|zip)$/.test(f));
+    return name ? path.join(dir, UNDO_DIR, name) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Columns that can name an item when restoring just some of a backup. */
@@ -272,8 +291,26 @@ export async function executeJob(
       isCancelled: deps.isCancelled,
       expected,
       exclude: config.options?.dryRun ? undefined : config.exclude,
+      stopAtFailedPercent: config.options?.dryRun ? undefined : config.stopAtFailedPercent,
+      expectedFailed: config.expectedFailed,
     });
     const resultFile = await out.close();
+    // What puts this import back, as a file that can itself be imported.
+    const undoByType = new Map<string, Array<Record<string, string>>>();
+    for (const st of stats) {
+      const sheetName = ENTITIES.find((e) => e.key === st.entity)?.sheet;
+      if (st.undo?.length && sheetName) undoByType.set(sheetName, [...(undoByType.get(sheetName) ?? []), ...st.undo]);
+    }
+    if (undoByType.size) {
+      await fs.promises.mkdir(path.join(dir, UNDO_DIR), { recursive: true });
+      const undoOut = createWorkbookOut("csv", path.join(dir, UNDO_DIR, "Undo"), deps.log);
+      for (const [sheetName, rows] of undoByType) {
+        const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+        await undoOut.addSheet(sheetName, headers, rows.map((r) => Object.fromEntries(headers.filter((h) => h in r).map((h) => [h, r[h]]))));
+      }
+      await undoOut.close();
+      deps.log(`This import can be undone from its page (${[...undoByType.values()].reduce((n, r) => n + r.length, 0)} rows recorded).`);
+    }
     // The dry-run preview is kept in a file of its own beside the results.
     if (config.options?.dryRun) {
       await fs.promises.writeFile(
@@ -281,7 +318,7 @@ export async function executeJob(
         JSON.stringify(stats.map((s) => ({ sheet: s.sheet, entity: s.entity, items: s.preview ?? [], seen: s.seen, risk: s.risk, warnings: s.warnings }))),
       );
     }
-    return { resultFile, stats: stats.map(({ preview: _p, seen: _s, ...s }) => s) };
+    return { resultFile, stats: stats.map(({ preview: _p, seen: _s, undo, ...s }) => ({ ...s, ...(undo?.length ? { undoRows: undo.length } : {}) })) };
   }
 
   throw new Error(`Unknown job type ${job.type}`);

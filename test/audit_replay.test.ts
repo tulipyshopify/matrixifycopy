@@ -751,3 +751,70 @@ describe("redesign: skipping rows at the preview", () => {
     expect(p.items[0].warnings?.[0]).toMatch(/description contains a <script> tag/);
   });
 });
+
+describe("redesign: undo", () => {
+  async function importWithUndo(sheets: Sheet[], store: ReturnType<typeof fakeStore>, extra: Record<string, unknown> = {}) {
+    const stats = await runImport({ ctx: { gql: store.gql, options: { defaultCommand: "MERGE" }, log: () => {}, cache: new Map() }, sheets: structuredClone(sheets), entities: ENTITIES, log: () => {}, ...extra });
+    return stats;
+  }
+
+  it("records what an import changed, and importing that record puts everything back", async () => {
+    const store = zzStore();
+    const f01 = store.byHandle("zz-bulkport-test-01-price")!;
+    const f04 = store.byHandle("zz-bulkport-test-04-tags")!;
+    const f10 = store.byHandle("zz-bulkport-test-10-inventory")!;
+    f04.metafields["custom.care"] = { type: "single_line_text_field", value: "Wash cold" };
+    const before = JSON.stringify([f01, f04, f10]);
+    const sheet: Sheet = {
+      name: "Products",
+      headers: ["Handle", "Title", "Tags", "Variant SKU", "Variant Price", "Variant Compare At Price", "Inventory Available: Warehouse", "Metafield: custom.care [single_line_text_field]"],
+      rows: [
+        { Handle: f01.handle, Title: "Renamed 01", Tags: "new-tag", "Variant SKU": "ZZBPT-01", "Variant Price": "99.00", "Variant Compare At Price": "120", "Inventory Available: Warehouse": "", "Metafield: custom.care [single_line_text_field]": "" },
+        { Handle: f04.handle, Title: "", Tags: "", "Variant SKU": "ZZBPT-04", "Variant Price": "", "Variant Compare At Price": "", "Inventory Available: Warehouse": "", "Metafield: custom.care [single_line_text_field]": "" },
+        { Handle: f10.handle, Title: "", Tags: "garden, outdoor", "Variant SKU": "ZZBPT-10-A", "Variant Price": "", "Variant Compare At Price": "", "Inventory Available: Warehouse": "7", "Metafield: custom.care [single_line_text_field]": "" },
+        { Handle: "zz-brand-new", Title: "Brand new", Tags: "", "Variant SKU": "NEW-1", "Variant Price": "5", "Variant Compare At Price": "", "Inventory Available: Warehouse": "", "Metafield: custom.care [single_line_text_field]": "" },
+      ],
+    };
+    const stats = await importWithUndo([sheet], store);
+    expect(stats[0]).toMatchObject({ ok: 4, failed: 0 });
+    expect(f01).toMatchObject({ title: "Renamed 01", tags: ["new-tag"] });
+    expect(f01.variants[0]).toMatchObject({ price: "99.00", compareAtPrice: "120.00" });
+    expect(f04.tags).toEqual([]);
+    expect(f04.metafields["custom.care"]).toBeUndefined();
+    expect(f10.variants[0].stock.Warehouse).toBe(7);
+    expect(store.byHandle("zz-brand-new")).toBeTruthy();
+
+    const undo = stats[0].undo!;
+    expect(undo.find((r) => r.Title)).toMatchObject({ Command: "UPDATE", Title: "ZZ 01", Tags: "garden, outdoor", "Tags Command": "REPLACE" });
+    expect(undo.find((r) => r["Variant Price"])).toMatchObject({ "Variant Price": "101.11", "Variant Compare At Price": "" });
+    expect(undo.filter((r) => r.Command === "DELETE")).toHaveLength(1);
+
+    // The undo is an ordinary sheet: preview it, then apply it.
+    const headers = [...new Set(undo.flatMap((r) => Object.keys(r)))];
+    const undoSheet: Sheet = { name: "Products", headers, rows: undo.map((r) => ({ ...r })) };
+    const p = await preview([undoSheet], store, { defaultCommand: "UPDATE" });
+    expect(p.items.filter((i) => i.action === "failed")).toEqual([]);
+    expect(p.items.some((i) => i.changes.includes("Variant Price (SKU ZZBPT-01): 99 → 101.11"))).toBe(true);
+    await importWithUndo([undoSheet], store);
+    expect(store.byHandle("zz-brand-new")).toBeUndefined();
+    expect(JSON.stringify([f01, f04, f10])).toBe(before);
+  });
+
+  it("stops a sheet when too many rows fail unexpectedly, and says the rest were not imported", async () => {
+    const store = zzStore();
+    const rows = Array.from({ length: 60 }, (_, i) => ({ Handle: i < 3 ? "zz-bulkport-test-01-price" : `no-such-product-${i}`, Title: `T${i}` }));
+    rows[1].Handle = "zz-bulkport-test-03-sku-owner";
+    rows[2].Handle = "zz-bulkport-test-04-tags";
+    const logs: string[] = [];
+    const stats = await runImport({ ctx: { gql: store.gql, options: { defaultCommand: "UPDATE", concurrency: 1 }, log: () => {}, cache: new Map() }, sheets: [{ name: "Products", headers: ["Handle", "Title"], rows }], entities: ENTITIES, log: (m) => logs.push(m), stopAtFailedPercent: 5 });
+    expect(stats[0].stopped).toBe(true);
+    expect(stats[0].ok).toBe(3);
+    expect(stats[0].failed).toBeLessThan(25);
+    expect(stats[0].skipped).toBeGreaterThan(30);
+    expect(logs.join("\n")).toMatch(/stopped, because \d+ of the first \d+ items failed/);
+    // Failures the preview announced don't count.
+    const calm = await runImport({ ctx: { gql: store.gql, options: { defaultCommand: "UPDATE", concurrency: 1 }, log: () => {}, cache: new Map() }, sheets: [{ name: "Products", headers: ["Handle", "Title"], rows: structuredClone(rows) }], entities: ENTITIES, log: () => {}, stopAtFailedPercent: 5, expectedFailed: { Products: 57 } });
+    expect(calm[0].stopped).toBeUndefined();
+    expect(calm[0].failed).toBe(57);
+  });
+});

@@ -1,6 +1,6 @@
 import type { Row } from "../core/types";
 import { ImportError } from "../core/types";
-import { cell, cellToMetafieldValue, gidToId, joinTags, parseBool, parseMetafieldColumn, parseSubCommand, splitTags } from "../core/util";
+import { cell, cellToMetafieldValue, gidToId, joinTags, metafieldToCell, parseBool, parseMetafieldColumn, parseSubCommand, splitTags } from "../core/util";
 
 /**
  * Compares the cells of an import row with what the store holds now, in the
@@ -24,6 +24,8 @@ export interface RowComparison {
   seen: Record<string, string>;
   /** Columns whose cell differs from the store: the only ones the import sends. */
   changed: Set<string>;
+  /** For each changed column, the cell that puts the store's current value back (for undo). */
+  old: Record<string, string>;
   errors: string[];
 }
 
@@ -103,6 +105,7 @@ function compareCell(
   if (want === null) return void out.changed.add(col);
   if (want === now) return;
   out.changed.add(col);
+  out.old[col] = current;
   out.changes.push({ label, old: shown(now), next: want === "" ? "(cleared)" : shown(want), ...(want === "" && now !== "" ? { clears: true } : {}) });
 }
 
@@ -172,6 +175,7 @@ export function compareMetafields(row: Row, prefix: string, now: MetafieldsNow |
     if (raw === "") {
       if (!cur) continue;
       out.changed.add(header);
+      out.old[header] = metafieldToCell(cur.type, cur.value);
       out.changes.push({ label, old: shown(cur.value), next: "(cleared)", clears: true });
       continue;
     }
@@ -185,6 +189,7 @@ export function compareMetafields(row: Row, prefix: string, now: MetafieldsNow |
     const type = cur?.type ?? col.type;
     if (cur && metafieldCanon(type, cur.value) === metafieldCanon(type, want)) continue;
     out.changed.add(header);
+    out.old[header] = cur ? metafieldToCell(cur.type, cur.value) : "";
     out.changes.push({ label, old: cur ? shown(cur.value) : "(empty)", next: shown(want) });
   }
 }
@@ -192,7 +197,7 @@ export function compareMetafields(row: Row, prefix: string, now: MetafieldsNow |
 const sameTags = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
 export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNow | null): RowComparison {
-  const out: RowComparison = { changes: [], seen: {}, changed: new Set(), errors: [] };
+  const out: RowComparison = { changes: [], seen: {}, changed: new Set(), old: {}, errors: [] };
   for (const [col, spec, get] of PRODUCT_SPECS) compareCell(top, col, spec, get(p), col, out);
 
   // A different Handle on a product found by its ID renames it.
@@ -200,6 +205,7 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
   if (handle && cell(top, "ID") && handle.toLowerCase() !== (p.handle ?? "").toLowerCase()) {
     out.seen.Handle = p.handle;
     out.changed.add("Handle");
+    out.old.Handle = p.handle;
     out.changes.push({ label: "Handle", old: p.handle, next: handle });
   }
 
@@ -247,6 +253,10 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
     }
   }
 
+  if (out.changed.has("Tags")) {
+    out.old.Tags = joinTags(p.tags ?? []);
+    out.old["Tags Command"] = "REPLACE";
+  }
   compareMetafields(top, "Metafield", metafields, "", out);
   // "Published At" only matters together with a change of Published.
   if (out.changed.has("Published")) out.changed.add("Published At");
@@ -295,7 +305,7 @@ const VARIANT_SPECS: Array<[string, ColumnSpec, (v: VariantNow) => string]> = [
 
 /** Compares the plain variant columns of a row. Stock, options, image and metafields are compared by the importer. */
 export function compareVariant(row: Row, v: VariantNow, ident: string, metafields: MetafieldsNow | null): RowComparison {
-  const out: RowComparison = { changes: [], seen: {}, changed: new Set(), errors: [] };
+  const out: RowComparison = { changes: [], seen: {}, changed: new Set(), old: {}, errors: [] };
   for (const [col, spec, get] of VARIANT_SPECS) compareCell(row, col, spec, get(v), `${col} (${ident})`, out);
 
   // Tracker: "shopify" (or TRUE) tracks stock; anything else, blank included, doesn't.
@@ -311,6 +321,7 @@ export function compareVariant(row: Row, v: VariantNow, ident: string, metafield
     out.seen[label] = v.inventoryItem.tracked ? "shopify" : "";
     if (want !== v.inventoryItem.tracked) {
       out.changed.add("Variant Inventory Tracker");
+      out.old["Variant Inventory Tracker"] = v.inventoryItem.tracked ? "shopify" : "";
       out.changes.push({ label: `Stock tracking (${ident})`, old: v.inventoryItem.tracked ? "on" : "off", next: want ? "on" : "off" });
     }
   }
@@ -328,6 +339,10 @@ export function compareVariant(row: Row, v: VariantNow, ident: string, metafield
     if (Number.isNaN(n) || !now || n !== Number(now.value) || unit !== nowUnit) {
       out.changed.add("Variant Weight");
       out.changed.add("Variant Weight Unit");
+      if (now) {
+        out.old["Variant Weight"] = String(now.value);
+        out.old["Variant Weight Unit"] = nowUnit;
+      }
       if (!Number.isNaN(n)) out.changes.push({ label, old: now ? `${now.value} ${nowUnit}` : "(empty)", next: `${n} ${unit}` });
     }
   }

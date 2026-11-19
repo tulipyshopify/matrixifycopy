@@ -9,7 +9,7 @@ import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import { INVENTORY_COLUMN } from "../core/exporter";
 import type { ExportConfig, ImportConfig } from "./runner.server";
-import { PREVIEW_FILE } from "./runner.server";
+import { PREVIEW_FILE, undoFileOf } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 import { SOURCE_PROTOCOLS, UPLOAD_PROTOCOLS, redactUrl } from "./sources.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
@@ -517,6 +517,50 @@ export function applyNeeds(stats: unknown): ApplyNeeds {
   return needs;
 }
 
+function expectedFailed(stats: string): Record<string, number> {
+  try {
+    return Object.fromEntries((JSON.parse(stats) as Array<{ sheet: string; failed?: number }>).filter((s) => s.failed).map((s) => [s.sheet, s.failed!]));
+  } catch {
+    return {};
+  }
+}
+
+/** The store's "stop when more than this share of rows fail" setting (0 = never). */
+export async function failStopPercent(shop: string): Promise<number> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { failStopPercent: true } });
+  return s?.failStopPercent ?? 5;
+}
+
+/**
+ * Starts the undo of a finished import: a preview of the file that import
+ * recorded, which puts back the values it changed. Like any preview, nothing
+ * changes until it is applied.
+ */
+export async function startUndo(shop: string, id: string) {
+  const job = await getJob(shop, id);
+  if (job.type !== "import" || isDryRunJob(job.config)) throw new Error("Only an import can be undone");
+  const file = undoFileOf(jobDir(shop, id));
+  if (!file) throw new Error("This import has nothing recorded to undo (it changed nothing, or its record has been cleared).");
+  return prisma.job.create({
+    data: {
+      shop,
+      type: "import",
+      config: JSON.stringify({ options: { dryRun: true, defaultCommand: "UPDATE" }, undoOf: id } satisfies ImportConfig),
+      name: `Undo of ${job.name || job.inputName || "import"}`.slice(0, 100),
+      inputFile: file,
+      inputName: path.extname(file) === ".csv" ? "Products.csv" : "Undo.zip",
+    },
+  });
+}
+
+const isDryRunJob = (config: string) => {
+  try {
+    return !!JSON.parse(config)?.options?.dryRun;
+  } catch {
+    return false;
+  }
+};
+
 /** How an item of a preview is treated when deciding what needs a person's say-so. */
 export type PreviewKind = "delete" | "create" | "look" | "update" | "none" | "failed";
 
@@ -606,7 +650,15 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
       shop,
       type: "import",
       // previewOf: the import compares each item with what this preview saw.
-      config: JSON.stringify({ ...config, options, previewOf: job.id, ...(exclude && Object.keys(exclude).length ? { exclude } : {}) }),
+      config: JSON.stringify({
+        ...config,
+        options,
+        previewOf: job.id,
+        ...(exclude && Object.keys(exclude).length ? { exclude } : {}),
+        // Rows the preview said would fail are expected; more than a few beyond them stops the import.
+        expectedFailed: expectedFailed(job.stats),
+        stopAtFailedPercent: await failStopPercent(shop),
+      }),
       format: job.format,
       name: job.name,
       inputFile: job.inputFile,
@@ -889,22 +941,27 @@ export interface PresetData {
 }
 
 /** Saved export set-ups for a shop, newest first. */
-export async function listPresets(shop: string) {
-  const rows = await prisma.preset.findMany({ where: { shop }, orderBy: { name: "asc" } });
+/**
+ * A person's presets: their own, plus the ones saved before presets were per
+ * person (which everyone keeps seeing). `userId` is "" when the person isn't
+ * known, which shows only the shared ones.
+ */
+export async function listPresets(shop: string, userId = "") {
+  const rows = await prisma.preset.findMany({ where: { shop, userId: { in: [...new Set(["", userId])] } }, orderBy: { name: "asc" } });
   return rows.map((r) => ({ id: r.id, name: r.name, data: JSON.parse(r.config) as PresetData }));
 }
 
-/** Creates a preset, or overwrites the one with the same name. */
-export async function savePreset(shop: string, name: string, raw: unknown) {
+/** Creates a preset for this person, or overwrites their one with the same name. */
+export async function savePreset(shop: string, name: string, raw: unknown, userId = "") {
   const clean = name.trim().slice(0, 80);
   if (!clean) throw new Error("Give the preset a name");
   const body = raw as { entities?: unknown; format?: string };
   const config = parseExportConfig(body);
   const data: PresetData = { entities: config.entities, format: body.format === "csv" ? "csv" : "xlsx" };
-  const existing = await prisma.preset.findFirst({ where: { shop, name: clean } });
+  const existing = (await prisma.preset.findFirst({ where: { shop, name: clean, userId } })) ?? (await prisma.preset.findFirst({ where: { shop, name: clean, userId: "" } }));
   if (existing) return prisma.preset.update({ where: { id: existing.id }, data: { config: JSON.stringify(data) } });
-  if ((await prisma.preset.count({ where: { shop } })) >= 100) throw new Error("Preset limit reached (100). Delete one first.");
-  return prisma.preset.create({ data: { shop, name: clean, config: JSON.stringify(data) } });
+  if ((await prisma.preset.count({ where: { shop } })) >= 300) throw new Error("Preset limit reached. Delete one first.");
+  return prisma.preset.create({ data: { shop, userId, name: clean, config: JSON.stringify(data) } });
 }
 
 export async function deletePreset(shop: string, id: string) {

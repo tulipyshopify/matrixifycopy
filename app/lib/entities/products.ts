@@ -1395,6 +1395,8 @@ interface UpdatePlan {
   /** Variant and inventory item IDs to write back, by row. */
   rowPatches: Array<Row | undefined>;
   notes: string[];
+  /** Rows that would put everything back (see ItemResult.undo). */
+  undo: Row[];
   /** Stock expected after the import, checked by reading it back. */
   stockAfter: Array<{ inventoryItemId: string; locationId: string; locationName: string; kind: string; quantity: number; ident: string }>;
 }
@@ -1424,7 +1426,9 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
     rowPatches: [],
     notes: [],
     stockAfter: [],
+    undo: [],
   };
+  const pid = gidToId(existing.id);
   const fail = (i: number, message: string) => plan.errors.push(`Row ${rowNo(i)}: ${message}`);
   const guard = (i: number, fn: () => void) => {
     try {
@@ -1448,6 +1452,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   const pc = compareProduct(top, existing, productMetafields);
   plan.changes.push(...pc.changes);
   Object.assign(plan.seen, pc.seen);
+  if (Object.keys(pc.old).length) plan.undo.push({ ID: pid, Command: "UPDATE", ...pc.old });
   for (const e of pc.errors) fail(0, e);
   guard(0, () => void productFields(top));
   guard(0, () => void parseBool(cell(top, "Published")));
@@ -1482,7 +1487,11 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       const keep = new Set(wanted.map((im) => imageKey(im.src)));
       for (const m of existingMedia) if (!keep.has(imageKey(m.image!.url))) toDelete.add(m.id);
     }
-    for (const m of existingMedia) if (toDelete.has(m.id)) plan.changes.push({ label: "Image", old: fileName(m.image!.url), next: "(removed)" });
+    for (const m of existingMedia) {
+      if (!toDelete.has(m.id)) continue;
+      plan.changes.push({ label: "Image", old: fileName(m.image!.url), next: "(removed)" });
+      plan.undo.push({ ID: pid, Command: "UPDATE", "Image Src": m.image!.url, "Image Command": "MERGE", "Image Alt Text": m.alt ?? "" });
+    }
     plan.images.deleteIds = [...toDelete];
     const taken = new Set([...mediaByKey].filter(([, m]) => !toDelete.has(m.id)).map(([k]) => k));
     for (const im of wanted) {
@@ -1493,6 +1502,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       }
       taken.add(key);
       plan.images.add.push(im);
+      plan.undo.push({ ID: pid, Command: "UPDATE", "Image Src": im.src, "Image Command": "DELETE" });
       newImageUrls.set(im.src, im.rowIndex);
       plan.changes.push({ label: "Image", old: "(none)", next: `adds ${fileName(im.src)}` });
     }
@@ -1588,6 +1598,13 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
     if (v.command === "DELETE") {
       plan.toDelete.push(m.id);
       plan.deletes++;
+      // Undo re-creates the variant from what it was (it gets a new ID).
+      const back: Row = { ID: pid, Command: "UPDATE", "Variant SKU": m.sku ?? "", "Variant Price": m.price ?? "", "Variant Compare At Price": m.compareAtPrice ?? "", "Variant Barcode": m.barcode ?? "" };
+      m.selectedOptions.slice(0, 3).forEach((o, n) => {
+        back[`Option${n + 1} Name`] = o.name;
+        back[`Option${n + 1} Value`] = o.value;
+      });
+      plan.undo.push(back);
       plan.changes.push({ label: `Variant (${variantIdent(m)})`, old: "exists", next: "(deleted)" });
       continue;
     }
@@ -1634,6 +1651,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
     }
     plan.changes.push(...vc.changes);
     Object.assign(plan.seen, vc.seen);
+    const back: Row = { ...vc.old };
 
     // A changed SKU must not collide with another variant, here or elsewhere.
     if (vc.changed.has("Variant SKU")) {
@@ -1654,6 +1672,8 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
         plan.seen[`Option ${name} (${ident})`] = now[n];
         if (next[n].toLowerCase() !== now[n].toLowerCase()) {
           renamed = true;
+          back[`Option${n + 1} Name`] = name;
+          back[`Option${n + 1} Value`] = now[n];
           plan.changes.push({ label: `Option ${name} (${ident})`, old: now[n], next: next[n] });
         }
       });
@@ -1670,6 +1690,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       if (imageKey(spec.imageSrc) === now) delete eff["Variant Image"];
       else {
         plan.changes.push({ label: `Variant Image (${ident})`, old: now || "(none)", next: fileName(spec.imageSrc) });
+        if (ex.image?.url) back["Variant Image"] = ex.image.url;
         if (!mediaByKey.has(imageKey(spec.imageSrc))) newImageUrls.set(spec.imageSrc, i);
       }
     }
@@ -1708,11 +1729,13 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
           continue;
         }
         writesStock = true;
+        back[k] = String(-n);
         plan.changes.push({ label, old: now === undefined ? "?" : String(now), next: now === undefined ? `${n > 0 ? "+" : ""}${n}` : `${now + n} (${n > 0 ? "+" : ""}${n})` });
         if (now !== undefined) plan.stockAfter.push({ inventoryItemId: ex.inventoryItem.id, locationId: loc.id, locationName: loc.name, kind, quantity: now + n, ident });
       } else if (levels && now === n) delete eff[k];
       else {
         writesStock = true;
+        if (now !== undefined) back[k] = String(now);
         plan.changes.push({ label, old: now === undefined ? (levels ? "not stocked here" : "?") : String(now), next: String(n) });
         plan.stockAfter.push({ inventoryItemId: ex.inventoryItem.id, locationId: loc.id, locationName: loc.name, kind, quantity: n!, ident });
         if (kind === "available" && now && n === 0) plan.warnings.push(`Row ${rowNo(i)}: stock of ${ident} at ${loc.name} goes from ${now} to 0`);
@@ -1735,6 +1758,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
         );
       } else {
         writesStock = true;
+        back["Variant Inventory Qty"] = String(total);
         const loc = locations[0];
         const now = levels?.get(loc.id)?.quantities.available;
         plan.changes.push({ label: `Available stock at ${loc.name} (${ident})`, old: String(now ?? total), next: String(spec.totalQty) });
@@ -1758,6 +1782,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
         );
       } else {
         writesStock = true;
+        back["Variant Inventory Adjust"] = String(-spec.adjust);
         const now = levels?.get(target.id)?.quantities.available ?? ex.inventoryQuantity ?? 0;
         plan.seen[`Available stock at ${target.name} (${ident})`] = String(now);
         plan.changes.push({ label: `Available stock at ${target.name} (${ident})`, old: String(now), next: `${now + spec.adjust} (${spec.adjust > 0 ? "+" : ""}${spec.adjust})` });
@@ -1773,6 +1798,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       if (trackerCell !== undefined) fail(i, `The row sets stock for ${ident} but turns stock tracking off (Variant Inventory Tracker). Set it to "shopify", or remove the stock columns.`);
       else {
         trackOn = true;
+        back["Variant Inventory Tracker"] = "";
         plan.changes.push({ label: `Stock tracking (${ident})`, old: "off", next: "on (needed to hold stock)" });
       }
     }
@@ -1789,6 +1815,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
     );
 
     plan.rowPatches[i] = { "Variant ID": gidToId(ex.id), "Variant Inventory Item ID": gidToId(ex.inventoryItem.id) };
+    if (Object.keys(back).length) plan.undo.push({ ID: pid, Command: "UPDATE", "Variant ID": gidToId(ex.id), ...back });
     // The row as the import sends it: only what differs from the store.
     let effSpec: VariantSpec | null = null;
     try {
@@ -2164,7 +2191,7 @@ export async function importProduct(
       };
     }
     const r = await prepared.create();
-    return { status: "OK", command, id: r.id, message: "Created", rowPatches: r.rowPatches };
+    return { status: "OK", command, id: r.id, message: "Created", rowPatches: r.rowPatches, undo: [{ ID: gidToId(r.id), Command: "DELETE" }] };
   };
 
   switch (command) {
@@ -2182,7 +2209,7 @@ export async function importProduct(
         };
       }
       await deleteProduct(ctx.gql, existing.id);
-      return { status: "OK", command, id: existing.id, message: `Deleted ${what}` };
+      return { status: "OK", command, id: existing.id, message: `Deleted ${what}`, undoNote: `the deleted product "${existing.title}" (restore it from a backup)` };
     }
     case "NEW": {
       if (existing)
@@ -2265,7 +2292,17 @@ export async function importProduct(
       if (!changes.length) {
         return { status: "OK", command, id: existing.id, message: ["No change: already as in the file", ...plan.notes].join("; "), rowPatches: plan.rowPatches, preview };
       }
-      await applyUpdate(ctx, existing, plan);
+      // New variants are undone by deleting them, once their IDs are known.
+      const undo = () => [
+        ...plan.undo,
+        ...plan.toCreate.map((v) => plan.rowPatches[v.rowIndex]?.["Variant ID"]).filter(Boolean).map((vid) => ({ ID: gidToId(existing.id), Command: "UPDATE", "Variant ID": vid!, "Variant Command": "DELETE" })),
+      ];
+      try {
+        await applyUpdate(ctx, existing, plan);
+      } catch (e: any) {
+        // It may have been partly applied: the undo rows still put back whatever was.
+        return { status: "Failed", command, id: existing.id, title: existing.title, message: e instanceof ImportError ? e.message : `Error: ${e?.message ?? e}`, undo: undo() };
+      }
       return {
         status: "OK",
         command,
@@ -2273,6 +2310,7 @@ export async function importProduct(
         message: [`Updated (${changes.length} change${changes.length === 1 ? "" : "s"})`, ...plan.notes].join("; "),
         rowPatches: plan.rowPatches,
         preview,
+        undo: undo(),
       };
     }
     default:

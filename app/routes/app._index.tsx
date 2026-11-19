@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { userOf } from "../lib/user.server";
 import { cancelJob, createExportJob, homeStats, listPresets, markReviewed, needsAttention, parseExportConfig, rerunJob } from "../lib/jobs/jobs.server";
 import { jobListData } from "../lib/jobs/joblist.server";
 import { formatDate, isActive, jobRow } from "../components/jobs";
@@ -22,8 +23,10 @@ const RECENT = 6;
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const [stats, list, attention, presets] = await Promise.all([homeStats(session.shop), jobListData(session.shop, RECENT), needsAttention(session.shop), listPresets(session.shop)]);
+  const auth = await authenticate.admin(request);
+  const { session } = auth;
+  const user = userOf(auth);
+  const [stats, list, attention, presets] = await Promise.all([homeStats(session.shop), jobListData(session.shop, RECENT), needsAttention(session.shop), listPresets(session.shop, user)]);
   const checkScore = (await latestChecks(session.shop)).latest?.report?.score ?? null;
   const checkDrop = await scoreDrop(session.shop);
   return {
@@ -53,7 +56,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  const { session, redirect } = auth;
+  const user = userOf(auth);
   const form = await request.formData();
   const id = String(form.get("id"));
   if (form.get("intent") === "cancel") await cancelJob(session.shop, id);
@@ -63,7 +68,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // One click: a template or a saved export, run as it is.
     try {
       const [kind, key] = id.split(/:(.*)/s);
-      const preset = kind === "preset" ? (await listPresets(session.shop)).find((p) => p.id === key) : null;
+      const preset = kind === "preset" ? (await listPresets(session.shop, user)).find((p) => p.id === key) : null;
       const template = kind === "template" ? getTemplate(key) : null;
       if (!preset && !template) throw new Error("That export is no longer there");
       const config = parseExportConfig({ entities: preset ? preset.data.entities : template!.entities });

@@ -110,10 +110,12 @@ model Preset {
   name      String
   /// JSON: { entities: [{ entity, options }], format }
   config    String
+  /// The staff member it belongs to ("" = everyone in the store, as before presets were per person).
+  userId    String   @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([shop, name])
+  @@unique([shop, userId, name])
 }
 
 /// Per-store settings.
@@ -125,6 +127,14 @@ model ShopSetting {
   checkExcludeTags String @default("")
   /// Where job problems are also posted (a Slack or Teams incoming-webhook URL), sealed.
   alertWebhook String?
+  /// Imports stop when more than this share (percent) of rows fail unexpectedly; 0 = never.
+  failStopPercent Int @default(5)
+  /// Days exports stay in the job history.
+  historyDays Int @default(90)
+  /// Where alerts are also emailed (comma separated).
+  alertEmails String @default("")
+  /// S3-compatible storage for backup copies: JSON, sealed.
+  backupBucket String?
   updatedAt   DateTime @updatedAt
 }
 
@@ -153,6 +163,9 @@ model ApiKey {
   hash       String    @unique
   /// May run imports for real (otherwise previews only).
   canImport  Boolean   @default(false)
+  /// Exports and reading only: no import previews either.
+  readOnly   Boolean   @default(false)
+  expiresAt  DateTime?
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
   revokedAt  DateTime?

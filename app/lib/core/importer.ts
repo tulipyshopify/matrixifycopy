@@ -132,6 +132,9 @@ function operationText(op: string): string {
   return op.replace(/^Import/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
+/** Most undo rows kept for one sheet (a very large import can still be undone from a backup). */
+const MAX_UNDO_ROWS = 200_000;
+
 /** How many failed rows are written to the job log per sheet. */
 const MAX_LOGGED_FAILURES = 20;
 
@@ -190,10 +193,18 @@ export interface ImportSummary {
   byCommand: Record<string, number>;
   /** Dry runs only: what would happen to each item (first MAX_PREVIEW_ITEMS). */
   preview?: PreviewItem[];
+  /** Real imports, as stored on the job: how many undo rows were recorded. */
+  undoRows?: number;
   /** Dry runs only: totals over every item, for the confirmations before a real import. */
   risk?: ImportRisk;
   /** About the sheet as a whole: columns that aren't recognised, the encoding assumed… */
   warnings?: string[];
+  /** Real imports: rows that put back what the sheet changed, as a sheet of `entity` (see ItemResult.undo). */
+  undo?: Row[];
+  /** Real imports: what can't be undone that way. */
+  undoNotes?: string[];
+  /** Real imports: stopped early because too many items were failing. */
+  stopped?: boolean;
   /** Dry runs only: what each item looked like in the store, by item key (see ItemResult.seen). */
   seen?: Record<string, Record<string, string>>;
 }
@@ -215,6 +226,14 @@ export interface RunImportArgs {
   expected?: Record<string, Record<string, Record<string, string>>>;
   /** Items left out at the preview, by sheet name: they are skipped, untouched. */
   exclude?: Record<string, string[]>;
+  /**
+   * Stop a sheet when more than this share (0–100) of its items have failed,
+   * once at least 20 were tried: a file that is going wrong is not pushed
+   * through to the end. 0 or undefined = never stop.
+   */
+  stopAtFailedPercent?: number;
+  /** Failures a preview already announced, by sheet name: they don't count towards stopping. */
+  expectedFailed?: Record<string, number>;
 }
 
 /** A row that must not be imported as it stands, whatever the data type. */
@@ -327,6 +346,9 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     const seen: Record<string, Record<string, string>> = {};
     const risk: ImportRisk = { creates: 0, updates: 0, deletes: 0, unchanged: 0, clearing: 0, warned: 0 };
     let cancelled = false;
+    let stopped = false;
+    const undo: Row[] = [];
+    const undoNotes: string[] = [];
     // Batch mode (opt-in, never for dry runs): the sheet goes to Shopify as one
     // bulk operation when it qualifies; otherwise it runs the normal way below.
     let batched = false;
@@ -359,7 +381,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       let command: Command = defaultCommand;
       if (cancelled || (args.isCancelled && (await args.isCancelled()))) {
         cancelled = true;
-        result = { status: "Skipped", command, message: "Job cancelled" };
+        result = { status: "Skipped", command, message: stopped ? "Not imported: the import stopped because too many items were failing" : "Job cancelled" };
       } else {
         try {
           command = parseCommand(cell(item.rows[0], "Command"), defaultCommand);
@@ -412,6 +434,18 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       if (!ctx.options.dryRun) {
         result.preview = undefined;
         result.seen = undefined;
+        if (result.undo?.length && undo.length < MAX_UNDO_ROWS) undo.push(...result.undo);
+        if (result.undoNote && undoNotes.length < 50) undoNotes.push(result.undoNote);
+        result.undo = undefined;
+        // A file that is going wrong is stopped, not pushed through.
+        const tried = summary.ok + summary.failed + (result.status === "Failed" ? 1 : result.status === "OK" ? 1 : 0);
+        const failedNow = Math.max(0, summary.failed + (result.status === "Failed" ? 1 : 0) - (args.expectedFailed?.[sheet.name] ?? 0));
+        if (!cancelled && args.stopAtFailedPercent && tried >= 20 && (failedNow / tried) * 100 > args.stopAtFailedPercent) {
+          cancelled = true;
+          stopped = true;
+          summary.stopped = true;
+          log(`Sheet "${sheet.name}": stopped, because ${failedNow} of the first ${tried} items failed (more than ${args.stopAtFailedPercent}%). The rest were not imported. What was imported can be undone from this job's page.`);
+        }
       }
       results.push({ item, result });
       if (result.status === "OK") summary.ok++;
@@ -434,6 +468,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    if (undo.length) summary.undo = undo;
+    if (undoNotes.length) summary.undoNotes = undoNotes;
     if (ctx.options.dryRun) {
       const firstValue = (row: Row, col: string) => cell(row, col);
       summary.risk = risk;

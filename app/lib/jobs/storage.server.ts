@@ -6,7 +6,7 @@ import path from "node:path";
 export const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR ?? "storage");
 
 /** Days to keep job files before cleanup. */
-export const RETENTION_DAYS = Number(process.env.FILE_RETENTION_DAYS ?? 30);
+export const RETENTION_DAYS = Number(process.env.FILE_RETENTION_DAYS ?? 90);
 
 function shopDir(shop: string) {
   return path.join(STORAGE_DIR, shop.replace(/[^a-z0-9.-]/gi, "_"));

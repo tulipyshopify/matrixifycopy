@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { userOf } from "../lib/user.server";
 import { createExportJob, createSchedule, editSchedule, entityCatalog, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
 import { askedExport } from "../lib/ai/assistant.server";
@@ -10,7 +11,9 @@ import { getTemplate } from "../lib/jobs/templates";
 import { ALL_RULES } from "../lib/check/rules";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  const { session } = auth;
+  const user = userOf(auth);
   const params = new URL(request.url).searchParams;
   const editId = params.get("schedule");
   const editing = editId ? await scheduleForEdit(session.shop, editId, "export") : null;
@@ -19,7 +22,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { config, ...schedule } = editing;
     return {
       entities: entityCatalog().filter((e) => e.canExport),
-      presets: await listPresets(session.shop),
+      presets: await listPresets(session.shop, user),
       latest: { entities: config.entities ?? [], format: schedule.format },
       editing: schedule,
     };
@@ -27,7 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     editing: null,
     entities: entityCatalog().filter((e) => e.canExport),
-    presets: await listPresets(session.shop),
+    presets: await listPresets(session.shop, user),
     // What the form starts from, by name, so "Preset" doesn't say "Latest export" for a template.
     startName: params.get("check")
       ? `Data check: ${ALL_RULES.find((r) => r.key === params.get("rule"))?.title ?? "products to fix"}`
@@ -63,7 +66,9 @@ function withoutFilters<T extends { entities: Array<{ entity: string; options: a
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  const { session, redirect } = auth;
+  const user = userOf(auth);
   const body = (await request.json()) as ExportPayload;
   try {
     const config = parseExportConfig(body);

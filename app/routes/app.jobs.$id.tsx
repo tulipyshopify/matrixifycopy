@@ -4,7 +4,9 @@ import { useFetcher, useLoaderData } from "react-router";
 import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
+import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob, startUndo } from "../lib/jobs/jobs.server";
+import { undoFileOf } from "../lib/jobs/runner.server";
+import { jobDir, RETENTION_DAYS } from "../lib/jobs/storage.server";
 import { ImportReview, ImportSteps } from "../components/DryRunPreview";
 import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
@@ -22,7 +24,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // unreadable config: not a dry run
   }
   const preview = dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [];
+  let undoOf: string | null = null;
+  try {
+    undoOf = JSON.parse(job.config).undoOf ?? null;
+  } catch {
+    undoOf = null;
+  }
+  const done = job.status === "finished" || job.status === "failed" || job.status === "cancelled";
   return {
+    // A real import that recorded how to put things back.
+    canUndo: job.type === "import" && !dryRun && done && !!undoFileOf(jobDir(session.shop, job.id)),
+    undoDays: RETENTION_DAYS,
+    undoOf,
     dryRun,
     preview,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
@@ -72,6 +85,15 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: e.message as string };
     }
   }
+  if (form.get("intent") === "undo") {
+    try {
+      const job = await startUndo(session.shop, params.id!);
+      return redirect(`/app/jobs/${job.id}`);
+    } catch (e: any) {
+      if (e instanceof Response) throw e;
+      return { error: e.message as string };
+    }
+  }
   if (form.get("intent") === "rerun") {
     const job = await rerunJob(session.shop, params.id!);
     return redirect(`/app/jobs/${job.id}`);
@@ -80,7 +102,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, canApply, needs } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const stopped = job.stats.some((s: any) => s?.stopped);
+  const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
+  const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
   let exported: any[] = [];
   try {
     if (job.type === "export") exported = JSON.parse(job.config).entities ?? [];
@@ -142,6 +167,35 @@ export default function JobDetail() {
         <s-banner tone="critical" heading="Could not start the import">
           {fetcher.data.error}
         </s-banner>
+      ) : null}
+
+      {stopped ? (
+        <s-banner tone="critical" heading="The import stopped: too many rows were failing">
+          <s-text>The rows before the stop were imported; the rest were not. See the reasons below, fix the file and preview it again. What was imported can be undone with the button below.</s-text>
+        </s-banner>
+      ) : null}
+      {undoOf && dryRun ? (
+        <s-banner tone="info" heading="This is the undo of an earlier import">
+          <s-text>
+            It puts back the values <s-link href={`/app/jobs/${undoOf}`}>that import</s-link> changed. Anything edited since then shows here as a change too, so check the list before applying.
+          </s-text>
+        </s-banner>
+      ) : null}
+      {canUndo ? (
+        <s-section>
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+            <s-stack direction="block" gap="small-300">
+              <s-heading>This import can be undone</s-heading>
+              <s-text tone="neutral">
+                The values it changed were recorded first ({undoRows.toLocaleString("en")} rows), and are kept for {undoDays} days. Undo opens a preview of putting them back; nothing changes until you apply it.
+                {undoNotes.length ? ` Not covered: ${undoNotes.slice(0, 3).join("; ")}${undoNotes.length > 3 ? ` and ${undoNotes.length - 3} more` : ""}.` : ""}
+              </s-text>
+            </s-stack>
+            <s-button icon="undo" loading={fetcher.state !== "idle" && fetcher.formData?.get("intent") === "undo"} onClick={() => fetcher.submit({ intent: "undo" }, { method: "post" })}>
+              Undo this import
+            </s-button>
+          </s-stack>
+        </s-section>
       ) : null}
 
       {dryRun && !job.error && job.status !== "failed" && job.status !== "cancelled" ? (

@@ -245,6 +245,14 @@ export interface ItemResult {
   errors?: string[];
   /** Extra cells to write back into the rows of this item (e.g. new Variant IDs). */
   rowPatches?: Array<Row | undefined>;
+  /**
+   * Rows that put back what this item changed: imported as a sheet of the
+   * same data type, they undo it. Absent when nothing was changed or the data
+   * type doesn't record it.
+   */
+  undo?: Row[];
+  /** What of this item can't be undone that way (a deleted product). */
+  undoNote?: string;
   /** Field-level detail, from data types that compare the file with the store. */
   preview?: ItemPreview;
   /**
