@@ -4,6 +4,7 @@ import prisma from "../../db.server";
 import { ENTITIES } from "../entities";
 import { OPTIONS_VERSION, getJob } from "./jobs.server";
 import type { ExportConfig } from "./runner.server";
+import { RESTORE_FIELDS } from "./runner.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
 import { backupDir, openSecret, resolveStored, sealSecret } from "./storage.server";
 import { UPLOAD_PROTOCOLS, redactUrl } from "./sources.server";
@@ -102,9 +103,9 @@ export async function saveBackupSettings(shop: string, input: BackupSettingsInpu
       try {
         u = new URL(typed);
       } catch {
-        throw new Error("The copy destination is not a valid link. It starts with sftp://, ftp:// or webdavs://");
+        throw new Error("The copy destination is not a valid link. It starts with s3://, sftp://, ftp:// or webdavs://");
       }
-      if (!UPLOAD_PROTOCOLS.includes(u.protocol)) throw new Error("The copy destination must start with sftp://, ftp://, ftps:// or webdavs://");
+      if (!UPLOAD_PROTOCOLS.includes(u.protocol)) throw new Error("The copy destination must start with s3://, sftp://, ftp://, ftps:// or webdavs://");
       if (input.uploadUser) u.username = encodeURIComponent(input.uploadUser);
       if (input.uploadPassword) u.password = encodeURIComponent(input.uploadPassword);
       if (u.password === "****") throw new Error("Enter the password for the copy destination");
@@ -193,7 +194,7 @@ export async function pruneBackups(now = new Date()): Promise<number> {
  * Restoring starts as a preview: an import of the backup file with dry run on,
  * so nothing changes until "Import for real" on its page.
  */
-export async function restorePreview(shop: string, backupId: string, only: string[] = []) {
+export async function restorePreview(shop: string, backupId: string, only: string[] = [], fields?: string[]) {
   const backup = await getJob(shop, backupId);
   if (backup.kind !== "backup" || backup.status !== "finished" || !backup.resultFile) throw new Error("This backup can't be restored");
   if (!fs.existsSync(resolveStored(backup.resultFile))) throw new Error("This backup's file is no longer on the server");
@@ -213,7 +214,7 @@ export async function restorePreview(shop: string, backupId: string, only: strin
       shop,
       type: "import",
       // `only`: restore just these items (IDs, handles, order names, emails…), not the whole backup.
-      config: JSON.stringify({ options: { dryRun: true, defaultCommand: "MERGE" }, ...(only.length ? { onlyItems: only.slice(0, 5000) } : {}) }),
+      config: JSON.stringify({ options: { dryRun: true, defaultCommand: "MERGE" }, ...(only.length ? { onlyItems: only.slice(0, 5000) } : {}), ...(fields ? { onlyFields: fields.filter((f) => RESTORE_FIELDS.some((x) => x.key === f)) } : {}) }),
       name: `Restore ${only.length ? `${only.length} item${only.length === 1 ? "" : "s"} ` : ""}from backup of ${when} UTC`,
       inputFile: backup.resultFile,
       inputName,

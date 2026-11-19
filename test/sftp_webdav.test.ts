@@ -162,8 +162,50 @@ describe("SFTP and WebDAV links", () => {
   });
 
   it("refuses other upload targets and hides passwords when shown", async () => {
-    await expect(uploadResult("x.csv", "https://example.com/x.csv")).rejects.toThrow(/ftp:\/\/, ftps:\/\/, sftp:\/\/ or webdav/);
+    await expect(uploadResult("x.csv", "https://example.com/x.csv")).rejects.toThrow(/ftp:\/\/, ftps:\/\/, sftp:\/\/, webdav\(s\):\/\/ or s3/);
     expect(redactUrl("sftp://shop:s3cret@host/x.csv")).toBe("sftp://shop:****@host/x.csv");
     expect(redactUrl("webdavs://shop:s3cret@host/x.csv")).toBe("webdavs://shop:****@host/x.csv");
+  });
+});
+
+describe("S3-compatible storage", () => {
+  it("signs requests as Amazon's published example does", async () => {
+    const { signV4, s3Region } = await import("../app/lib/jobs/sources.server");
+    // AWS Signature Version 4 test suite, "get-vanilla".
+    expect(
+      signV4({ method: "GET", path: "/", headers: { Host: "example.amazonaws.com", "X-Amz-Date": "20150830T123600Z" }, payloadHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", accessKey: "AKIDEXAMPLE", secretKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", region: "us-east-1", service: "service" }),
+    ).toBe("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31");
+    expect(s3Region(new URL("s3://s3.eu-west-2.amazonaws.com/b/"))).toBe("eu-west-2");
+    expect(s3Region(new URL("s3://storage.googleapis.com/b/"))).toBe("auto");
+    expect(s3Region(new URL("s3://minio.example.com/b/?region=fr-par"))).toBe("fr-par");
+  });
+
+  it("uploads a backup with a signed PUT, and words a refusal plainly", async () => {
+    const got: Array<{ url: string; auth: string; body: string; sha: string }> = [];
+    let status = 200;
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c)).on("end", () => {
+        got.push({ url: `${req.method} ${req.url}`, auth: String(req.headers.authorization), body: Buffer.concat(chunks).toString(), sha: String(req.headers["x-amz-content-sha256"]) });
+        res.writeHead(status).end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.S3_INSECURE_FOR_TESTS = "1";
+    try {
+      const file = path.join(tmp(), "Backup 2026.zip");
+      fs.writeFileSync(file, "zip-bytes");
+      const remote = await uploadResult(file, `s3://AKIA123:s3cr%2Fet@127.0.0.1:${port}/my-bucket/backups/?region=eu-west-2`);
+      expect(remote).toBe("/my-bucket/backups/Backup 2026.zip");
+      expect(got[0]).toMatchObject({ url: "PUT /my-bucket/backups/Backup%202026.zip", body: "zip-bytes", sha: "UNSIGNED-PAYLOAD" });
+      expect(got[0].auth).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIA123\/\d{8}\/eu-west-2\/s3\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
+      status = 403;
+      await expect(uploadResult(file, `s3://AKIA123:bad@127.0.0.1:${port}/my-bucket/`)).rejects.toThrow(/refused the access key or secret/);
+      await expect(uploadResult(file, `s3://127.0.0.1:${port}/my-bucket/`)).rejects.toThrow(/needs an access key and a secret/);
+    } finally {
+      delete process.env.S3_INSECURE_FOR_TESTS;
+      server.close();
+    }
   });
 });

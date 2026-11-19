@@ -691,7 +691,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("audit: backup copy destina
     await backups.saveBackupSettings(shop, { ...base, uploadUrl: "sftp://shop:****@files.example.com/backups/" });
     s = (await backups.getBackupSchedule(shop))!;
     expect(backups.backupDestination(s)).toBe("sftp://shop:****@files.example.com/backups/");
-    await expect(backups.saveBackupSettings(shop, { ...base, uploadUrl: "https://example.com/x" })).rejects.toThrow(/must start with sftp/);
+    await expect(backups.saveBackupSettings(shop, { ...base, uploadUrl: "https://example.com/x" })).rejects.toThrow(/must start with s3/);
     await backups.saveBackupSettings(shop, { ...base, uploadUrl: "" });
     expect((await backups.getBackupSchedule(shop))!.uploadUrl).toBeNull();
     // Restoring chosen items carries them on the preview job.
@@ -861,5 +861,24 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("redesign: held imports, ke
     expect((await keys.createKey(shop, "Old style", true)).row).toMatchObject({ canImport: true, readOnly: false, expiresAt: null });
     await prisma.job.deleteMany({ where: { shop } });
     await prisma.apiKey.deleteMany({ where: { shop } });
+  });
+});
+
+describe("redesign: restoring chosen fields", () => {
+  it("drops the columns of the kinds not chosen, keeping what identifies each row", async () => {
+    const { keepOnlyFields, RESTORE_FIELDS } = await import("../app/lib/jobs/runner.server");
+    expect(RESTORE_FIELDS.filter((f) => !f.byDefault).map((f) => f.key)).toEqual(["stock"]);
+    const sheet = {
+      headers: ["ID", "Handle", "Command", "Title", "Tags", "Variant ID", "Variant SKU", "Variant Price", "Variant Inventory Qty", "Inventory Available: Warehouse", "Image Src", "Metafield: custom.care [single_line_text_field]"],
+      rows: [{ ID: "1", Handle: "bin", Command: "MERGE", Title: "Bin", Tags: "a", "Variant ID": "11", "Variant SKU": "A", "Variant Price": "5", "Variant Inventory Qty": "3", "Inventory Available: Warehouse": "3", "Image Src": "x.jpg", "Metafield: custom.care [single_line_text_field]": "Wash" }],
+    };
+    const dropped = keepOnlyFields([sheet], ["prices"]);
+    expect(sheet.headers).toEqual(["ID", "Handle", "Command", "Variant ID", "Variant Price"]);
+    expect(Object.keys(sheet.rows[0])).toEqual(["ID", "Handle", "Command", "Variant ID", "Variant Price"]);
+    expect(dropped).toContain("Inventory Available: Warehouse");
+    // Without a Variant ID, the SKU stays: it is how the row finds its variant.
+    const bySku = { headers: ["Handle", "Variant SKU", "Variant Price", "Title"], rows: [{ Handle: "bin", "Variant SKU": "A", "Variant Price": "5", Title: "Bin" }] };
+    keepOnlyFields([bySku], ["prices"]);
+    expect(bySku.headers).toEqual(["Handle", "Variant SKU", "Variant Price"]);
   });
 });

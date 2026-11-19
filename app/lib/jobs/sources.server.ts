@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import dns from "node:dns";
 import fs from "node:fs";
 import net from "node:net";
@@ -86,7 +87,7 @@ async function safeFetch(url: string, hops = 5, init: RequestInit = {}): Promise
 
 /** Protocols an import can be read from, and an export result uploaded to. */
 export const SOURCE_PROTOCOLS = ["http:", "https:", "ftp:", "ftps:", "sftp:", "webdav:", "webdavs:", "dav:", "davs:"];
-export const UPLOAD_PROTOCOLS = ["ftp:", "ftps:", "sftp:", "webdav:", "webdavs:", "dav:", "davs:"];
+export const UPLOAD_PROTOCOLS = ["ftp:", "ftps:", "sftp:", "webdav:", "webdavs:", "dav:", "davs:", "s3:"];
 
 const isWebDav = (url: URL) => ["webdav:", "webdavs:", "dav:", "davs:"].includes(url.protocol);
 
@@ -140,8 +141,9 @@ export async function downloadSource(source: string, dir: string): Promise<{ fil
 /** Uploads a result file to an ftp(s), sftp or WebDAV URL; a URL ending in "/" keeps the file name. */
 export async function uploadResult(file: string, target: string): Promise<string> {
   const url = new URL(target);
-  if (!UPLOAD_PROTOCOLS.includes(url.protocol)) throw new Error("Upload target must be ftp://, ftps://, sftp:// or webdav(s)://");
+  if (!UPLOAD_PROTOCOLS.includes(url.protocol)) throw new Error("Upload target must be ftp://, ftps://, sftp://, webdav(s):// or s3://");
   await assertSafeHost(url);
+  if (url.protocol === "s3:") return uploadS3(file, url);
   if (url.pathname.endsWith("/") || !url.pathname) url.pathname = `${url.pathname || "/"}${encodeURIComponent(path.basename(file))}`;
   const remote = decodeURIComponent(url.pathname);
   if (isWebDav(url)) {
@@ -176,6 +178,79 @@ export async function uploadResult(file: string, target: string): Promise<string
     await c.uploadFrom(file, path.posix.basename(remote));
   });
   return remote;
+}
+
+// --- S3-compatible object storage ---------------------------------------------
+
+const hmac = (key: crypto.BinaryLike, data: string) => crypto.createHmac("sha256", key).update(data).digest();
+const sha256 = (data: string) => crypto.createHash("sha256").update(data).digest("hex");
+const awsEncode = (v: string) => encodeURIComponent(v).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+/**
+ * AWS Signature Version 4 for one request: returns the Authorization header.
+ * `headers` must already hold every header to sign (host and x-amz-date included).
+ */
+export function signV4(opts: { method: string; path: string; query?: string; headers: Record<string, string>; payloadHash: string; accessKey: string; secretKey: string; region: string; service: string }): string {
+  const names = Object.keys(opts.headers).map((h) => h.toLowerCase()).sort();
+  const lower = Object.fromEntries(Object.entries(opts.headers).map(([k, v]) => [k.toLowerCase(), String(v).trim().replace(/\s+/g, " ")]));
+  const amzDate = lower["x-amz-date"];
+  const date = amzDate.slice(0, 8);
+  const canonical = [opts.method, opts.path, opts.query ?? "", ...names.map((n) => `${n}:${lower[n]}`), "", names.join(";"), opts.payloadHash].join("\n");
+  const scope = `${date}/${opts.region}/${opts.service}/aws4_request`;
+  const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonical)].join("\n");
+  const key = hmac(hmac(hmac(hmac(`AWS4${opts.secretKey}`, date), opts.region), opts.service), "aws4_request");
+  const signature = crypto.createHmac("sha256", key).update(toSign).digest("hex");
+  return `AWS4-HMAC-SHA256 Credential=${opts.accessKey}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}`;
+}
+
+/** Region of an S3 endpoint: from ?region=, else from an Amazon host name, else "auto" (Google Cloud Storage, R2). */
+export function s3Region(url: URL): string {
+  const given = url.searchParams.get("region");
+  if (given) return given;
+  const m = /(?:^|\.)s3[.-]([a-z0-9-]+)\.amazonaws\.com$/.exec(url.hostname);
+  if (m) return m[1];
+  return url.hostname === "s3.amazonaws.com" ? "us-east-1" : "auto";
+}
+
+/**
+ * Uploads to S3-compatible storage. The link is
+ * s3://ACCESS_KEY:SECRET@endpoint/bucket/folder/ (endpoint: s3.eu-west-2.amazonaws.com,
+ * storage.googleapis.com with an HMAC key, an R2 or Backblaze endpoint…).
+ */
+async function uploadS3(file: string, url: URL): Promise<string> {
+  if (!url.username || !url.password) throw new Error("S3 storage needs an access key and a secret (the user name and password fields)");
+  let objectPath = decodeURIComponent(url.pathname || "/");
+  if (objectPath.split("/").filter(Boolean).length < 1) throw new Error("The S3 link must name a bucket: s3://endpoint/bucket/folder/");
+  if (objectPath.endsWith("/")) objectPath += path.basename(file);
+  const encodedPath = objectPath.split("/").map(awsEncode).join("/");
+  const size = (await fs.promises.stat(file)).size;
+  const headers: Record<string, string> = {
+    host: url.host,
+    "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+    "x-amz-date": new Date().toISOString().replace(/[-:]|\.\d{3}/g, ""),
+  };
+  const authorization = signV4({
+    method: "PUT",
+    path: encodedPath,
+    headers,
+    payloadHash: "UNSIGNED-PAYLOAD",
+    accessKey: decodeURIComponent(url.username),
+    secretKey: decodeURIComponent(url.password),
+    region: s3Region(url),
+    service: "s3",
+  });
+  const scheme = process.env.S3_INSECURE_FOR_TESTS === "1" ? "http" : "https";
+  const res = await fetch(`${scheme}://${url.host}${encodedPath}`, {
+    method: "PUT",
+    headers: { ...headers, Authorization: authorization, "Content-Length": String(size), "Content-Type": "application/octet-stream" },
+    body: Readable.toWeb(fs.createReadStream(file)) as any,
+    duplex: "half",
+    redirect: "manual",
+  } as RequestInit);
+  if (res.status === 403) throw new Error("The storage refused the access key or secret, or the key may not write to this bucket (HTTP 403)");
+  if (res.status === 404) throw new Error("The storage has no bucket with this name (HTTP 404)");
+  if (!res.ok) throw new Error(`The storage answered HTTP ${res.status}${res.status === 301 ? " (the bucket is in another region: add ?region=… to the link)" : ""}`);
+  return objectPath;
 }
 
 /** Password sign-in only (sftp://user:password@host[:port]/path). */

@@ -16,6 +16,7 @@ import {
   saveBackupSettings,
 } from "../lib/jobs/backups.server";
 import prisma from "../db.server";
+import { RESTORE_FIELDS } from "../lib/jobs/runner.server";
 import { downloadLinks } from "../lib/jobs/jobs.server";
 import { HealthBadge, formatDate, isActive } from "../components/jobs";
 import { browserTimeZone } from "../components/ScheduleTime";
@@ -23,7 +24,7 @@ import { browserTimeZone } from "../components/ScheduleTime";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const allowed = backupsAllowed(session.shop);
-  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "" };
+  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "", restoreFields: [] };
   const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), prisma.shopSetting.findUnique({ where: { shop: session.shop } })]);
   let types = DEFAULT_BACKUP_TYPES;
   try {
@@ -39,6 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? { enabled: schedule.enabled, runAt: schedule.runAt ?? "02:30", timezone: schedule.timezone ?? "", nextRunAt: schedule.nextRunAt, types }
       : null,
     destination: backupDestination(schedule),
+    restoreFields: RESTORE_FIELDS.map(({ key, label, note, byDefault }) => ({ key, label, note, byDefault })),
     backups: backups.map((b) => ({
       id: b.id,
       status: b.status,
@@ -67,7 +69,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     if (intent === "restore") {
       const only = String(form.get("only") ?? "").split(/[\n,]/).map((v) => v.trim()).filter(Boolean);
-      const job = await restorePreview(session.shop, String(form.get("id")), only);
+      const fields = form.has("fields") ? String(form.get("fields")).split(",").filter(Boolean) : undefined;
+      const job = await restorePreview(session.shop, String(form.get("id")), only, fields);
       return redirect(`/app/jobs/${job.id}`);
     }
     await saveBackupSettings(session.shop, {
@@ -115,6 +118,7 @@ export default function Backups() {
   const [keepDays, setKeepDays] = useState(String(data.keepDays));
   const [confirm, setConfirm] = useState<string | null>(null);
   const [only, setOnly] = useState("");
+  const [fields, setFields] = useState<string[]>(data.restoreFields.filter((f) => f.byDefault).map((f) => f.key));
   const [destination, setDestination] = useState(data.destination);
   const [destUser, setDestUser] = useState("");
   const [destPassword, setDestPassword] = useState("");
@@ -198,17 +202,17 @@ export default function Backups() {
           <s-stack direction="block" gap="small">
             <s-text type="strong">Also copy each backup to your own storage (optional)</s-text>
             <s-url-field
-              label="Folder on an SFTP, FTP or WebDAV server"
+              label="Cloud storage, or a folder on an SFTP, FTP or WebDAV server"
               labelAccessibilityVisibility="exclusive"
-              placeholder="sftp://files.example.com/backups/"
-              details="A second copy that you hold: an SFTP server, a storage box, or any cloud drive with WebDAV (Nextcloud, Box, pCloud…). Leave empty to keep backups on Bulkport's server only."
+              placeholder="s3://s3.eu-west-2.amazonaws.com/my-bucket/backups/"
+              details="A second copy that you hold. Amazon S3: s3://s3.REGION.amazonaws.com/BUCKET/folder/ with an access key and secret below. Google Cloud Storage: s3://storage.googleapis.com/BUCKET/folder/ with an HMAC key. Also Cloudflare R2, Backblaze, SFTP, FTP, or WebDAV drives (Nextcloud, Box, pCloud…). Leave empty to keep backups on Bulkport's server only."
               value={destination}
               onInput={(ev: any) => setDestination(ev.currentTarget.value)}
             />
             {destination.trim() ? (
               <s-grid gridTemplateColumns="1fr 1fr" gap="base">
-                <s-text-field label="User name" autocomplete="off" details={data.destination ? "Leave empty to keep the saved sign-in." : undefined} value={destUser} onInput={(ev: any) => setDestUser(ev.currentTarget.value)} />
-                <s-password-field label="Password" autocomplete="new-password" details="Stored encrypted and never shown again." value={destPassword} onInput={(ev: any) => setDestPassword(ev.currentTarget.value)} />
+                <s-text-field label="User name or access key" autocomplete="off" details={data.destination ? "Leave empty to keep the saved sign-in." : undefined} value={destUser} onInput={(ev: any) => setDestUser(ev.currentTarget.value)} />
+                <s-password-field label="Password or secret" autocomplete="new-password" details="Stored encrypted and never shown again." value={destPassword} onInput={(ev: any) => setDestPassword(ev.currentTarget.value)} />
               </s-grid>
             ) : null}
           </s-stack>
@@ -285,11 +289,19 @@ export default function Backups() {
               value={only}
               onInput={(ev: any) => setOnly(ev.currentTarget.value)}
             />
+            <s-stack direction="block" gap="small">
+              <s-text type="strong">What to bring back</s-text>
+              <s-grid gridTemplateColumns="repeat(auto-fill, minmax(240px, 1fr))" gap="small base">
+                {data.restoreFields.map((f) => (
+                  <s-checkbox key={f.key} label={f.label} details={f.note} checked={fields.includes(f.key)} onChange={(ev: any) => setFields(ev.currentTarget.checked ? [...fields, f.key] : fields.filter((x) => x !== f.key))} />
+                ))}
+              </s-grid>
+            </s-stack>
             <s-text tone="neutral">
               Either way this starts a preview: it lists only what differs from the backup, field by field, and changes nothing until you confirm there.
             </s-text>
             <s-stack direction="inline" gap="small">
-              <s-button variant="primary" loading={busy} disabled={busy} onClick={() => fetcher.submit({ intent: "restore", id: confirm, only }, { method: "post" })}>
+              <s-button variant="primary" loading={busy} disabled={busy || !fields.length} onClick={() => fetcher.submit({ intent: "restore", id: confirm, only, fields: fields.join(",") }, { method: "post" })}>
                 {only.trim() ? "Preview restoring these items" : "Preview restoring everything"}
               </s-button>
               <s-button variant="tertiary" onClick={() => setConfirm(null)}>

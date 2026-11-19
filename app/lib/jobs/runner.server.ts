@@ -34,6 +34,8 @@ export interface ImportConfig {
    * order name, email, path or code). Used to restore single items from a backup.
    */
   onlyItems?: string[];
+  /** Restore only these kinds of field (keys of RESTORE_FIELDS); other columns of those kinds are dropped. */
+  onlyFields?: string[];
   /** Items the person chose to skip at the preview, by sheet name. */
   exclude?: Record<string, string[]>;
   /** Failures the preview already announced, by sheet name: not counted towards stopping early. */
@@ -55,6 +57,40 @@ export function undoFileOf(dir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Kinds of field a restore can bring back, each with the columns it covers.
+ * Columns in none of them (IDs, handles, commands, other data types' columns)
+ * always stay. Stock is off unless asked for: orders since the backup would
+ * be overwritten.
+ */
+export const RESTORE_FIELDS: Array<{ key: string; label: string; note?: string; byDefault: boolean; match: RegExp }> = [
+  { key: "details", label: "Titles, descriptions and status", byDefault: true, match: /^(Title|Body HTML|Vendor|Type|Status|Published|Published At|Template Suffix|Category: .+|Gift Card)$/ },
+  { key: "tags", label: "Tags", byDefault: true, match: /^Tags( Command)?$/ },
+  { key: "seo", label: "Search title and description", byDefault: true, match: /^SEO / },
+  { key: "prices", label: "Prices and costs", byDefault: true, match: /^Variant (Price|Compare At Price|Cost|Taxable|Tax Code)$/ },
+  { key: "variants", label: "SKUs, barcodes, weights and options", byDefault: true, match: /^(Variant (SKU|Barcode|Weight|Weight Unit|Requires Shipping|HS Code|Country of Origin|Province of Origin|Position)|Option[123] (Name|Value))$/ },
+  { key: "images", label: "Images", byDefault: true, match: /^(Image .+|Variant Image)$/ },
+  { key: "metafields", label: "Metafields", byDefault: true, match: /^(Variant )?Metafield: / },
+  { key: "stock", label: "Stock levels", note: "Off by default: stock sold or received since the backup would be overwritten.", byDefault: false, match: /^(Inventory .+: .+|Variant Inventory (Qty|Adjust|Tracker|Policy)|Total Inventory Qty)$/ },
+];
+
+/** Removes the columns of the field kinds that were not chosen. Returns the columns dropped. */
+export function keepOnlyFields(sheets: Array<{ headers: string[]; rows: Array<Record<string, string>> }>, chosen: string[]): string[] {
+  const off = RESTORE_FIELDS.filter((f) => !chosen.includes(f.key));
+  const dropped = new Set<string>();
+  for (const sheet of sheets) {
+    const drop = sheet.headers.filter((h) => off.some((f) => f.match.test(h)));
+    // A variant's SKU is also how its row is found: it stays unless there is a Variant ID to go by.
+    const keepSku = !chosen.includes("variants") && !sheet.headers.includes("Variant ID");
+    const gone = drop.filter((h) => !(keepSku && h === "Variant SKU"));
+    if (!gone.length) continue;
+    for (const h of gone) dropped.add(h);
+    sheet.headers = sheet.headers.filter((h) => !gone.includes(h));
+    for (const row of sheet.rows) for (const h of gone) delete row[h];
+  }
+  return [...dropped];
 }
 
 /** Columns that can name an item when restoring just some of a backup. */
@@ -262,6 +298,10 @@ export async function executeJob(
     const resultFormat: OutputFormat = /\.(csv|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
     const cache = new Map<string, unknown>();
+    if (config.onlyFields) {
+      const dropped = keepOnlyFields(chosen, config.onlyFields);
+      if (dropped.length) deps.log(`Left out of this restore, so not touched: ${dropped.slice(0, 12).join(", ")}${dropped.length > 12 ? `, and ${dropped.length - 12} more columns` : ""}.`);
+    }
     // "Import for real" after a preview: what the preview saw in the store, to compare with now.
     let expected: Record<string, Record<string, Record<string, string>>> | undefined;
     if (config.previewOf && !config.options?.dryRun) {
