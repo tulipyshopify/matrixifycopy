@@ -33,6 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         dryRun: !!found.config?.options?.dryRun,
         concurrency: Number(found.config?.options?.concurrency ?? 4),
         batch: !!found.config?.options?.batch,
+        hold: !!found.config?.options?.hold,
       }
     : null;
   return { editing, scheduleFirst: new URL(request.url).searchParams.get("scheduled") === "1", entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };

@@ -103,7 +103,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("Import for real", async ()
     const dry = await prisma.job.create({ data: { shop, type: "import", status: "finished", config, inputFile: "x/input.csv", inputName: "Carrier.csv", stats: stat({ updates: 10 }) } });
     expect(jobRow({ ...dry, startedAt: null, finishedAt: null }).kind).toBe("Preview");
     const real = await jobs.applyDryRun(shop, dry.id);
-    expect(JSON.parse(real.config)).toEqual({ options: { defaultCommand: "UPDATE" }, previewOf: dry.id });
+    expect(JSON.parse(real.config)).toEqual({ options: { defaultCommand: "UPDATE" }, previewOf: dry.id, expectedFailed: {}, stopAtFailedPercent: 5 });
     expect(real).toMatchObject({ type: "import", status: "queued", inputFile: "x/input.csv", inputName: "Carrier.csv" });
     expect(jobRow({ ...real, startedAt: null, finishedAt: null }).kind).toBe("Import");
     // Only finished dry runs of this store.

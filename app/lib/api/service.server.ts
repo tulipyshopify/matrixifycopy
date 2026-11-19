@@ -103,6 +103,7 @@ export function assertCanImport(auth: KeyAuth) {
 }
 
 export async function startImport(auth: KeyAuth, input: ImportRequest) {
+  if (auth.readOnly) throw new ApiError(403, "This access key is read-only: it can export and read results, but not prepare imports.");
   if (input.apply) assertCanImport(auth);
   let options;
   try {

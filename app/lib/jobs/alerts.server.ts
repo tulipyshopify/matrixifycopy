@@ -30,18 +30,56 @@ export async function saveAlertWebhook(shop: string, url: string) {
   await prisma.shopSetting.upsert({ where: { shop }, create: { shop, alertWebhook }, update: { alertWebhook } });
 }
 
-/** Posts a message; resolves to whether it was accepted. Never throws: an alert must not fail a job. */
+/** Whether this server can send email at all (an SMTP account is set in its environment). */
+export const emailAvailable = () => !!process.env.SMTP_URL;
+
+export async function alertEmails(shop: string): Promise<string[]> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { alertEmails: true } });
+  return splitEmails(s?.alertEmails ?? "");
+}
+
+const splitEmails = (v: string) => [...new Set(v.split(/[,;\s]+/).map((e) => e.trim().toLowerCase()).filter(Boolean))].slice(0, 10);
+
+export async function saveAlertEmails(shop: string, value: string) {
+  const list = splitEmails(value);
+  const bad = list.find((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  if (bad) throw new Error(`"${bad}" is not an email address`);
+  const alertEmails = list.join(", ");
+  await prisma.shopSetting.upsert({ where: { shop }, create: { shop, alertEmails }, update: { alertEmails } });
+  return list;
+}
+
+async function sendEmail(to: string[], subject: string, text: string): Promise<boolean> {
+  if (!emailAvailable() || !to.length) return false;
+  const { createTransport } = await import("nodemailer");
+  const transport = createTransport(process.env.SMTP_URL!);
+  await transport.sendMail({ from: process.env.SMTP_FROM || "Bulkport <no-reply@localhost>", to: to.join(", "), subject, text });
+  return true;
+}
+
+/**
+ * Sends an alert to wherever the store asked for: its Slack/Teams webhook and
+ * its email addresses. Resolves to whether anything was accepted. Never
+ * throws: an alert must not fail a job.
+ */
 export async function sendAlert(shop: string, text: string): Promise<boolean> {
+  let sent = false;
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { alertWebhook: true, alertEmails: true } }).catch(() => null);
   try {
-    const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { alertWebhook: true } });
     const url = openSecret(s?.alertWebhook);
-    if (!url) return false;
-    const status = await safePostJson(url, { text });
-    return status >= 200 && status < 300;
+    if (url) {
+      const status = await safePostJson(url, { text });
+      sent = status >= 200 && status < 300;
+    }
   } catch (e) {
     console.error("[alerts] could not post", (e as Error)?.message);
-    return false;
   }
+  try {
+    if (await sendEmail(splitEmails(s?.alertEmails ?? ""), text.split(". ")[0].slice(0, 140), text)) sent = true;
+  } catch (e) {
+    console.error("[alerts] could not email", (e as Error)?.message);
+  }
+  return sent;
 }
 
 /** The message for a job that needs a look, or null when it needs none (or isn't a kind worth interrupting anyone for). */

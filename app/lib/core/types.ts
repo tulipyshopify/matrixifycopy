@@ -202,6 +202,8 @@ export interface ImportOptions {
   concurrency?: number;
   /** Batch mode: sheets that qualify go to Shopify as one bulk operation (see batch.ts). */
   batch?: boolean;
+  /** Scheduled imports: preview each run first and wait for a person when the result is unusual. */
+  hold?: boolean;
 }
 
 export interface ImportContext {

@@ -7,6 +7,8 @@ services:
     # Extra instances (scripts/add-instance.sh) run this same image.
     image: bulkport-app:latest
     restart: unless-stopped
+    # Time for running jobs to finish before a restart or deploy.
+    stop_grace_period: 2m
     env_file: .env.production
     environment:
       PORT: "3000"

@@ -1,10 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { createKey, listKeys, revokeKey } from "../lib/api/keys.server";
-import { alertWebhookSet, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import { EXPIRY_CHOICES, createKey, listKeys, revokeKey, type KeyScope } from "../lib/api/keys.server";
+import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
+import { HISTORY_CHOICES, failStopPercent, historyDays } from "../lib/jobs/jobs.server";
+import prisma from "../db.server";
+
+/** SHA-256 of the command-line file as this server hands it out, to check a download against. */
+function cliChecksum(): string {
+  for (const p of ["build/client/cli/bulkport.mjs", "public/cli/bulkport.mjs"]) {
+    try {
+      return crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+    } catch {
+      // try the next place
+    }
+  }
+  return "";
+}
 import { formatDate } from "../components/jobs";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -13,7 +29,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     appUrl: (process.env.SHOPIFY_APP_URL ?? "").replace(/\/+$/, ""),
     alerts: await alertWebhookSet(session.shop),
-    keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
+    emails: (await alertEmails(session.shop)).join(", "),
+    emailAvailable: emailAvailable(),
+    failStop: await failStopPercent(session.shop),
+    history: await historyDays(session.shop),
+    historyChoices: HISTORY_CHOICES,
+    expiryChoices: EXPIRY_CHOICES,
+    cliSha: cliChecksum(),
+    keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, readOnly: k.readOnly, expiresAt: k.expiresAt, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
   };
 };
 
@@ -28,12 +51,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!sent) throw new Error("The address was saved, but the test message was not accepted. Check that it is an incoming-webhook address.");
       return { saved: "Saved. A test message was posted." };
     }
+    if (form.get("intent") === "emails") {
+      const list = await saveAlertEmails(session.shop, String(form.get("emails") ?? ""));
+      return { saved: list.length ? `Alerts will be emailed to ${list.join(", ")}.` : "Email alerts are off." };
+    }
+    if (form.get("intent") === "defaults") {
+      const failStopPercent = [0, 5, 10, 25].includes(Number(form.get("failStop"))) ? Number(form.get("failStop")) : 5;
+      const days = HISTORY_CHOICES.includes(Number(form.get("history"))) ? Number(form.get("history")) : 90;
+      await prisma.shopSetting.upsert({ where: { shop: session.shop }, create: { shop: session.shop, failStopPercent, historyDays: days }, update: { failStopPercent, historyDays: days } });
+      return { saved: "Saved." };
+    }
     if (form.get("intent") === "revoke") {
       await revokeKey(session.shop, String(form.get("id")));
       return { ok: true as const };
     }
-    const { key, row } = await createKey(session.shop, String(form.get("name") ?? ""), form.get("canImport") === "true");
-    return { created: { key, name: row.name, canImport: row.canImport } };
+    const scope = (["read", "preview", "full"].includes(String(form.get("scope"))) ? String(form.get("scope")) : "preview") as KeyScope;
+    const { key, row } = await createKey(session.shop, String(form.get("name") ?? ""), scope, Number(form.get("expires")) || 0);
+    return { created: { key, name: row.name, canImport: row.canImport, readOnly: row.readOnly } };
   } catch (e: any) {
     if (e instanceof Response) throw e;
     return { error: e.message as string };
@@ -67,11 +101,18 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl, alerts } = useLoaderData<typeof loader>();
+  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha } = useLoaderData<typeof loader>();
+  const [emailList, setEmailList] = useState(emails);
+  const [stopAt, setStopAt] = useState(String(failStop));
+  const [days, setDays] = useState(String(history));
+  const [scope, setScope] = useState("preview");
+  const [expires, setExpires] = useState("90");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const sk = mounted ? "c" : "s";
   const [webhook, setWebhook] = useState("");
   const fetcher = useFetcher<typeof action>();
   const [name, setName] = useState("");
-  const [canImport, setCanImport] = useState(false);
   const data = fetcher.data;
   const created = data && "created" in data ? data.created : null;
   const error = data && "error" in data ? data.error : null;
@@ -98,7 +139,9 @@ export default function Connect() {
           <s-paragraph>
             {created.canImport
               ? "This key can run imports for real from the command line, Google Sheets and the API. AI assistants can still only make previews."
-              : "This key can export, and can prepare import previews. Imports are applied by pressing \"Import for real\" in the app."}
+              : created.readOnly
+                ? "This key can export and read results only."
+                : "This key can export, and can prepare import previews. Imports are applied from the preview in the app."}
           </s-paragraph>
         </s-banner>
       ) : null}
@@ -109,7 +152,8 @@ export default function Connect() {
             <s-table-header-row>
               <s-table-header>Name</s-table-header>
               <s-table-header>Key</s-table-header>
-              <s-table-header>Imports</s-table-header>
+              <s-table-header>Can</s-table-header>
+              <s-table-header>Expires</s-table-header>
               <s-table-header>Last used</s-table-header>
               <s-table-header></s-table-header>
             </s-table-header-row>
@@ -118,7 +162,8 @@ export default function Connect() {
                 <s-table-row key={k.id}>
                   <s-table-cell>{k.name}</s-table-cell>
                   <s-table-cell>{k.prefix}…</s-table-cell>
-                  <s-table-cell>{k.canImport ? <s-badge tone="warning">Can import for real</s-badge> : <s-badge>Preview only</s-badge>}</s-table-cell>
+                  <s-table-cell>{k.canImport ? <s-badge tone="warning">Import for real</s-badge> : k.readOnly ? <s-badge>Read only</s-badge> : <s-badge tone="info">Export and preview</s-badge>}</s-table-cell>
+                  <s-table-cell>{k.expiresAt ? formatDate(k.expiresAt) : "Never"}</s-table-cell>
                   <s-table-cell>{k.lastUsedAt ? formatDate(k.lastUsedAt) : "Never"}</s-table-cell>
                   <s-table-cell>
                     <s-button variant="tertiary" tone="critical" onClick={() => fetcher.submit({ intent: "revoke", id: k.id }, { method: "post" })}>
@@ -134,19 +179,26 @@ export default function Connect() {
         )}
         <s-stack gap="small-200">
           <s-text-field label="New key: what will use it?" placeholder="Claude, my laptop, stock sheet…" value={name} onInput={(ev: any) => setName(ev.currentTarget.value)} />
-          <s-checkbox
-            label="Allow this key to run imports for real"
-            details="Leave off unless a script or sheet must import unattended. Without it, imports stop at the preview and you press Import for real in the app."
-            checked={canImport}
-            onChange={(ev: any) => setCanImport(ev.currentTarget.checked)}
-          />
+          <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+            <s-select key={`scope-${sk}`} label="What it may do" value={scope} onChange={(ev: any) => setScope(ev.currentTarget.value)}>
+              <s-option value="read">Read only: export and read results</s-option>
+              <s-option value="preview">Export, and prepare import previews</s-option>
+              <s-option value="full">Full: also import for real, unattended</s-option>
+            </s-select>
+            <s-select key={`exp-${sk}`} label="Expires" value={expires} onChange={(ev: any) => setExpires(ev.currentTarget.value)}>
+              {expiryChoices.map((d) => (
+                <s-option key={d} value={String(d)}>
+                  {d ? `After ${d} days` : "Never"}
+                </s-option>
+              ))}
+            </s-select>
+          </s-grid>
           <s-button
             variant="primary"
             disabled={!name.trim() || fetcher.state !== "idle"}
             onClick={() => {
-              fetcher.submit({ intent: "create", name, canImport: String(canImport) }, { method: "post" });
+              fetcher.submit({ intent: "create", name, scope, expires }, { method: "post" });
               setName("");
-              setCanImport(false);
             }}
           >
             Create key
@@ -155,6 +207,49 @@ export default function Connect() {
         <s-paragraph>
           <s-text color="subdued">A key gives access to this store's data. Treat it like a password, and revoke it here if it leaks or is no longer used.</s-text>
         </s-paragraph>
+      </s-section>
+
+      <s-section heading="Import safety and history">
+        <s-stack direction="block" gap="base">
+          <s-unordered-list>
+            <s-list-item>Every import starts as a preview; risky rows start as Skip.</s-list-item>
+            <s-list-item>Rows only update existing items unless you choose MERGE or NEW. New products are drafts.</s-list-item>
+            <s-list-item>Deletions need the word DELETE typed. Product imports can be undone for 90 days.</s-list-item>
+          </s-unordered-list>
+          <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+            <s-select key={`stop-${sk}`} label="Stop an import when rows fail unexpectedly" details="Rows the preview already said would fail don't count." value={stopAt} onChange={(ev: any) => setStopAt(ev.currentTarget.value)}>
+              <s-option value="5">When more than 5% fail</s-option>
+              <s-option value="10">When more than 10% fail</s-option>
+              <s-option value="25">When more than 25% fail</s-option>
+              <s-option value="0">Never stop</s-option>
+            </s-select>
+            <s-select key={`hist-${sk}`} label="Keep exports in the job history for" details="Their files are cleared with them." value={days} onChange={(ev: any) => setDays(ev.currentTarget.value)}>
+              {historyChoices.map((d) => (
+                <s-option key={d} value={String(d)}>
+                  {d} days
+                </s-option>
+              ))}
+            </s-select>
+          </s-grid>
+          <s-stack direction="inline">
+            <s-button disabled={fetcher.state !== "idle" || (stopAt === String(failStop) && days === String(history))} onClick={() => fetcher.submit({ intent: "defaults", failStop: stopAt, history: days }, { method: "post" })}>
+              Save
+            </s-button>
+          </s-stack>
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Alerts by email">
+        <s-stack direction="block" gap="small-200">
+          <s-paragraph>Failed or partly failed scheduled jobs and backups, and scheduled imports held for approval, can be emailed.</s-paragraph>
+          {canEmail ? null : <s-text tone="caution">This server has no email account set up yet (SMTP_URL in its settings file), so nothing can be sent until it has.</s-text>}
+          <div className="bp-url-row">
+            <s-text-field label="Email addresses" labelAccessibilityVisibility="exclusive" placeholder="you@example.com, team@example.com" value={emailList} onInput={(ev: any) => setEmailList(ev.currentTarget.value)} />
+            <s-button disabled={fetcher.state !== "idle" || emailList.trim() === emails} onClick={() => fetcher.submit({ intent: "emails", emails: emailList }, { method: "post" })}>
+              Save
+            </s-button>
+          </div>
+        </s-stack>
       </s-section>
 
       <s-section heading="Alerts to Slack or Teams">
@@ -195,6 +290,13 @@ export default function Connect() {
 
       <s-section heading="Command line">
         <s-paragraph>One file, needs Node 18 or newer. Download it, sign in once, then export and import from the terminal or a scheduled script.</s-paragraph>
+        {cliSha ? (
+          <s-paragraph>
+            <s-text tone="neutral">To check the download, its SHA-256 should be </s-text>
+            <code>{cliSha}</code>
+            <s-text tone="neutral"> (run: shasum -a 256 bulkport.mjs).</s-text>
+          </s-paragraph>
+        ) : null}
         <Code
           text={[
             `curl -o bulkport.mjs ${appUrl}/cli/bulkport.mjs`,

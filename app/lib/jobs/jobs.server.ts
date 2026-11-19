@@ -189,6 +189,7 @@ export function parseImportOptions(raw: unknown): ImportOptions {
   }
   if (input.dryRun) o.dryRun = true;
   if (input.batch) o.batch = true;
+  if (input.hold) o.hold = true;
   if (input.concurrency) o.concurrency = Math.min(8, Math.max(1, Math.floor(Number(input.concurrency))));
   return o;
 }
@@ -385,21 +386,34 @@ export async function scheduleHealth(shop: string, schedules: Array<{ id: string
 }
 
 /** Days an export stays in the history (and its file on the server). */
-export const EXPORT_HISTORY_DAYS = Number(process.env.EXPORT_HISTORY_DAYS ?? 7);
+export const EXPORT_HISTORY_DAYS = Number(process.env.EXPORT_HISTORY_DAYS ?? 90);
+
+export const HISTORY_CHOICES = [7, 30, 90, 365];
+
+/** A store's own history length (Settings), else the server's default. */
+export async function historyDays(shop: string): Promise<number> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { historyDays: true } });
+  return s?.historyDays ?? EXPORT_HISTORY_DAYS;
+}
 
 /**
  * Removes exports older than the history period, with their files. The newest
  * finished run of each schedule is kept, so its permanent link keeps working
  * even when the schedule runs less often than the period.
  */
-export async function clearOldExports(days = EXPORT_HISTORY_DAYS, now = new Date()): Promise<number> {
-  if (!(days > 0)) return 0;
-  const cutoff = new Date(now.getTime() - days * 86400_000);
-  const old = await prisma.job.findMany({
-    where: { type: "export", kind: "job", status: { in: ["finished", "failed", "cancelled"] }, createdAt: { lt: cutoff } },
-    select: { id: true, shop: true, scheduleId: true },
-    take: 1000,
+export async function clearOldExports(days?: number, now = new Date()): Promise<number> {
+  // Each store keeps its own number of days (Settings); `days` forces one for all.
+  const perShop = new Map((days === undefined ? await prisma.shopSetting.findMany({ select: { shop: true, historyDays: true } }) : []).map((s) => [s.shop, s.historyDays]));
+  const daysFor = (shop: string) => days ?? perShop.get(shop) ?? EXPORT_HISTORY_DAYS;
+  const shortest = Math.min(days ?? EXPORT_HISTORY_DAYS, ...perShop.values());
+  if (!(shortest > 0)) return 0;
+  const candidates = await prisma.job.findMany({
+    where: { type: "export", kind: "job", status: { in: ["finished", "failed", "cancelled"] }, createdAt: { lt: new Date(now.getTime() - shortest * 86400_000) } },
+    select: { id: true, shop: true, scheduleId: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+    take: 2000,
   });
+  const old = candidates.filter((j) => daysFor(j.shop) > 0 && j.createdAt.getTime() < now.getTime() - daysFor(j.shop) * 86400_000);
   const keep = new Set<string>();
   for (const scheduleId of new Set(old.map((j) => j.scheduleId).filter((x): x is string => !!x))) {
     const newest = await prisma.job.findFirst({
@@ -445,7 +459,8 @@ export async function rerunJob(shop: string, id: string) {
   if (job.type === "import") {
     try {
       const parsed = JSON.parse(job.config) as ImportConfig;
-      const { previewOf: _p, ...rest } = parsed;
+      // What belonged to the earlier run (its preview, its skipped rows) doesn't carry over.
+      const { previewOf: _p, exclude: _x, expectedFailed: _f, stopAtFailedPercent: _s, ...rest } = parsed;
       config = JSON.stringify({ ...rest, options: { ...parsed.options, dryRun: true } });
     } catch {
       throw new Error("This job's settings can't be read");

@@ -11,7 +11,17 @@ export const MAX_KEYS = 20;
 
 const hashKey = (key: string) => crypto.createHash("sha256").update(key).digest("hex");
 
-export async function createKey(shop: string, name: string, canImport: boolean) {
+export type KeyScope = "read" | "preview" | "full";
+export const EXPIRY_CHOICES = [30, 90, 365, 0];
+
+/**
+ * `scope`: "read" exports and reads only; "preview" also makes import
+ * previews; "full" can also import for real. `expiresInDays` 0 = no expiry.
+ * (A boolean is still accepted for the scope: true = full, false = preview.)
+ */
+export async function createKey(shop: string, name: string, scopeOrCanImport: KeyScope | boolean, expiresInDays = 0) {
+  const scope: KeyScope = typeof scopeOrCanImport === "boolean" ? (scopeOrCanImport ? "full" : "preview") : scopeOrCanImport;
+  const canImport = scope === "full";
   const clean = name.trim().slice(0, 60);
   if (!clean) throw new Error("Give the key a name, so you can tell what uses it");
   if ((await prisma.apiKey.count({ where: { shop, revokedAt: null } })) >= MAX_KEYS) {
@@ -19,7 +29,7 @@ export async function createKey(shop: string, name: string, canImport: boolean) 
   }
   const key = KEY_PREFIX + crypto.randomBytes(32).toString("base64url");
   const row = await prisma.apiKey.create({
-    data: { shop, name: clean, prefix: key.slice(0, 9), hash: hashKey(key), canImport },
+    data: { shop, name: clean, prefix: key.slice(0, 9), hash: hashKey(key), canImport, readOnly: scope === "read", expiresAt: expiresInDays > 0 ? new Date(Date.now() + expiresInDays * 86400_000) : null },
   });
   return { key, row };
 }
@@ -37,6 +47,8 @@ export interface KeyAuth {
   keyId: string;
   name: string;
   canImport: boolean;
+  /** Exports and reading only. */
+  readOnly: boolean;
 }
 
 /** Requests per key per minute; a runaway script or agent can't flood the app. */
@@ -57,6 +69,7 @@ export async function checkKey(key: string | null | undefined, now = Date.now())
   if (!key || !key.startsWith(KEY_PREFIX) || key.length < 40) throw new ApiError(401, "Missing or invalid access key");
   const row = await prisma.apiKey.findUnique({ where: { hash: hashKey(key) } });
   if (!row || row.revokedAt) throw new ApiError(401, "Missing or invalid access key");
+  if (row.expiresAt && row.expiresAt.getTime() < now) throw new ApiError(401, "This access key has expired. Create a new one in the app's Settings.");
   const h = hits.get(row.id);
   if (!h || now - h.start >= 60_000) hits.set(row.id, { start: now, n: 1 });
   else if (++h.n > RATE_LIMIT) throw new ApiError(429, "Too many requests. Wait a minute and try again.");
@@ -64,7 +77,7 @@ export async function checkKey(key: string | null | undefined, now = Date.now())
   if (!row.lastUsedAt || now - row.lastUsedAt.getTime() > 60_000) {
     await prisma.apiKey.update({ where: { id: row.id }, data: { lastUsedAt: new Date(now) } }).catch(() => {});
   }
-  return { shop: row.shop, keyId: row.id, name: row.name, canImport: row.canImport };
+  return { shop: row.shop, keyId: row.id, name: row.name, canImport: row.canImport, readOnly: row.readOnly };
 }
 
 /** The key from "Authorization: Bearer bp_…". */

@@ -20,6 +20,7 @@ export interface ImportScheduleBeingEdited {
   dryRun: boolean;
   concurrency?: number;
   batch?: boolean;
+  hold?: boolean;
 }
 
 /** Links that sign in with a user name and password. */
@@ -70,6 +71,8 @@ export function ImportForm({
   const selectKey = mounted ? "client" : "server";
   const [concurrency, setConcurrency] = useState(String(editing?.concurrency ?? 4));
   const [batch, setBatch] = useState(editing?.batch ?? false);
+  // New schedules hold unusual results for approval; existing ones keep how they were set.
+  const [hold, setHold] = useState(editing ? !!editing.hold : true);
   const [runAt, setRunAt] = useState(editing?.runAt ?? "");
   const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
   const [scheduled, setScheduled] = useState(!!editing || scheduleFirst);
@@ -91,7 +94,7 @@ export function ImportForm({
     }
     setPreviewing(preview);
     form.set("source", source);
-    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch }));
+    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch, hold: repeating && hold && !dryRun }));
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
@@ -228,6 +231,15 @@ export function ImportForm({
           />
           {repeating ? (
             <s-checkbox
+              label="Hold unusual results for approval"
+              details="Each run is previewed first. A clean result is applied straight away; one that would create or delete items, empty fields, or has warnings or failing rows waits for you, and you are alerted."
+              checked={hold && !dryRun}
+              disabled={dryRun}
+              onChange={(ev: any) => setHold(ev.currentTarget.checked)}
+            />
+          ) : null}
+          {repeating ? (
+            <s-checkbox
               label="Dry run every time"
               details="Each scheduled run only checks the file and shows a preview, without changing the store"
               checked={dryRun}
@@ -274,7 +286,7 @@ export function ImportForm({
               {dryRun ? (
                 <s-text tone="caution">Dry run is on: every scheduled run will only check the file and change nothing.</s-text>
               ) : (
-                <s-text tone="neutral">Every run applies the file to the store. Rows that add to stock are applied again each time.</s-text>
+                <s-text tone="neutral">{hold ? "Clean runs are applied automatically; unusual ones wait for your approval." : "Every run applies the file to the store without a look."} Rows that add to stock are applied again each time.</s-text>
               )}
             </>
           ) : null}

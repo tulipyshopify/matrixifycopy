@@ -8,6 +8,8 @@ services:
     build: .
     image: bulkport-staging:latest
     restart: unless-stopped
+    # Time for running jobs to finish before a restart or deploy.
+    stop_grace_period: 2m
     env_file: .env.production
     environment:
       PORT: "3000"

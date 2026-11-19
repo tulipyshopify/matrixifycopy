@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { EXPORT_HISTORY_DAYS, type JobFilter, cancelJob, rerunJob } from "../lib/jobs/jobs.server";
+import { type JobFilter, cancelJob, historyDays as storeHistoryDays, rerunJob } from "../lib/jobs/jobs.server";
 import { jobListData } from "../lib/jobs/joblist.server";
 import { JobList } from "../components/JobList";
 import { isActive } from "../components/jobs";
@@ -17,7 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const filter = (["export", "import", "problems", "scheduled"].includes(url.searchParams.get("show") ?? "") ? url.searchParams.get("show") : "all") as JobFilter;
   const take = Math.min(500, Math.max(PAGE, Number(url.searchParams.get("n")) || PAGE));
   const { jobs, total } = await jobListData(session.shop, take, filter);
-  return { jobs, total, filter, historyDays: EXPORT_HISTORY_DAYS };
+  return { jobs, total, filter, historyDays: await storeHistoryDays(session.shop) };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {

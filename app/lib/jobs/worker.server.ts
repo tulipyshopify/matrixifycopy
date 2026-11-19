@@ -13,6 +13,7 @@ import { alertText, sendAlert } from "./alerts.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports } from "./jobs.server";
+import { heldConfig, settleHeldPreview } from "./held.server";
 import { checkImageUrl, downloadSource, redactUrl, uploadResult } from "./sources.server";
 
 /**
@@ -74,6 +75,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   const startedAt = Date.now();
   let timedOut = false;
   let copyError: string | null = null;
+  let heldReason: string | null = null;
 
   let logBuf = "";
   let progress = { done: 0, total: 0 };
@@ -195,6 +197,20 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
         finishedAt: new Date(),
       },
     });
+    // A scheduled import that previews first: apply a clean result, hold an unusual one.
+    let autoApply = false;
+    try {
+      autoApply = !!JSON.parse(job.config).autoApply;
+    } catch {
+      autoApply = false;
+    }
+    if (autoApply && status === "finished") {
+      const held = await settleHeldPreview(job.shop, job.id, stats);
+      if (held) {
+        heldReason = held;
+        await prisma.job.update({ where: { id: job.id }, data: { problems: { increment: 1 }, log: { set: `${(await prisma.job.findUnique({ where: { id: job.id }, select: { log: true } }))?.log ?? ""}[${new Date().toISOString().slice(11, 19)}] ${held}\n` } } });
+      }
+    }
   } catch (e: any) {
     const message = e?.message ?? String(e);
     log(`Error: ${message}`);
@@ -216,7 +232,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId }, select: { intervalMinutes: true } }) : null;
       if (done) {
         const health = jobHealth({ type: job.type, status: done.status, stats: done.stats, error: done.error, dryRun: isDryRunConfig(done.config) });
-        const text = alertText({ shop: job.shop, type: job.type, kind: job.kind, name: job.name, scheduled: (schedule?.intervalMinutes ?? 0) > 0 }, { status: done.status, problems: done.problems, summary: health.summary, error: done.error });
+        const text = alertText({ shop: job.shop, type: job.type, kind: job.kind, name: job.name, scheduled: (schedule?.intervalMinutes ?? 0) > 0 }, { status: done.status, problems: done.problems, summary: heldReason ?? health.summary, error: done.error });
         if (text) await sendAlert(job.shop, text);
       }
     } catch (e) {
@@ -238,7 +254,7 @@ async function fireSchedules() {
       continue;
     }
     const job = await prisma.job.create({
-      data: { shop: s.shop, type: s.type, config: s.config, format: s.format, name: s.name, scheduleId: s.id, kind: s.kind },
+      data: { shop: s.shop, type: s.type, config: heldConfig(s.type, s.config), format: s.format, name: s.name, scheduleId: s.id, kind: s.kind },
     });
     await prisma.schedule.update({ where: { id: s.id }, data: { nextRunAt, lastJobId: job.id } });
   }
@@ -257,13 +273,27 @@ async function recoverInterrupted() {
     },
   });
   await prisma.job.updateMany({ where: { status: "running", type: "export" }, data: { status: "queued" } });
-  await prisma.job.updateMany({
-    where: { status: "running", type: "import" },
-    data: { status: "failed", error: "Interrupted by a server restart. Check the store before re-running.", finishedAt: new Date() },
-  });
+  // A preview changes nothing, so it simply starts again (as often as an export may).
+  for (const j of await prisma.job.findMany({ where: { status: "running", type: "import" }, select: { id: true, config: true, attempts: true, log: true } })) {
+    if (isDryRunConfig(j.config) && j.attempts < MAX_ATTEMPTS) {
+      await prisma.job.update({ where: { id: j.id }, data: { status: "queued", progress: 0, log: `${j.log}[${new Date().toISOString().slice(11, 19)}] Interrupted by a server restart: starting again from the beginning.\n` } });
+    } else {
+      await prisma.job.update({
+        where: { id: j.id },
+        data: {
+          status: "failed",
+          error: isDryRunConfig(j.config)
+            ? "Stopped: the server restarted while this preview was running, more than once. The file may be too large; split it and try again."
+            : "Interrupted by a server restart part-way through. The rows already imported stay imported (and can be undone below). Press Preview again: it lists only what is still left to do.",
+          finishedAt: new Date(),
+        },
+      });
+    }
+  }
 }
 
 let started = false;
+let draining = false;
 
 export function startWorker() {
   if (started) return;
@@ -271,6 +301,7 @@ export function startWorker() {
   let lastCleanup = 0;
   const tick = async () => {
     try {
+      if (draining) return;
       await fireSchedules();
       while (running.size < CONCURRENCY) {
         const job = await claimNext();
@@ -292,6 +323,22 @@ export function startWorker() {
       setTimeout(tick, POLL_MS);
     }
   };
+  // A deploy or restart: take no new jobs and give the running ones time to finish
+  // (the container is given two minutes, see docker-compose).
+  const drain = () => {
+    if (draining) return;
+    draining = true;
+    console.log(`[worker] shutting down: waiting for ${running.size} running job(s)`);
+    const started = Date.now();
+    const wait = setInterval(() => {
+      if (running.size === 0 || Date.now() - started > 110_000) {
+        clearInterval(wait);
+        process.exit(0);
+      }
+    }, 500);
+  };
+  process.once("SIGTERM", drain);
+  process.once("SIGINT", drain);
   recoverInterrupted()
     .catch((e) => console.error("[worker] recovery failed", e))
     .finally(() => setTimeout(tick, 500));

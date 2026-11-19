@@ -818,3 +818,48 @@ describe("redesign: undo", () => {
     expect(calm[0].failed).toBe(57);
   });
 });
+
+describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("redesign: held imports, key scopes", async () => {
+  process.env.DATABASE_URL ??= "file:dev.sqlite";
+  process.env.SHOPIFY_API_SECRET ??= "test-secret";
+  const { default: prisma } = await import("../app/db.server");
+  const worker = await import("../app/lib/jobs/held.server");
+  const keys = await import("../app/lib/api/keys.server");
+  const service = await import("../app/lib/api/service.server");
+  const shop = `held-${Date.now()}.myshopify.com`;
+  const risk = (r: Record<string, number>) => [{ sheet: "Products", entity: "products", items: 5, ok: 5, failed: 0, skipped: 0, risk: { creates: 0, updates: 0, deletes: 0, unchanged: 0, clearing: 0, warned: 0, ...r } }];
+
+  it("a scheduled import set to hold runs as a preview; a clean one is applied, an unusual one waits", async () => {
+    const config = JSON.stringify({ options: { defaultCommand: "UPDATE", hold: true } });
+    expect(JSON.parse(worker.heldConfig("import", config))).toEqual({ options: { defaultCommand: "UPDATE", hold: true, dryRun: true }, autoApply: true });
+    expect(worker.heldConfig("export", config)).toBe(config);
+    expect(worker.heldConfig("import", JSON.stringify({ options: {} }))).toBe(JSON.stringify({ options: {} }));
+    const make = (stats: unknown = []) => prisma.job.create({ data: { shop, type: "import", status: "finished", config: worker.heldConfig("import", config), inputFile: "x/in.csv", stats: JSON.stringify(stats) } });
+    const clean = await make(risk({ updates: 5 }));
+    expect(await worker.settleHeldPreview(shop, clean.id, risk({ updates: 5 }))).toBeNull();
+    // Applied: a real import of the same file was queued.
+    const queued = await prisma.job.findMany({ where: { shop, status: "queued" } });
+    expect(queued).toHaveLength(1);
+    expect(JSON.parse(queued[0].config)).toMatchObject({ previewOf: clean.id, options: { defaultCommand: "UPDATE", hold: true } });
+    expect(JSON.parse(queued[0].config).options.dryRun).toBeUndefined();
+    const odd = await make();
+    expect(await worker.settleHeldPreview(shop, odd.id, risk({ updates: 3, creates: 1, warned: 2 }))).toBe("Held for approval: 1 new item, 2 with warnings. Open the preview, choose what to include and apply it.");
+    expect(await prisma.job.count({ where: { shop, status: "queued" } })).toBe(1);
+    // Nothing to change: nothing queued, nothing held.
+    expect(await worker.settleHeldPreview(shop, (await make()).id, risk({ unchanged: 5 }))).toBeNull();
+    expect(await prisma.job.count({ where: { shop, status: "queued" } })).toBe(1);
+  });
+
+  it("keys can be read-only and can expire", async () => {
+    const ro = await keys.createKey(shop, "Report tool", "read", 30);
+    expect(ro.row).toMatchObject({ readOnly: true, canImport: false });
+    expect(Math.round((ro.row.expiresAt!.getTime() - Date.now()) / 86400_000)).toBe(30);
+    const auth = await keys.checkKey(ro.key);
+    await expect(service.startImport(auth, { csv: "ID\n1\n", fileName: "Products.csv" })).rejects.toThrow(/read-only/);
+    expect((await service.startExport(auth, { sheets: [{ sheet: "Products", limit: 1 }] })).type).toBe("export");
+    await expect(keys.checkKey(ro.key, Date.now() + 31 * 86400_000)).rejects.toThrow(/expired/);
+    expect((await keys.createKey(shop, "Old style", true)).row).toMatchObject({ canImport: true, readOnly: false, expiresAt: null });
+    await prisma.job.deleteMany({ where: { shop } });
+    await prisma.apiKey.deleteMany({ where: { shop } });
+  });
+});
