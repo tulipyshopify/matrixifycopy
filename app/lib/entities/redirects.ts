@@ -1,6 +1,6 @@
 import type { Command, Entity, ExportContext, ImportContext, ItemResult, Row } from "../core/types";
 import { ImportError } from "../core/types";
-import { assertNoUserErrors, buildSearchQuery, cell, gidToId, gqlString, toGid } from "../core/util";
+import { assertNoUserErrors, buildSearchQuery, cell, gidToId, gqlString, parseCommand, toGid } from "../core/util";
 import { findExact, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
@@ -118,10 +118,113 @@ function redirectInput(row: Row): { path?: string; target?: string } {
   return input;
 }
 
+const TARGET_EXISTS: Record<string, string> = {
+  products: `#graphql
+    query ImportRedirectTargetProduct($q: String!) { products(first: 1, query: $q) { nodes { id } } }`,
+  collections: `#graphql
+    query ImportRedirectTargetCollection($q: String!) { collections(first: 1, query: $q) { nodes { id } } }`,
+  pages: `#graphql
+    query ImportRedirectTargetPage($q: String!) { pages(first: 1, query: $q) { nodes { id } } }`,
+};
+
+/** A warning when a target like /products/<handle> points at something the store doesn't have. */
+async function deadTarget(ctx: ImportContext, target: string): Promise<string | null> {
+  const m = /^\/(products|collections|pages)\/([^/?#]+)\/?$/.exec(target);
+  if (!m) return null;
+  const key = `redirectTarget:${target.toLowerCase()}`;
+  if (!ctx.cache.has(key)) {
+    let found = true;
+    try {
+      const d = await ctx.gql(TARGET_EXISTS[m[1]], { q: `handle:"${m[2].replace(/["\\]/g, "")}"` });
+      found = !!d?.[m[1]]?.nodes?.length;
+    } catch {
+      found = true; // can't check: no false alarm
+    }
+    ctx.cache.set(key, found ? null : `the target ${target} doesn't exist in the store, so the redirect would lead to a "not found" page`);
+  }
+  return ctx.cache.get(key) as string | null;
+}
+
+/**
+ * Whole-sheet check: Shopify refuses a redirect whose target is itself
+ * redirected. Caught here for every row involved (also for loops like
+ * /a -> /b -> /a), so a sheet is never half applied.
+ */
+async function prepareRedirects(ctx: ImportContext, items: Array<{ rows: Row[]; rowIndexes: number[] }>, defaultCommand: Command): Promise<Map<number, string[]>> {
+  const blocked = new Map<number, string[]>();
+  // Paths this file leaves in place (creates or keeps), with the row they are on; and paths it deletes.
+  const inFile = new Map<string, number>();
+  const deleted = new Set<string>();
+  const parsed = items.map((item) => {
+    const row = item.rows[0];
+    let command: Command = defaultCommand;
+    try {
+      command = parseCommand(cell(row, "Command"), defaultCommand);
+    } catch {
+      // reported per row
+    }
+    const path = cell(row, "Path") ? normalizePath(cell(row, "Path")!).toLowerCase() : "";
+    const target = (cell(row, "Target") ?? "").trim();
+    if (path && command === "DELETE") deleted.add(path);
+    else if (path && command !== "IGNORE") inFile.set(path, item.rowIndexes[0] + 2);
+    return { command, path, target };
+  });
+  for (const [i, { command, path, target }] of parsed.entries()) {
+    if (command === "DELETE" || command === "IGNORE" || !target || /^https?:\/\//i.test(target)) continue;
+    const t = normalizePath(target).toLowerCase();
+    if (t === path) {
+      blocked.set(i, [`The redirect points at itself (${target})`]);
+      continue;
+    }
+    const otherRow = inFile.get(t);
+    if (otherRow !== undefined) {
+      const loop = parsed.find((x) => x.path === t && normalizePath(x.target || "/").toLowerCase() === path);
+      blocked.set(i, [
+        loop
+          ? `Redirect loop: ${path} → ${t} → ${path} (rows ${items[i].rowIndexes[0] + 2} and ${otherRow}). Neither row is imported.`
+          : `The target ${target} is itself redirected by row ${otherRow}, and Shopify doesn't allow a redirect to a redirect. Point this row at the final address.`,
+      ]);
+      continue;
+    }
+    if (deleted.has(t)) continue;
+    // Already a redirect in the store?
+    const existing = await findExact<ExistingRedirect>(
+      ctx.gql,
+      REDIRECT_BY_PATH,
+      { query: searchTerm("path", normalizePath(target)) },
+      (d) => d.urlRedirects,
+      (r) => normalizePath(r.path).toLowerCase() === t,
+      "",
+    ).catch(() => null);
+    if (existing) {
+      blocked.set(i, [`The target ${target} is itself redirected in the store (to ${existing.target}), and Shopify doesn't allow a redirect to a redirect. Use ${existing.target} as the target.`]);
+    }
+  }
+  return blocked;
+}
+
 export async function importRedirect(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const row = rows[0];
   const existing = await fetchRedirect(ctx, row);
   const input = redirectInput(row);
+  // Preview: what would happen, compared with the redirect as it is now.
+  if (ctx.options.dryRun) {
+    const creates = !existing && command !== "UPDATE" && command !== "DELETE";
+    if (command === "DELETE") {
+      if (!existing) return { status: "Failed", command, message: "Redirect not found" };
+      return { status: "OK", command, preview: { action: "delete", changes: [`Deletes the redirect ${existing.path} → ${existing.target}`], warnings: [], deletes: 1 }, seen: { target: existing.target } };
+    }
+    if (command === "NEW" && existing) return { status: "Failed", command, message: "Redirect already exists" };
+    if (!existing && command === "UPDATE") return { status: "Failed", command, message: "Redirect not found" };
+    if (creates && (!input.path || !input.target)) return { status: "Failed", command, message: "Path and Target are required to create a redirect" };
+    const dead = input.target ? await deadTarget(ctx, input.target) : null;
+    const warnings = dead ? [dead[0].toUpperCase() + dead.slice(1)] : [];
+    if (creates) return { status: "OK", command, preview: { action: "create", changes: [`New redirect: ${input.path} → ${input.target}`], warnings, creates: 1 }, seen: { exists: "no" } };
+    const changes: string[] = [];
+    if (input.path && input.path !== existing!.path) changes.push(`Path: ${existing!.path} → ${input.path}`);
+    if (input.target && input.target !== existing!.target) changes.push(`Target: ${existing!.target} → ${input.target}`);
+    return { status: "OK", command, preview: { action: changes.length ? "update" : "none", changes, warnings: changes.length ? warnings : [] }, seen: { target: existing!.target } };
+  }
   return runCommand(command, existing, {
     what: "Redirect",
     idOf: (r) => r.id,
@@ -158,7 +261,7 @@ export const redirectsEntity: Entity = {
   columns: REDIRECT_COLUMNS,
   supportsQuery: true,
   export: exportRedirects,
-  import: { keyColumns: ["ID", "Path"], apply: importRedirect },
+  import: { keyColumns: ["ID", "Path"], apply: importRedirect, prepare: prepareRedirects },
 };
 
 // Exported for tests.

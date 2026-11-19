@@ -144,6 +144,6 @@ function previewItems(jobId) {
 }
 
 /** Runs a finished preview for real. The access key must allow imports. */
-function applyImport(jobId) {
-  return api_('post', 'jobs/' + jobId + '/apply');
+function applyImport(jobId, confirmDeletes) {
+  return api_('post', 'jobs/' + jobId + '/apply', { confirm_deletes: !!confirmDeletes });
 }

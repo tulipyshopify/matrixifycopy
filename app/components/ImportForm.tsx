@@ -22,7 +22,29 @@ export interface ImportScheduleBeingEdited {
   batch?: boolean;
 }
 
-export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: number; editing?: ImportScheduleBeingEdited | null }) {
+/** Links that sign in with a user name and password. */
+const NEEDS_SIGN_IN = /^(s?ftps?|webdavs?|davs?):\/\//i;
+const LINK = /^(https?|ftps?|sftp|webdavs?|davs?):\/\/[^\s/]+\.[^\s]+|^(https?|ftps?|sftp|webdavs?|davs?):\/\/localhost/i;
+
+/** What is wrong with a link as typed, or "" when it can be used. */
+export function linkProblem(url: string): string {
+  const u = url.trim();
+  if (!u) return "Enter a link";
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return "A link starts with https://, ftp://, sftp:// or webdavs://";
+  if (!LINK.test(u)) return "This doesn't look like a complete link. It starts with https://, ftp://, sftp:// or webdavs:// and names a file";
+  return "";
+}
+
+export function ImportForm({
+  maxUploadMb,
+  editing = null,
+  scheduleFirst = false,
+}: {
+  maxUploadMb: number;
+  editing?: ImportScheduleBeingEdited | null;
+  /** Opened from "New scheduled import": start with the schedule switched on. */
+  scheduleFirst?: boolean;
+}) {
   const fetcher = useFetcher<{ error?: string }>();
   const [source, setSource] = useState<"file" | "url" | null>(editing ? "url" : null);
   const [file, setFile] = useState<File | null>(null);
@@ -31,7 +53,16 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
     setFile(f);
     setSource(f ? "file" : url.trim() ? "url" : null);
   };
-  const [defaultCommand, setDefaultCommand] = useState(editing?.defaultCommand ?? "MERGE");
+  const [defaultCommand, setDefaultCommand] = useState(editing?.defaultCommand ?? "UPDATE");
+  const [linkError, setLinkError] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const signIn = NEEDS_SIGN_IN.test(url.trim());
+  const useLink = () => {
+    const problem = linkProblem(url);
+    setLinkError(problem);
+    if (!problem) setSource("url");
+  };
   const [dryRun, setDryRun] = useState(editing?.dryRun ?? false);
   // Server-rendered selects show their first option until remounted in the browser.
   const [mounted, setMounted] = useState(false);
@@ -41,7 +72,7 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
   const [batch, setBatch] = useState(editing?.batch ?? false);
   const [runAt, setRunAt] = useState(editing?.runAt ?? "");
   const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
-  const [scheduled, setScheduled] = useState(!!editing);
+  const [scheduled, setScheduled] = useState(!!editing || scheduleFirst);
   const [interval, setIntervalMinutes] = useState(editing?.intervalMinutes ?? 1440);
   const [name, setName] = useState(editing?.name ?? "");
   // Only a URL can be fetched again later; an uploaded file is imported once.
@@ -53,12 +84,19 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
   const submit = (preview = false) => {
     const form = new FormData();
     if (!source) return;
+    if (source === "url") {
+      const problem = linkProblem(url);
+      setLinkError(problem);
+      if (problem) return;
+    }
     setPreviewing(preview);
     form.set("source", source);
     form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch }));
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
       form.set("url", url);
+      if (signIn && username) form.set("username", username);
+      if (signIn && password) form.set("password", password);
       if (editing) form.set("scheduleId", editing.id);
       form.set("intervalMinutes", String(repeating ? interval : 0));
       if (repeating && name.trim()) form.set("name", name.trim());
@@ -89,7 +127,11 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
               label="Link to the file"
               details="Downloaded again at every run. A saved password is shown as ****; leave it like that to keep it."
               value={url}
-              onInput={(ev: any) => setUrl(ev.currentTarget.value)}
+              error={linkError || undefined}
+              onInput={(ev: any) => {
+                setUrl(ev.currentTarget.value);
+                setLinkError("");
+              }}
             />
           ) : (
             <>
@@ -103,12 +145,17 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
             <s-url-field
               label="Or import from a link"
               details="Web link, Google Sheets, Google Drive or Dropbox share link, ftp://, sftp:// or webdavs://"
-              placeholder="https://… or sftp://user:password@host/file.xlsx"
+              placeholder="https://… or sftp://files.example.com/folder/file.xlsx"
               value={url}
-              onInput={(ev: any) => setUrl(ev.currentTarget.value)}
+              error={linkError || undefined}
+              onInput={(ev: any) => {
+                setUrl(ev.currentTarget.value);
+                setLinkError("");
+                if (source === "url") setSource(file ? "file" : null);
+              }}
             />
-            <s-button disabled={!url.trim()} onClick={() => setSource("url")}>
-              Import from link
+            <s-button disabled={!url.trim()} onClick={useLink}>
+              Use this link
             </s-button>
           </div>
           <s-text tone="neutral">
@@ -119,6 +166,24 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
           {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}</s-text> : null}
             </>
           )}
+          {signIn && (source === "url" || editing) ? (
+            <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+              <s-text-field
+                label="User name"
+                details={editing ? "Leave empty to keep the saved sign-in." : "For the FTP, SFTP or WebDAV server."}
+                autocomplete="off"
+                value={username}
+                onInput={(ev: any) => setUsername(ev.currentTarget.value)}
+              />
+              <s-password-field
+                label="Password"
+                details="Stored encrypted and never shown again. Keep it out of the link itself."
+                autocomplete="new-password"
+                value={password}
+                onInput={(ev: any) => setPassword(ev.currentTarget.value)}
+              />
+            </s-grid>
+          ) : null}
         </s-stack>
       </s-section>
 
@@ -131,12 +196,18 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
             value={defaultCommand}
             onChange={(ev: any) => setDefaultCommand(ev.currentTarget.value)}
           >
+            <s-option value="UPDATE">UPDATE: only change items that already exist (safest)</s-option>
             <s-option value="MERGE">MERGE: update if found, create if not</s-option>
-            <s-option value="UPDATE">UPDATE: only update existing items</s-option>
             <s-option value="NEW">NEW: only create new items</s-option>
             <s-option value="REPLACE">REPLACE: delete and re-create</s-option>
             <s-option value="DELETE">DELETE: delete the items</s-option>
           </s-select>
+          {defaultCommand === "MERGE" ? <s-text tone="caution">With MERGE, a row whose handle or ID isn't found creates a new item, so a typo makes a new product. New products start as drafts.</s-text> : null}
+          {defaultCommand === "DELETE" || defaultCommand === "REPLACE" ? (
+            <s-text tone="critical">
+              {defaultCommand === "DELETE" ? "Every row without its own Command deletes its item." : "Every row without its own Command deletes its item and creates it again from the file: anything not in the file is lost."} The preview lists them and asks you to confirm.
+            </s-text>
+          ) : null}
           <s-select
             key={`speed-${selectKey}`}
             label="Speed"
@@ -208,17 +279,18 @@ export function ImportForm({ maxUploadMb, editing = null }: { maxUploadMb: numbe
             </>
           ) : null}
           <s-stack direction="inline" gap="small" justifyContent="end" alignItems="center">
-            {repeating ? null : (
+            {repeating ? (
+              <s-button variant="primary" onClick={() => submit()} disabled={!ready || busy} loading={busy}>
+                {editing ? "Save changes" : "Save schedule"}
+              </s-button>
+            ) : (
               <>
-                <s-text tone="neutral">Preview shows what would change, without changing anything.</s-text>
-                <s-button icon="view" onClick={() => submit(true)} disabled={!ready || busy} loading={busy && previewing}>
-                  Preview (dry run)
+                <s-text tone="neutral">Nothing is changed yet: you see what the file would do, then confirm.</s-text>
+                <s-button variant="primary" icon="view" onClick={() => submit(true)} disabled={!ready || busy} loading={busy}>
+                  Preview
                 </s-button>
               </>
             )}
-            <s-button variant="primary" onClick={() => submit()} disabled={!ready || busy} loading={busy && !previewing}>
-              {editing ? "Save changes" : repeating ? "Save schedule" : "Import"}
-            </s-button>
           </s-stack>
         </s-stack>
       </s-section>

@@ -42,12 +42,14 @@ Import:
     Without --apply this is a PREVIEW: it is checked against the store and
     nothing is changed. It prints what each row would do.
     --apply                       run for real (the key must allow imports)
-    --command UPDATE              for rows without a Command column
+    --command MERGE               for rows without a Command column. The default, UPDATE,
+                                  only changes existing items; MERGE also creates new ones
     --batch                       batch mode: sheets of only ID + Metafield columns go to
                                   Shopify as one bulk job (much faster for thousands of rows)
     --threads 8                   items sent at once, 1-8 (default 4)
     --no-wait
   bulkport apply <job>            run a finished preview for real
+    --confirm-deletes             needed when the preview deletes anything
   bulkport preview <job>          show a preview again
 
 Other:
@@ -179,7 +181,9 @@ async function showPreview(id) {
     console.log(`\n${s.sheet}${s.recognised_as ? ` (${s.recognised_as})` : ""}`);
     for (const it of s.items) {
       console.log(`  row ${it.row}  ${it.action.padEnd(7)} ${it.item}${it.message ? `  - ${it.message}` : ""}`);
-      for (const c of it.changes.slice(0, 6)) console.log(`      ${c}`);
+      for (const c of it.changes.slice(0, 8)) console.log(`      ${c}`);
+      for (const e of it.errors ?? []) console.log(`      ! ${e}`);
+      for (const w of it.warnings ?? []) console.log(`      warning: ${w}`);
     }
   }
 }
@@ -260,7 +264,9 @@ async function main() {
     print(job, describe(job));
     if (job.preview && job.status === "finished" && !flags.json) {
       await showPreview(job.id);
-      console.log(`\nNothing was changed. To run it for real: bulkport apply ${job.id}`);
+      const w = job.would;
+      if (w) console.log(`\nWould create ${w.creates}, update ${w.updates}, delete ${w.deletes}; ${w.unchanged} unchanged; ${w.failing} would fail${w.warned ? `; ${w.warned} with warnings` : ""}${w.clearing ? `; ${w.clearing} would have fields emptied` : ""}.`);
+      console.log(`Nothing was changed. To run it for real: bulkport apply ${job.id}${w?.deletes ? " --confirm-deletes" : ""}`);
     }
     return exitFor(job);
   }
@@ -273,7 +279,7 @@ async function main() {
 
   if (cmd === "apply") {
     if (!a) fail("Usage: bulkport apply <job>");
-    let job = await api("POST", `jobs/${a}/apply`);
+    let job = await api("POST", `jobs/${a}/apply`, { confirm_deletes: !!flags["confirm-deletes"] });
     if (flags["no-wait"]) return print(job, job.id);
     job = await waitFor(job, flags.json);
     print(job, describe(job));

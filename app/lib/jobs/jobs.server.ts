@@ -312,7 +312,9 @@ export async function homeStats(shop: string, now = new Date()) {
   ]);
   return {
     exports: week.filter((j) => j.type === "export").length,
-    imports: week.filter((j) => j.type === "import").length,
+    // A preview changes nothing, so it is not counted as an import.
+    imports: week.filter((j) => j.type === "import" && !j.config.includes('"dryRun":true')).length,
+    previews: week.filter((j) => j.type === "import" && j.config.includes('"dryRun":true')).length,
     exported,
     changed,
     problems: week.filter((j) => j.status === "failed" || (j.status === "finished" && j.problems > 0)).length,
@@ -432,14 +434,28 @@ export async function cancelJob(shop: string, id: string) {
   }
 }
 
-/** Creates a copy of a finished job and queues it again. */
+/**
+ * Queues a finished job again. An export simply runs again. An import always
+ * comes back as a preview: the store may have changed since, so nothing is
+ * written again without a fresh look and the confirmations.
+ */
 export async function rerunJob(shop: string, id: string) {
   const job = await getJob(shop, id);
+  let config = job.config;
+  if (job.type === "import") {
+    try {
+      const parsed = JSON.parse(job.config) as ImportConfig;
+      const { previewOf: _p, ...rest } = parsed;
+      config = JSON.stringify({ ...rest, options: { ...parsed.options, dryRun: true } });
+    } catch {
+      throw new Error("This job's settings can't be read");
+    }
+  }
   return prisma.job.create({
     data: {
       shop,
       type: job.type,
-      config: job.config,
+      config,
       format: job.format,
       name: job.name,
       inputFile: job.inputFile,
@@ -450,11 +466,76 @@ export async function rerunJob(shop: string, id: string) {
   });
 }
 
+/** What a person must agree to before a preview is imported for real. */
+export interface ApplyNeeds {
+  /** Items that would change something (created, updated, deleted, replaced). */
+  changes: number;
+  creates: number;
+  updates: number;
+  deletes: number;
+  unchanged: number;
+  /** Items that would empty at least one field. */
+  clearing: number;
+  /** Items with a warning. */
+  warned: number;
+  /** Items that would fail and are skipped by the import. */
+  failing: number;
+  /** Sheets that are not imported at all, with why. */
+  skippedSheets: Array<{ sheet: string; rows: number; reason: string }>;
+}
+
+/** Works out what needs confirming from a finished preview's stats (which cover every item). */
+export function applyNeeds(stats: unknown): ApplyNeeds {
+  const needs: ApplyNeeds = { changes: 0, creates: 0, updates: 0, deletes: 0, unchanged: 0, clearing: 0, warned: 0, failing: 0, skippedSheets: [] };
+  let list: any[] = [];
+  try {
+    list = typeof stats === "string" ? JSON.parse(stats) : ((stats as any[]) ?? []);
+  } catch {
+    list = [];
+  }
+  for (const s of list) {
+    needs.failing += Number(s?.failed) || 0;
+    if (s?.entity === null) {
+      const rows = Number(s.skipped) || 0;
+      if (rows) needs.skippedSheets.push({ sheet: String(s.sheet), rows, reason: String((s.warnings ?? []).find((w: string) => w.startsWith("Not imported: ")) ?? "").replace(/^Not imported: /, "") });
+      continue;
+    }
+    const r = s?.risk;
+    if (r) {
+      needs.creates += r.creates || 0;
+      needs.updates += r.updates || 0;
+      needs.deletes += r.deletes || 0;
+      needs.unchanged += r.unchanged || 0;
+      needs.clearing += r.clearing || 0;
+      needs.warned += r.warned || 0;
+    } else {
+      // A preview made before risks were recorded: every OK item counts as a change.
+      needs.updates += Number(s?.ok) || 0;
+    }
+  }
+  needs.changes = needs.creates + needs.updates + needs.deletes;
+  return needs;
+}
+
+/** The confirmations given on the preview page (or by an API caller). */
+export interface ApplyConfirm {
+  creates?: boolean;
+  clearing?: boolean;
+  warnings?: boolean;
+  failing?: boolean;
+  skippedSheets?: boolean;
+  /** For deletions: the word DELETE, typed. */
+  deletes?: string;
+}
+
 /**
  * Runs a dry-run import for real: same file, same options, without the dry run.
  * Uses the file the preview was made from, even when it came from a link.
+ * Anything risky in the preview (new items, deletions, emptied fields,
+ * warnings, rows that would fail) must be confirmed first; the check is made
+ * here as well as on the page, so no route can skip it.
  */
-export async function applyDryRun(shop: string, id: string) {
+export async function applyDryRun(shop: string, id: string, confirm: ApplyConfirm | "trusted" = {}) {
   const job = await getJob(shop, id);
   let config: ImportConfig;
   try {
@@ -465,6 +546,19 @@ export async function applyDryRun(shop: string, id: string) {
   if (job.type !== "import" || !config.options?.dryRun) throw new Error("Only a dry run can be applied");
   if (job.status !== "finished") throw new Error("Wait for the dry run to finish");
   if (!job.inputFile) throw new Error("The previewed file is no longer available. Import it again.");
+  const needs = applyNeeds(job.stats);
+  if (!needs.changes) throw new Error("There is nothing to import: the preview found no changes to make.");
+  if (confirm !== "trusted") {
+    const missing = [
+      needs.deletes && (confirm.deletes ?? "").trim().toUpperCase() !== "DELETE" ? `type DELETE to confirm ${needs.deletes} deletion${needs.deletes === 1 ? "" : "s"}` : "",
+      needs.creates && !confirm.creates ? `confirm creating ${needs.creates} new item${needs.creates === 1 ? "" : "s"}` : "",
+      needs.clearing && !confirm.clearing ? `confirm emptying fields on ${needs.clearing} item${needs.clearing === 1 ? "" : "s"}` : "",
+      needs.warned && !confirm.warnings ? `confirm you have read the warnings on ${needs.warned} item${needs.warned === 1 ? "" : "s"}` : "",
+      needs.failing && !confirm.failing ? `confirm skipping ${needs.failing} item${needs.failing === 1 ? "" : "s"} that would fail` : "",
+      needs.skippedSheets.length && !confirm.skippedSheets ? `confirm that ${needs.skippedSheets.length} sheet${needs.skippedSheets.length === 1 ? " is" : "s are"} not imported` : "",
+    ].filter(Boolean);
+    if (missing.length) throw new Error(`Before importing for real: ${missing.join("; ")}.`);
+  }
   const { dryRun: _d, ...options } = config.options;
   return prisma.job.create({
     data: {

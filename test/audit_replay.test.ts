@@ -508,3 +508,57 @@ describe("audit: round R1, export then re-import unchanged", () => {
     expect(r.stats[0]).toMatchObject({ ok: store.products.length, failed: 0 });
   });
 });
+
+describe("audit: redirects (H8, H10, M19)", () => {
+  function redirectStore(existing: Array<{ path: string; target: string }> = [], productHandles: string[] = ["zz-bulkport-test-01-price"]) {
+    const redirects = existing.map((r, i) => ({ id: `gid://shopify/UrlRedirect/${i + 1}`, ...r }));
+    const mutations: string[] = [];
+    const gql = (async (q: string, v: any = {}) => {
+      const [, kind, op] = /(query|mutation)\s+(\w+)/.exec(q)!;
+      if (kind === "mutation") mutations.push(op);
+      const page = (nodes: any[]) => ({ nodes, pageInfo: { hasNextPage: false } });
+      if (op === "ImportRedirectByPath") return { urlRedirects: page(redirects.filter((r) => v.query.toLowerCase().includes(r.path.toLowerCase()))) };
+      if (op === "ImportRedirectTargetProduct") return { products: page(productHandles.filter((h) => v.q === `handle:"${h}"`).map((h) => ({ id: h }))) };
+      if (op === "ImportRedirectCreate" || /Create/.test(op)) {
+        redirects.push({ id: `gid://shopify/UrlRedirect/${redirects.length + 1}`, ...v.urlRedirect });
+        return { urlRedirectCreate: { urlRedirect: redirects.at(-1), userErrors: [] } };
+      }
+      if (/Delete/.test(op)) {
+        redirects.splice(redirects.findIndex((r) => r.id === v.id), 1);
+        return { urlRedirectDelete: { deletedUrlRedirectId: v.id, userErrors: [] } };
+      }
+      throw new Error(`Unexpected operation ${op}`);
+    }) as any;
+    return { gql, redirects, mutations: () => mutations } as any;
+  }
+
+  it("catches a redirect loop in the preview and imports neither half", async () => {
+    const store = redirectStore();
+    const sheets = await sheetsOf("zz_bulkport_round_A.zip", /^r13_/);
+    const p = await preview(sheets, store, { defaultCommand: "UPDATE" });
+    expect(p.items.map((i) => i.action)).toEqual(["failed", "failed", "create"]);
+    expect(p.row(2).message).toBe("Redirect loop: /zz-bulkport-test-redirect-a → /zz-bulkport-test-redirect-b → /zz-bulkport-test-redirect-a (rows 2 and 3). Neither row is imported.");
+    expect(p.row(4)).toMatchObject({ changes: ["New redirect: /zz-bulkport-test-redirect-c → /products/zz-bulkport-test-01-price"] });
+    expect(p.row(4).warnings).toBeUndefined();
+    const r = await real(sheets, store);
+    // The same three results as the preview, and no redirect to nowhere left behind.
+    expect(r.stats[0]).toMatchObject({ ok: 1, failed: 2 });
+    expect(store.redirects.map((x: any) => x.path)).toEqual(["/zz-bulkport-test-redirect-c"]);
+  });
+
+  it("warns about a target that doesn't exist, and refuses a target that is itself redirected", async () => {
+    const store = redirectStore([
+      { path: "/zz-bulkport-test-redirect-a", target: "/old" },
+      { path: "/moved", target: "/final" },
+    ]);
+    const sheets = await sheetsOf("zz_bulkport_round_B.zip", /^rB7_/);
+    const extra: Sheet = { name: "Redirects", headers: ["Path", "Target"], rows: [{ Path: "/x", Target: "/moved" }] };
+    const p = await preview([...sheets, extra], store, { defaultCommand: "MERGE" });
+    const byItem = Object.fromEntries(p.items.map((i) => [i.item, i]));
+    expect(byItem["Path: /zz-bulkport-test-redirect-a"]).toMatchObject({ action: "delete", deletes: 1, changes: ["Deletes the redirect /zz-bulkport-test-redirect-a → /old"] });
+    expect(byItem["Path: /zz-bulkport-test-redirect-d"]).toMatchObject({ action: "create" });
+    expect(byItem["Path: /zz-bulkport-test-redirect-d"].warnings).toEqual([`The target /products/zz-bulkport-test-does-not-exist doesn't exist in the store, so the redirect would lead to a "not found" page`]);
+    expect(byItem["Path: /x"].message).toBe("The target /moved is itself redirected in the store (to /final), and Shopify doesn't allow a redirect to a redirect. Use /final as the target.");
+    expect(store.mutations()).toEqual([]);
+  });
+});

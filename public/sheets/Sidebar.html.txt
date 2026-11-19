@@ -57,8 +57,8 @@
       <div class="note">First a preview: the rows are checked against your store and nothing is changed.</div>
       <label>Rows without a Command column</label>
       <select id="command">
-        <option value="">Update if it exists, otherwise create (MERGE)</option>
         <option value="UPDATE">Only update existing (UPDATE)</option>
+        <option value="MERGE">Update if it exists, otherwise create (MERGE)</option>
         <option value="NEW">Only create new (NEW)</option>
       </select>
       <button id="previewBtn" onclick="runPreview()">Preview import</button>
@@ -146,7 +146,8 @@
             sheets.forEach(function (s) {
               html += '<b>' + esc(s.sheet) + (s.recognised_as ? ' → ' + esc(s.recognised_as) : ' (not recognised)') + '</b>';
               s.items.forEach(function (it) {
-                html += '<div class="item">Row ' + it.row + ': <b>' + esc(it.action) + '</b> ' + esc(it.item) + '<small>' + esc(it.message || it.changes.slice(0, 4).join('; ')) + '</small></div>';
+                html += '<div class="item">Row ' + it.row + ': <b>' + esc(it.action) + '</b> ' + esc(it.item) + '<small>' + esc((it.errors || []).concat(it.changes.slice(0, 6)).join('; ') || it.message) + '</small>'
+                  + ((it.warnings || []).length ? '<small class="err">Warning: ' + esc(it.warnings.join('; ')) + '</small>' : '') + '</div>';
               });
             });
             $('preview').innerHTML = html || 'Nothing to show';
@@ -157,9 +158,18 @@
           .catch(oops);
       }
       function runApply() {
-        if (!previewJob || !confirm('Import for real? This changes your store.')) return;
+        if (!previewJob) return;
+        var w = previewJob.would || {};
+        var text = 'Import for real? This changes your store: ' + (w.creates || 0) + ' created, ' + (w.updates || 0) + ' updated, ' + (w.deletes || 0) + ' deleted'
+          + (w.failing ? ', ' + w.failing + ' skipped because they would fail' : '') + (w.clearing ? ', ' + w.clearing + ' with fields emptied' : '') + '.';
+        if (!confirm(text)) return;
+        var deletes = false;
+        if (w.deletes) {
+          if (prompt('This permanently deletes ' + w.deletes + ' item(s). Type DELETE to go ahead.') !== 'DELETE') return;
+          deletes = true;
+        }
         busy(true); say('Importing…');
-        call('applyImport', previewJob.id)
+        call('applyImport', previewJob.id, deletes)
           .then(function (job) { return waitFor(job, function (j) { say('Importing… ' + (j.progress || '')); }); })
           .then(function (job) {
             say(job.outcome + (job.summary ? ': ' + job.summary : ''), job.status === 'finished' && !job.problems ? 'ok' : 'err');

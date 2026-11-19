@@ -47,7 +47,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("dashboard numbers", async 
     });
     await prisma.schedule.create({ data: { shop, name: "Nightly", type: "export", config: "{}", intervalMinutes: 1440, nextRunAt: new Date(Date.now() + 3600_000) } });
     const s = await jobs.homeStats(shop);
-    expect(s).toMatchObject({ firstRun: false, exports: 2, imports: 2, exported: 120, changed: 7, problems: 2 });
+    expect(s).toMatchObject({ firstRun: false, exports: 2, imports: 1, previews: 1, exported: 120, changed: 7, problems: 2 }); // a preview is not an import
     expect(s.nextSchedule?.name).toBe("Nightly");
     expect(s.lastBackupAt).toBeInstanceOf(Date);
   });

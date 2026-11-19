@@ -279,6 +279,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     const skip = async (reason: string) => {
       log(`Sheet "${sheet.name}": ${reason}`);
       summary.skipped = sheet.rows.length;
+      summary.warnings = [...sheetWarnings, `Not imported: ${reason}`];
       const headers = [...sheet.headers.filter((h) => h !== RESULT_COLUMN && h !== COMMENT_COLUMN), RESULT_COLUMN, COMMENT_COLUMN];
       await out?.addSheet(sheet.name, headers, sheet.rows.map((r) => ({ ...r, [RESULT_COLUMN]: "Skipped", [COMMENT_COLUMN]: reason })));
     };

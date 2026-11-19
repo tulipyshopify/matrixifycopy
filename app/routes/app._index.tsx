@@ -205,7 +205,7 @@ export default function Home() {
         ) : (
           <div className="bp-tiles" role="list" aria-label="Last 7 days">
             <Tile label="Exports, last 7 days" value={stats.exports} note={stats.exported ? `${stats.exported.toLocaleString("en")} items` : "none yet"} />
-            <Tile label="Imports, last 7 days" value={stats.imports} note={stats.changed ? `${stats.changed.toLocaleString("en")} items changed` : "nothing changed"} />
+            <Tile label="Imports, last 7 days" value={stats.imports} note={[stats.changed ? `${stats.changed.toLocaleString("en")} items imported` : stats.imports ? "nothing changed" : "none yet", stats.previews ? `${stats.previews} preview${stats.previews === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")} />
             <Tile
               label="Problems"
               value={stats.problems}
@@ -385,7 +385,7 @@ export default function Home() {
                             accessibilityLabel={`Run ${row.kind.toLowerCase()} ${row.number} again`}
                             onClick={() => fetcher.submit({ intent: "rerun", id: job.id }, { method: "post" })}
                           >
-                            Run again
+                            {row.kind === "Import" ? "Preview again" : "Run again"}
                           </s-button>
                         )}
                       </div>

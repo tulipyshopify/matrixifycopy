@@ -81,7 +81,7 @@ export default function Schedules() {
       </s-button>
       <s-button
         slot="secondary-actions"
-        onClick={() => navigate("/app/import")}
+        onClick={() => navigate("/app/import?scheduled=1")}
       >
         New scheduled import
       </s-button>

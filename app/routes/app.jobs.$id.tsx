@@ -3,8 +3,8 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyDryRun, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
-import { DryRunPreview } from "../components/DryRunPreview";
+import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
+import { DryRunPreview, ImportConfirm } from "../components/DryRunPreview";
 import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
 import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
@@ -20,10 +20,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   } catch {
     // unreadable config: not a dry run
   }
+  const preview = dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [];
   return {
     dryRun,
-    preview: dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [],
+    preview,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
+    needs: dryRun && job.status === "finished" ? applyNeeds(job.stats) : null,
+    // The first items that would be deleted, by name, for the confirmation.
+    deleting: preview.flatMap((s) => s.items.filter((i) => i.action === "delete" || i.action === "replace" || i.deletes).map((i) => i.item)).slice(0, 5),
     job: {
       id: job.id,
       type: job.type,
@@ -55,7 +59,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (form.get("intent") === "cancel") await cancelJob(session.shop, params.id!);
   if (form.get("intent") === "apply") {
     try {
-      const job = await applyDryRun(session.shop, params.id!);
+      let confirm = {};
+      try {
+        confirm = JSON.parse(String(form.get("confirm") ?? "{}"));
+      } catch {
+        confirm = {};
+      }
+      const job = await applyDryRun(session.shop, params.id!, confirm);
       return redirect(`/app/jobs/${job.id}`);
     } catch (e: any) {
       if (e instanceof Response) throw e;
@@ -70,7 +80,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, canApply } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, canApply, needs, deleting } = useLoaderData<typeof loader>();
   let exported: any[] = [];
   try {
     if (job.type === "export") exported = JSON.parse(job.config).entities ?? [];
@@ -123,7 +133,7 @@ export default function JobDetail() {
         </s-button>
       ) : (
         <s-button slot="secondary-actions" onClick={() => fetcher.submit({ intent: "rerun" }, { method: "post" })}>
-          Run again
+          {job.type === "import" ? "Preview again" : "Run again"}
         </s-button>
       )}
 
@@ -133,30 +143,16 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
-      {dryRun ? (
+      {dryRun && !job.error && job.status !== "failed" && job.status !== "cancelled" ? (
         <s-banner
-          tone={active ? "info" : "warning"}
+          tone="info"
           heading={active ? "Preview running: nothing in the store is being changed" : "Preview only: nothing in the store was changed"}
         >
-          <s-stack direction="block" gap="small">
-            <s-text>
-              {active
-                ? "Every row is checked against the store as a real import would, and stops just before the first change."
-                : "Below is what the import would do with each item. If it looks right, run it for real with the same file and settings."}
-            </s-text>
-            {canApply ? (
-              <s-stack direction="inline" gap="small">
-                <s-button
-                  variant="primary"
-                  loading={applying}
-                  disabled={applying}
-                  onClick={() => fetcher.submit({ intent: "apply" }, { method: "post" })}
-                >
-                  Import for real
-                </s-button>
-              </s-stack>
-            ) : null}
-          </s-stack>
+          <s-text>
+            {active
+              ? "Every row is checked against the store as a real import would, without changing anything."
+              : "Below is what the import would do with each item. Check it, then confirm at the bottom of the preview to import for real."}
+          </s-text>
         </s-banner>
       ) : null}
 
@@ -166,7 +162,7 @@ export default function JobDetail() {
             <s-text>{health.summary}.</s-text>
             <s-text>
               {dryRun
-                ? "See the Problems filter in the preview below. Fix the file and preview it again, or import for real to apply the rows that are fine."
+                ? "See the Problems filter in the preview below. Fix the file and preview it again; or confirm below to skip those items and import the rest."
                 : "The rest went through. The reason for each failed row is in the log below and in the results file (Import Comment column). Fix those rows and import them again."}
             </s-text>
           </s-stack>
@@ -282,6 +278,15 @@ export default function JobDetail() {
       ) : null}
 
       {preview.length ? <DryRunPreview sheets={preview} /> : null}
+
+      {canApply && needs ? (
+        <ImportConfirm
+          needs={needs}
+          deleting={deleting}
+          busy={applying}
+          onImport={(confirm) => fetcher.submit({ intent: "apply", confirm: JSON.stringify(confirm) }, { method: "post" })}
+        />
+      ) : null}
 
       <s-section heading="Log">
         <s-box padding="base" background="subdued" borderRadius="base" overflow="hidden">

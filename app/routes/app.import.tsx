@@ -35,7 +35,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         batch: !!found.config?.options?.batch,
       }
     : null;
-  return { editing, entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };
+  return { editing, scheduleFirst: new URL(request.url).searchParams.get("scheduled") === "1", entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -47,7 +47,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const options = parseImportOptions(JSON.parse(String(form.get("options") ?? "{}")));
     const source = String(form.get("source"));
     if (source === "url") {
-      const url = String(form.get("url") ?? "").trim();
+      let url = String(form.get("url") ?? "").trim();
+      // The sign-in comes in fields of its own, so it never sits in a visible link.
+      const username = String(form.get("username") ?? "");
+      const password = String(form.get("password") ?? "");
+      if (username || password) {
+        try {
+          const u = new URL(url);
+          if (username && !password && u.password === "****") throw new Error("Enter the password as well as the user name (the saved one belongs to the old sign-in)");
+          if (username) u.username = encodeURIComponent(username);
+          if (password) u.password = encodeURIComponent(password);
+          url = u.toString();
+        } catch (e: any) {
+          throw new Error(/password/.test(e?.message ?? "") ? e.message : "Enter a link starting with https://, ftp://, sftp:// or webdavs://");
+        }
+      }
       const interval = Number(form.get("intervalMinutes") ?? 0);
       const scheduleId = form.get("scheduleId") ? String(form.get("scheduleId")) : null;
       if (scheduleId && !(interval > 0)) throw new Error("Choose how often the import repeats");
@@ -82,13 +96,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewImport() {
-  const { entities, maxUploadMb, editing } = useLoaderData<typeof loader>();
+  const { entities, maxUploadMb, editing, scheduleFirst } = useLoaderData<typeof loader>();
   return (
-    <s-page heading={editing ? `Edit schedule: ${editing.name}` : "New import"} inlineSize="base">
+    <s-page heading={editing ? `Edit schedule: ${editing.name}` : scheduleFirst ? "New scheduled import" : "New import"} inlineSize="base">
       <s-link slot="breadcrumb-actions" href={editing ? "/app/schedules" : "/app"}>
         {editing ? "Schedules" : "Home"}
       </s-link>
-      <ImportForm key={editing?.id ?? "new"} maxUploadMb={maxUploadMb} editing={editing} />
+      <ImportForm key={editing?.id ?? "new"} maxUploadMb={maxUploadMb} editing={editing} scheduleFirst={scheduleFirst} />
       <s-section heading="Recognised sheets" slot="aside">
         <s-paragraph>
           The data type is recognised from the columns, so the file can have any name. Export first to get a file in the right layout. These sheet names are always recognised:

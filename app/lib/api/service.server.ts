@@ -7,6 +7,7 @@ import { ENTITIES } from "../entities";
 import { isDryRunConfig, jobHealth } from "../jobs/health";
 import {
   applyDryRun,
+  applyNeeds,
   cancelJob,
   createExportJob,
   createImportJob,
@@ -85,7 +86,7 @@ export interface ImportRequest {
   fileName?: string;
   /** Instead of a file: a link the app downloads. */
   url?: string;
-  /** Command for rows without one (NEW, MERGE, UPDATE, REPLACE, DELETE, IGNORE). */
+  /** Command for rows without one (UPDATE, MERGE, NEW, REPLACE, DELETE, IGNORE). Default UPDATE: only existing items change. */
   command?: string;
   /** Run for real. Needs a key that allows imports; otherwise it's a preview. */
   apply?: boolean;
@@ -105,7 +106,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   if (input.apply) assertCanImport(auth);
   let options;
   try {
-    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : undefined, dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined });
+    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : "UPDATE", dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined });
   } catch (e: any) {
     throw new ApiError(400, e.message);
   }
@@ -132,12 +133,16 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   return jobView(auth.shop, job.id);
 }
 
-/** Runs a finished preview for real. */
-export async function applyPreview(auth: KeyAuth, id: string) {
+/** Runs a finished preview for real. Deletions need their own explicit yes. */
+export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = false) {
   assertCanImport(auth);
-  await findJob(auth.shop, id);
+  const preview = await findJob(auth.shop, id);
+  const needs = applyNeeds(preview.stats);
+  if (needs.deletes && !confirmDeletes) {
+    throw new ApiError(409, `This preview would permanently delete ${needs.deletes} item${needs.deletes === 1 ? "" : "s"}. To go ahead, confirm the deletions (API: "confirm_deletes": true; command line: --confirm-deletes).`);
+  }
   try {
-    const job = await applyDryRun(auth.shop, id);
+    const job = await applyDryRun(auth.shop, id, "trusted");
     return jobView(auth.shop, job.id);
   } catch (e: any) {
     throw new ApiError(409, e.message);
@@ -184,6 +189,8 @@ function view(job: JobRow) {
     sheets,
     created_at: job.createdAt.toISOString(),
     finished_at: job.finishedAt?.toISOString() ?? null,
+    /** For a finished preview: what importing it for real would do, in numbers. */
+    would: preview && job.status === "finished" ? applyNeeds(job.stats) : undefined,
     /** Download link for the result file, valid for one hour. */
     result_url: job.resultFile ? signedDownloadUrl(job.id, "result") : null,
   };

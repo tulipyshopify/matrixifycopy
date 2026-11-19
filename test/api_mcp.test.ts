@@ -86,7 +86,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     expect(a.status).toBe(201);
     expect(a.body).toMatchObject({ type: "import", preview: true, status: "queued" });
     const stored = await prisma.job.findUniqueOrThrow({ where: { id: a.body.id } });
-    expect(JSON.parse(stored.config).options).toEqual({ dryRun: true });
+    expect(JSON.parse(stored.config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE" });
     expect(stored.inputName).toBe("Products.csv");
     expect(fs.readFileSync(stored.inputFile!, "utf8")).toBe(csv);
 
@@ -94,7 +94,9 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     const denied = await call("POST", "imports", preview.key, { csv, file_name: "Products.csv", apply: true });
     expect(denied.status).toBe(403);
     expect(denied.body.error).toMatch(/only preview/);
-    await prisma.job.update({ where: { id: a.body.id }, data: { status: "finished" } });
+    const risk = { creates: 0, updates: 1, deletes: 0, unchanged: 0, clearing: 0, warned: 0 };
+    await prisma.job.update({ where: { id: a.body.id }, data: { status: "finished", stats: JSON.stringify([{ sheet: "Products", entity: "products", items: 1, ok: 1, failed: 0, skipped: 0, risk }]) } });
+    expect((await call("GET", `jobs/${a.body.id}`, preview.key)).body.would).toMatchObject({ changes: 1, updates: 1, deletes: 0 });
     expect((await call("POST", `jobs/${a.body.id}/apply`, preview.key)).status).toBe(403);
 
     // A full key previews by default too…
@@ -111,6 +113,12 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     const real = await call("POST", "imports", full.key, { csv, file_name: "Products.csv", apply: true });
     expect(real.body.preview).toBe(false);
     expect((await call("POST", `jobs/${b.body.id}/apply`, full.key)).status).toBe(409); // not finished yet
+    // A preview that deletes needs its own explicit yes, even from a key that may import.
+    await prisma.job.update({ where: { id: b.body.id }, data: { status: "finished", stats: JSON.stringify([{ sheet: "Products", entity: "products", items: 2, ok: 2, failed: 0, skipped: 0, risk: { ...risk, deletes: 1 } }]) } });
+    const noYes = await call("POST", `jobs/${b.body.id}/apply`, full.key);
+    expect(noYes.status).toBe(409);
+    expect(noYes.body.error).toMatch(/would permanently delete 1 item.*confirm_deletes/);
+    expect((await call("POST", `jobs/${b.body.id}/apply`, full.key, { confirm_deletes: true })).status).toBe(201);
 
     expect((await call("POST", "imports", full.key, { csv: "x", file_name: "a.pdf.csv", command: "EXPLODE" })).status).toBe(400);
     expect((await call("POST", "imports", full.key, { url: "file:///etc/passwd" })).status).toBe(400);
