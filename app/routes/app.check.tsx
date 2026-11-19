@@ -1,10 +1,10 @@
-import { useEffect } from "react";
+import { useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { getCheckSchedule, latestChecks, markCheckSeen, setWeeklyCheck, startAiFix, startCheck } from "../lib/check/check.server";
+import { checkExclusions, getCheckSchedule, latestChecks, markCheckSeen, saveCheckExclusions, setWeeklyCheck, startAiFix, startCheck } from "../lib/check/check.server";
 import { AI_FIXABLE, MAX_AI_PRODUCTS } from "../lib/check/aifix";
 import { assistantAllowed } from "../lib/ai/assistant.server";
 import { browserTimeZone } from "../components/ScheduleTime";
@@ -22,6 +22,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     weekly: schedule?.enabled ? { nextRunAt: schedule.nextRunAt } : null,
     aiEnabled: assistantAllowed(session.shop),
     aiMax: MAX_AI_PRODUCTS,
+    excludeTags: (await checkExclusions(session.shop)).join(", "),
     active: active ? { progress: active.progress, status: active.status } : null,
     failed: failed ? (failed.error ?? "The check stopped with an error.") : null,
     previousScore: previous?.report?.score ?? null,
@@ -46,6 +47,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);
   const form = await request.formData();
   try {
+    if (form.get("intent") === "exclude") {
+      await saveCheckExclusions(session.shop, String(form.get("tags") ?? ""));
+      return { ok: true };
+    }
     if (form.get("intent") === "weekly") {
       await setWeeklyCheck(session.shop, form.get("enabled") === "true", String(form.get("timezone") ?? ""));
       return { ok: true };
@@ -62,8 +67,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
+/** "85%" of the catalogue, never rounding a real gap down to 0%. */
+const share = (count: number, total: number) => {
+  const pct = (count / total) * 100;
+  return pct > 0 && pct < 1 ? "under 1%" : `${Math.round(pct)}%`;
+};
+
 export default function DataCheck() {
-  const { active, latest, previousScore, failed, weekly, aiEnabled, aiMax } = useLoaderData<typeof loader>();
+  const { active, latest, previousScore, failed, weekly, aiEnabled, aiMax, excludeTags } = useLoaderData<typeof loader>();
+  const [exclude, setExclude] = useState(excludeTags);
   const fetcher = useFetcher<{ error?: string }>();
   const intent = fetcher.state !== "idle" ? String(fetcher.formData?.get("intent") ?? "") : "";
   const aiRule = intent === "ai" ? String(fetcher.formData?.get("rule")) : "";
@@ -112,6 +124,18 @@ export default function DataCheck() {
             checked={!!weekly}
             onChange={(ev: any) => fetcher.submit({ intent: "weekly", enabled: String(ev.currentTarget.checked), timezone: browserTimeZone() }, { method: "post" })}
           />
+          <div className="bp-url-row">
+            <s-text-field
+              label="Leave out products tagged"
+              details="Comma separated, for example: internal, placeholder, damaged-stock. Products with any of these tags are not checked or counted, from the next check on."
+              placeholder="internal, placeholder"
+              value={exclude}
+              onInput={(ev: any) => setExclude(ev.currentTarget.value)}
+            />
+            <s-button disabled={exclude.trim() === excludeTags || intent === "exclude"} loading={intent === "exclude"} onClick={() => fetcher.submit({ intent: "exclude", tags: exclude }, { method: "post" })}>
+              Save
+            </s-button>
+          </div>
           {active ? (
             <s-stack direction="inline" gap="small" alignItems="center">
               <s-spinner size="base" accessibilityLabel="Checking" />
@@ -149,6 +173,12 @@ export default function DataCheck() {
             </div>
           </div>
 
+          <s-section>
+            <s-text tone="neutral">
+              How the score works: each rule below counts by the share of products that pass it, and a "Fix first" rule counts three times as much as a "Worth improving" one. So a gap on most of the catalogue lowers the score more than the same gap on a few products, and the percentage beside each rule shows how much of the catalogue it affects. "Ready products" is a separate count: products with no "Fix first" problem.
+            </s-text>
+          </s-section>
+
           {groups.map((g) => {
             const rules = latest.rules.filter((r) => r.severity === g.key);
             const open = rules.filter((r) => r.count > 0);
@@ -161,7 +191,7 @@ export default function DataCheck() {
                       <div className="bp-rule-main">
                         <s-stack direction="inline" gap="small" alignItems="center">
                           <s-badge tone={r.count === 0 ? "success" : g.key === "critical" ? "critical" : "warning"}>
-                            {r.count === 0 ? "OK" : `${r.count.toLocaleString("en")} ${r.count === 1 ? "product" : "products"}`}
+                            {r.count === 0 ? "OK" : `${r.count.toLocaleString("en")} ${r.count === 1 ? "product" : "products"}${latest.products ? ` · ${share(r.count, latest.products)}` : ""}`}
                           </s-badge>
                           <s-text type="strong">{r.title}</s-text>
                         </s-stack>
@@ -194,7 +224,7 @@ export default function DataCheck() {
                             </s-button>
                           ) : null}
                           <s-button href={`/app/export?check=${latest.id}&rule=${r.key}`}>Export to fix</s-button>
-                          {r.ai && aiEnabled && r.count > aiMax ? <s-text tone="neutral">AI: first {aiMax} per run</s-text> : r.more ? <s-text tone="neutral">first 250</s-text> : null}
+                          {r.ai && aiEnabled && r.count > aiMax ? <s-text tone="neutral">AI: first {aiMax} per run</s-text> : null}
                         </div>
                       ) : null}
                     </div>

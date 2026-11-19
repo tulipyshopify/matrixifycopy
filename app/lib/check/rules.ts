@@ -239,6 +239,15 @@ export interface CheckReport {
 }
 
 /** Collects results product by product, so a large catalogue never sits in memory. */
+/** A product's export rows, in the shape the rules read. */
+export function toProductRows(rows: Row[], top: Row = rows.find((r) => /^true$/i.test(r["Top Row"] ?? "")) ?? rows[0]): ProductRows {
+  const attributes = Object.keys(top ?? {}).filter((k) => /^Metafield: shopify\./.test(k) && has(top[k])).length;
+  return { top, variants: rows.filter((r) => has(r["Variant ID"])), images: rows.filter((r) => has(r["Image Src"])), attributes };
+}
+
+/** Column groups a products export must fetch for the rules to be checked. */
+export const CHECK_GROUPS = ["variants", "images", "seo", "metafields"];
+
 export function createChecker() {
   const results = new Map<string, RuleResult>(ALL_RULES.map((r) => [r.key, { key: r.key, count: 0, examples: [], ids: [] }]));
   const skuOwner = new Map<string, { id: string; title: string; flagged: boolean }>();
@@ -259,9 +268,8 @@ export function createChecker() {
       const top = rows.find((r) => /^true$/i.test(r["Top Row"] ?? "")) ?? rows[0];
       if (!top?.ID) return [];
       products++;
-      const attributes = Object.keys(top).filter((k) => /^Metafield: shopify\./.test(k) && has(top[k])).length;
-      if (attributes) sawAttributes = true;
-      const p: ProductRows = { top, variants: rows.filter((r) => has(r["Variant ID"])), images: rows.filter((r) => has(r["Image Src"])), attributes };
+      const p = toProductRows(rows, top);
+      if (p.attributes) sawAttributes = true;
       const id = top.ID;
       const title = top.Title ?? "";
       const found: string[] = [];

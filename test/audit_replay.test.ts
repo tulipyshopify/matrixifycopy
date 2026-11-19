@@ -599,3 +599,60 @@ describe("audit: large files (M15)", () => {
     expect(Object.getPrototypeOf(rows[0])).toBe(Object.prototype);
   });
 });
+
+describe("audit: data check (M10, M11)", () => {
+  it("M10: an export filtered by a data-check problem holds every product with it, however many", async () => {
+    const { getEntity } = await import("../app/lib/entities");
+    const { parseFilters } = await import("../app/lib/jobs/jobs.server");
+    const products = getEntity("products")!;
+    const node = (i: number, alt: string) => ({
+      id: `gid://shopify/Product/${i}`, handle: `p-${i}`, title: `Product ${i}`, descriptionHtml: "<p>x</p>", status: "ACTIVE", tags: [],
+      media: [{ id: `m${i}`, mediaContentType: "IMAGE", alt, image: { url: `https://cdn.shopify.com/p-${i}.jpg` } }],
+      variants: [{ id: `gid://shopify/ProductVariant/${i}`, sku: `S${i}`, price: "5.00", position: 1, selectedOptions: [], inventoryItem: { id: `gid://shopify/InventoryItem/${i}` } }],
+    });
+    // 600 products without alt text (more than the old cap of 250), 5 with.
+    const store = [...Array.from({ length: 600 }, (_, i) => node(i + 1, "")), ...Array.from({ length: 5 }, (_, i) => node(1000 + i, "A planter"))];
+    let query = "";
+    const out: Array<Record<string, string>> = [];
+    const filters = parseFilters(products, [{ field: "status", op: "is", value: "active" }, { field: "tag", op: "is_not", value: "internal" }, { field: "problem", op: "is", value: "no_alt" }]);
+    expect(filters.at(-1)).toMatchObject({ field: "problem", local: true });
+    await products.export!(
+      {
+        gql: (async () => ({})) as any,
+        bulk: async function* (q: string) {
+          query = q;
+          yield* structuredClone(store);
+        },
+        // Only ID and title wanted in the file: the images needed for the rule are fetched anyway.
+        options: { groups: [], columns: ["ID", "Title"], filters },
+        log: () => {},
+        cache: new Map(),
+        progress: () => {},
+      },
+      async (rows) => void out.push(...rows),
+    );
+    expect(new Set(out.map((r) => r.ID)).size).toBe(600);
+    expect(out.some((r) => Number(r.ID) >= 1000)).toBe(false);
+    // The Shopify search carries the ordinary filters, not the problem one.
+    expect(query).toMatch(/status:\\?"?active/);
+    expect(query).toMatch(/-tag:/);
+    expect(query).not.toMatch(/problem/);
+    expect(query).toMatch(/media/);
+    // The file has the groups asked for, not the ones fetched for the rule.
+    expect(out[0]["Image Src"]).toBeUndefined();
+  });
+
+  it("M11: the check leaves out products with the chosen tags", async () => {
+    const { runCheck } = await import("../app/lib/check/run");
+    let query = "";
+    const logs: string[] = [];
+    await runCheck(
+      { gql: (async () => ({})) as any, bulk: async function* (q: string) { query = q; }, log: (m) => logs.push(m), progress: () => {}, isCancelled: async () => false },
+      fs.mkdtempSync(path.join(os.tmpdir(), "bulkport-check-")),
+      ["internal", "damaged stock"],
+    );
+    expect(query).toMatch(/-tag:\\?"?internal/);
+    expect(query).toMatch(/-tag:\\?"damaged stock/);
+    expect(logs[0]).toBe("Checking active products, leaving out those tagged internal, damaged stock");
+  });
+});

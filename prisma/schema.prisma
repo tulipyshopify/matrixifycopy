@@ -121,6 +121,10 @@ model ShopSetting {
   shop        String   @id
   /// Days backups are kept (the newest is always kept).
   backupKeepDays Int   @default(30)
+  /// Data check: products with any of these tags (comma separated) are left out.
+  checkExcludeTags String @default("")
+  /// Where job problems are also posted (a Slack or Teams incoming-webhook URL), sealed.
+  alertWebhook String?
   updatedAt   DateTime @updatedAt
 }
 

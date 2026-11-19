@@ -8,6 +8,7 @@ import { executeJob } from "./runner.server";
 import { nextRun } from "./schedule-time";
 import { isDryRunConfig, jobHealth } from "./health";
 import { pruneBackups } from "./backups.server";
+import { checkExclusions } from "../check/check.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports } from "./jobs.server";
@@ -147,6 +148,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       isCancelled,
       bulkEvents,
       checkImageUrl,
+      checkExclusions: () => checkExclusions(job.shop),
       timezone: () => shopTimezone(gql),
       // A change asked for in plain English builds its file: keep it, so
       // "Import for real" applies exactly what was previewed.

@@ -61,6 +61,8 @@ export interface RunnerDeps {
   count?: (entity: string, options: ExportOptions) => Promise<number | null>;
   /** The worker's bulk runner reports prepared root items through this hook. */
   bulkEvents?: { onRoots: (n: number) => void };
+  /** Data check: tags whose products are left out. */
+  checkExclusions?: () => Promise<string[]>;
   /** Checks an image link loads and is an image (see ImportContext.checkImageUrl). */
   checkImageUrl?: (url: string) => Promise<string | null>;
 }
@@ -103,7 +105,9 @@ export async function executeJob(
   const format: OutputFormat = job.format === "csv" ? "csv" : "xlsx";
 
   if (job.kind === "check") {
-    const { resultFile, report } = await runCheck(deps, dir);
+    // While Shopify prepares the products, show how many it has so far.
+    if (deps.bulkEvents) deps.bulkEvents.onRoots = (n) => deps.progress(n, 0);
+    const { resultFile, report } = await runCheck(deps, dir, await (deps.checkExclusions?.() ?? []));
     return { resultFile, stats: [report as any] };
   }
 

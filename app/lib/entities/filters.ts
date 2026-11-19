@@ -1,9 +1,12 @@
 import type { FilterField } from "../core/types";
+import { RULES } from "../check/rules";
 
 /**
  * Export filters per entity. Keys are Shopify search syntax fields documented
  * for each query in Admin API 2026-10 (products, orders, customers, ...).
  */
+
+const PROBLEM_OPTIONS = RULES.map((r) => ({ value: r.key, label: r.title }));
 
 const opts = (...values: string[]) =>
   values.map((v) => ({ value: v, label: v.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) }));
@@ -46,7 +49,8 @@ export const FILTERS: Record<string, FilterField[]> = {
     { key: "gift_card", label: "Gift card", type: "boolean" },
     { key: "collection_id", label: "In collection (ID)", type: "id" },
     { key: "category_id", label: "Category ID", type: "text", help: "e.g. aa-1-13" },
-    { key: "id", label: "Product ID", type: "id" },
+    // Checked by the export itself, with the same rules as the Data check page.
+    { key: "problem", label: "Data check problem", type: "enum", options: PROBLEM_OPTIONS, local: true },
     created,
     updated,
     publishedAt,

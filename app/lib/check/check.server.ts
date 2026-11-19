@@ -1,6 +1,6 @@
 import prisma from "../../db.server";
 import { OPTIONS_VERSION } from "../jobs/jobs.server";
-import { ALL_RULES, type CheckReport } from "./rules";
+import { ALL_RULES, RULES, type CheckReport } from "./rules";
 import { isValidTimeZone, nextRun } from "../jobs/schedule-time";
 import { assistantAllowed } from "../ai/assistant.server";
 import { AI_FIXABLE, MAX_AI_PRODUCTS } from "./aifix";
@@ -33,20 +33,47 @@ export async function latestChecks(shop: string) {
   return { active, latest: done[0] ?? null, previous: done[1] ?? null, failed };
 }
 
-/** An export set-up holding just the products a rule flagged, with the columns needed to fix them. */
+/** Tags whose products the check leaves out (internal items, placeholders…). */
+export async function checkExclusions(shop: string): Promise<string[]> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { checkExcludeTags: true } });
+  return splitExclusions(s?.checkExcludeTags ?? "");
+}
+
+const splitExclusions = (v: string) => [...new Set(v.split(",").map((t) => t.trim()).filter(Boolean))].slice(0, 20);
+
+export async function saveCheckExclusions(shop: string, tags: string) {
+  const clean = splitExclusions(tags).map((t) => t.slice(0, 255)).join(", ");
+  await prisma.shopSetting.upsert({ where: { shop }, create: { shop, checkExcludeTags: clean }, update: { checkExcludeTags: clean } });
+  return splitExclusions(clean);
+}
+
+/**
+ * An export set-up holding every product a rule flags, with the columns needed
+ * to fix them. The export finds them itself with the same rule (so all of
+ * them are included, not just the ones a report has room to list); only the
+ * duplicate-SKU rule, which compares products with each other, goes by the
+ * report's list.
+ */
 export async function fixExport(shop: string, jobId: string, ruleKey: string) {
   const job = await prisma.job.findFirst({ where: { id: jobId, shop, kind: "check", status: "finished" } });
   const rule = ALL_RULES.find((r) => r.key === ruleKey);
-  const ids = (job && reportOf(job.stats)?.rules.find((r) => r.key === ruleKey)?.ids) ?? [];
-  if (!rule || !ids.length) return null;
+  const found = job ? reportOf(job.stats)?.rules.find((r) => r.key === ruleKey) : undefined;
+  if (!rule || !found?.count) return null;
   const columns = ["ID", "Title", ...rule.fixColumns];
   const groups = [
     ...(columns.some((c) => c.startsWith("Variant") || c.startsWith("Option")) ? ["variants"] : []),
     ...(columns.some((c) => c.startsWith("Image")) ? ["images"] : []),
     ...(columns.some((c) => c.startsWith("SEO")) ? ["seo"] : []),
   ];
+  const filters = RULES.some((r) => r.key === ruleKey)
+    ? [
+        { field: "status", op: "is" as const, value: "active" },
+        ...(await checkExclusions(shop)).map((tag) => ({ field: "tag", op: "is_not" as const, value: tag })),
+        { field: "problem", op: "is" as const, value: ruleKey },
+      ]
+    : [{ field: "id", op: "any_of" as const, value: found.ids.join(",") }];
   return {
-    entities: [{ entity: "products", options: { v: OPTIONS_VERSION, groups, columns, filters: [{ field: "id", op: "any_of" as const, value: ids.join(",") }] } }],
+    entities: [{ entity: "products", options: { v: OPTIONS_VERSION, groups, columns, filters } }],
     format: "xlsx",
   };
 }

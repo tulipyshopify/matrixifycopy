@@ -10,6 +10,7 @@ import type {
 } from "../core/types";
 import { ImportError, ImportErrors } from "../core/types";
 import type { ItemMeta } from "../core/types";
+import { CHECK_GROUPS, RULES, toProductRows } from "../check/rules";
 import type { FieldChange, MetafieldsNow } from "./product_compare";
 import { compareProduct, compareVariant, priceWarnings } from "./product_compare";
 import {
@@ -358,9 +359,22 @@ async function exportProducts(
   let n = 0;
   const valid = new Set(INVENTORY_KINDS.map((k) => k.name));
   const kinds = (ctx.options.inventoryKinds ?? ["available"]).filter((k) => valid.has(k));
-  for await (const p of ctx.bulk(productsBulkQuery(search, groups, kinds.length ? kinds : ["available"]))) {
+  // "Data check problem" filters: products the check's rules flag. The rules
+  // read variants, images, SEO and metafields, so those are fetched even when
+  // the file itself doesn't include them.
+  const problems = (ctx.options.filters ?? []).filter((f) => f.field === "problem").map((f) => ({ rule: RULES.find((r) => r.key === f.value), not: f.op === "is_not" }));
+  const fetchGroups = problems.length ? new Set([...groups, ...CHECK_GROUPS]) : groups;
+  for await (const p of ctx.bulk(productsBulkQuery(search, fetchGroups, kinds.length ? kinds : ["available"]))) {
     if (variantMetafields.size) {
       for (const v of p.variants ?? []) v.metafields ??= variantMetafields.get(v.id);
+    }
+    if (problems.length) {
+      const checked = toProductRows(productToRows(p, fetchGroups));
+      if (!problems.every(({ rule, not }) => !rule || rule.test(checked) !== not)) continue;
+      // Fetched only for the rules: not part of the file that was asked for.
+      if (!groups.has("images")) delete p.media;
+      if (!groups.has("variants")) delete p.variants;
+      if (!groups.has("metafields")) delete p.metafields;
     }
     await emit(productToRows(p, groups));
     ctx.progress(++n);

@@ -153,7 +153,8 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("check reports", async () =
     expect(cfg.entities[0].options).toMatchObject({
       groups: ["variants"],
       columns: ["ID", "Title", "Handle", "Variant ID", "Variant SKU", "Variant Barcode"],
-      filters: [{ field: "id", op: "any_of", value: "101,102" }],
+      // The export finds the products itself with the same rule, so none are left out.
+      filters: [{ field: "status", op: "is", value: "active" }, { field: "problem", op: "is", value: "no_barcode" }],
     });
     expect(await check.fixExport(shop, a.id, "no_image")).toBeNull();
     expect(await check.fixExport("other.myshopify.com", a.id, "no_barcode")).toBeNull();
