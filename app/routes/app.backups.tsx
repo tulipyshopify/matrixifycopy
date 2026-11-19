@@ -16,6 +16,7 @@ import {
   saveBackupSettings,
 } from "../lib/jobs/backups.server";
 import prisma from "../db.server";
+import { disconnectDrive, driveAvailable, driveConnectUrl, driveConnected } from "../lib/jobs/drive.server";
 import { RESTORE_FIELDS } from "../lib/jobs/runner.server";
 import { downloadLinks } from "../lib/jobs/jobs.server";
 import { HealthBadge, formatDate, isActive } from "../components/jobs";
@@ -24,7 +25,7 @@ import { browserTimeZone } from "../components/ScheduleTime";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const allowed = backupsAllowed(session.shop);
-  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "", restoreFields: [] };
+  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "", restoreFields: [], drive: { available: false, connected: false, connectUrl: "" } };
   const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), prisma.shopSetting.findUnique({ where: { shop: session.shop } })]);
   let types = DEFAULT_BACKUP_TYPES;
   try {
@@ -40,6 +41,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? { enabled: schedule.enabled, runAt: schedule.runAt ?? "02:30", timezone: schedule.timezone ?? "", nextRunAt: schedule.nextRunAt, types }
       : null,
     destination: backupDestination(schedule),
+    drive: { available: driveAvailable(), connected: await driveConnected(session.shop), connectUrl: driveAvailable() ? driveConnectUrl(session.shop) : "" },
     restoreFields: RESTORE_FIELDS.map(({ key, label, note, byDefault }) => ({ key, label, note, byDefault })),
     backups: backups.map((b) => ({
       id: b.id,
@@ -63,6 +65,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = form.get("intent");
   try {
+    if (intent === "drive-off") {
+      await disconnectDrive(session.shop);
+      return { ok: "Google Drive is disconnected. Backups already saved there stay in your Drive." };
+    }
     if (intent === "now") {
       await backupNow(session.shop);
       return { ok: "Backup started. It appears in the list below." };
@@ -215,6 +221,27 @@ export default function Backups() {
                 <s-password-field label="Password or secret" autocomplete="new-password" details="Stored encrypted and never shown again." value={destPassword} onInput={(ev: any) => setDestPassword(ev.currentTarget.value)} />
               </s-grid>
             ) : null}
+          </s-stack>
+          <s-stack direction="block" gap="small">
+            <s-text type="strong">Google Drive</s-text>
+            {data.drive.connected ? (
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-badge tone="success">Connected</s-badge>
+                <s-text tone="neutral">Each backup is also saved to the "Bulkport backups" folder in your Drive.</s-text>
+                <s-button variant="tertiary" tone="critical" onClick={() => fetcher.submit({ intent: "drive-off" }, { method: "post" })}>
+                  Disconnect
+                </s-button>
+              </s-stack>
+            ) : data.drive.available ? (
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-button href={data.drive.connectUrl} target="_blank">
+                  Connect Google Drive
+                </s-button>
+                <s-text tone="neutral">Opens Google in a new tab. Bulkport can only see the files it saves there. Reload this page afterwards.</s-text>
+              </s-stack>
+            ) : (
+              <s-text tone="neutral">Not set up on this server yet: it needs a Google sign-in client (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in its settings file).</s-text>
+            )}
           </s-stack>
           {data.schedule?.enabled ? <s-text tone="neutral">Next backup: {formatDate(data.schedule.nextRunAt)}</s-text> : null}
           <s-stack direction="inline" justifyContent="end">

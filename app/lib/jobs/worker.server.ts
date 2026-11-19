@@ -10,6 +10,7 @@ import { isDryRunConfig, jobHealth } from "./health";
 import { pruneBackups } from "./backups.server";
 import { checkExclusions } from "../check/check.server";
 import { alertText, sendAlert } from "./alerts.server";
+import { uploadToDrive } from "./drive.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports, rerunJob, startUndo, undoOnStop } from "./jobs.server";
@@ -179,6 +180,16 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
           copyError = `The backup was made and is kept here, but copying it to ${redactUrl(uploadUrl)} failed: ${e?.message ?? e}`;
           log(copyError);
         }
+      }
+    }
+
+    // A backup also goes to the store's Google Drive, when one is connected.
+    if (job.kind === "backup") {
+      try {
+        if (await uploadToDrive(job.shop, resultFile)) log(`Saved a copy to Google Drive (${path.basename(resultFile)})`);
+      } catch (e: any) {
+        copyError = `${copyError ? `${copyError} ` : ""}The backup was made and is kept here, but saving it to Google Drive failed: ${e?.message ?? e}`;
+        log(copyError);
       }
     }
 
