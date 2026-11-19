@@ -75,7 +75,7 @@ export default function Schedules() {
     fetcher.submit(data, { method: "post" });
 
   return (
-    <s-page heading="Schedules">
+    <s-page heading="Automations">
       <s-button slot="primary-action" onClick={() => navigate("/app/export")}>
         New scheduled export
       </s-button>

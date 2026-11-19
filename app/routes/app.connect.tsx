@@ -79,7 +79,7 @@ export default function Connect() {
   const key = created?.key ?? "bp_YOUR_KEY";
 
   return (
-    <s-page heading="Connect" inlineSize="base">
+    <s-page heading="Settings" inlineSize="base">
       <s-section heading="Use Bulkport from other tools">
         <s-paragraph>
           Run exports and imports from an AI assistant (Claude, ChatGPT), the command line, Google Sheets or your own scripts. Each tool signs in with an access key you create here.

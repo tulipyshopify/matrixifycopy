@@ -37,7 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ? "Your request"
           : params.get("from")
             ? "The export you opened"
-            : "Latest export",
+            : "Latest export (without its filters)",
     // "Edit and export again" on a job page opens the form with that job's set-up.
     // "Adjust first" from Ask Bulkport opens its set-up; "Edit and export again" a job's.
     latest: params.get("check")
@@ -46,10 +46,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? { entities: parseExportConfig({ entities: getTemplate(params.get("template"))!.entities }).entities, format: "xlsx" }
       : params.get("ask")
       ? ((await askedExport(session.shop, params.get("ask")!)) ?? (await latestExportPreset(session.shop)))
-      : await latestExportPreset(session.shop, params.get("from") ?? undefined),
+      : params.get("from")
+      ? await latestExportPreset(session.shop, params.get("from")!)
+      : withoutFilters(await latestExportPreset(session.shop)),
   };
 };
 
+
+/**
+ * A plain "New export" starts from the last export's data and columns, but
+ * never from its filters: those belonged to whoever ran it, for that one job.
+ */
+function withoutFilters<T extends { entities: Array<{ entity: string; options: any }> } | null>(preset: T): T {
+  if (!preset) return preset;
+  return { ...preset, entities: preset.entities.map((e) => ({ ...e, options: { ...e.options, filters: undefined, dateRange: undefined, query: undefined, limit: undefined } })) };
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);

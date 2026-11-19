@@ -21,7 +21,7 @@ const COMMANDS: Array<[string, string]> = [
 export default function Help() {
   const { entities } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="Sheet reference">
+    <s-page heading="Help: sheets and columns">
       <s-section heading="How files work">
         <s-stack direction="block" gap="base">
           <s-paragraph>

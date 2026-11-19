@@ -1,80 +1,79 @@
-import path from "node:path";
-import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { EXPORT_HISTORY_DAYS, type JobFilter, homeStats, cancelJob, countJobs, downloadLinks, listJobs, markReviewed, needsAttention, listSchedules, rerunJob } from "../lib/jobs/jobs.server";
-import { describeSchedule } from "../lib/jobs/schedule-time";
-import { HealthBadge, formatDate, isActive, jobRow } from "../components/jobs";
+import { cancelJob, createExportJob, homeStats, listPresets, markReviewed, needsAttention, parseExportConfig, rerunJob } from "../lib/jobs/jobs.server";
+import { jobListData } from "../lib/jobs/joblist.server";
+import { formatDate, isActive, jobRow } from "../components/jobs";
+import { JobList } from "../components/JobList";
+import { usePolling } from "../components/usePolling";
 import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 import { AskBox } from "../components/AskBox";
-import { EXPORT_TEMPLATES } from "../lib/jobs/templates";
+import { EXPORT_TEMPLATES, getTemplate } from "../lib/jobs/templates";
 import { latestChecks, scoreDrop } from "../lib/check/check.server";
 import { DEFAULT_BACKUP_TYPES, backupNow, backupsAllowed, saveBackupSettings } from "../lib/jobs/backups.server";
 import { browserTimeZone } from "../components/ScheduleTime";
 import { assistantAllowed } from "../lib/ai/assistant.server";
 
-/** Jobs shown per page of the history. */
-const PAGE = 30;
+/** Jobs shown on Home; the Jobs page has them all. */
+const RECENT = 6;
 
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const url = new URL(request.url);
-  const filter = (["export", "import", "problems", "scheduled"].includes(url.searchParams.get("show") ?? "") ? url.searchParams.get("show") : "all") as JobFilter;
-  const take = Math.min(500, Math.max(PAGE, Number(url.searchParams.get("n")) || PAGE));
-  const [stats, jobs, schedules, attention, total] = await Promise.all([
-    homeStats(session.shop),
-    listJobs(session.shop, take, filter),
-    listSchedules(session.shop),
-    needsAttention(session.shop),
-    countJobs(session.shop, filter),
-  ]);
+  const [stats, list, attention, presets] = await Promise.all([homeStats(session.shop), jobListData(session.shop, RECENT), needsAttention(session.shop), listPresets(session.shop)]);
   const checkScore = (await latestChecks(session.shop)).latest?.report?.score ?? null;
   const checkDrop = await scoreDrop(session.shop);
-  const repeats = new Map(schedules.map((s) => [s.id, describeSchedule(s)]));
   return {
-    jobs: jobs.map(({ resultFile, scheduleId, ...j }) => ({
-      ...j,
-      links: downloadLinks({ id: j.id, resultFile, inputFile: null }),
-      fileName: resultFile ? path.basename(resultFile) : null,
-      repeat: scheduleId ? (repeats.get(scheduleId) ?? null) : null,
-    })),
+    jobs: list.jobs,
+    total: list.total,
     attention: attention.map((j) => {
       const row = jobRow({ ...j, format: "", progress: 0, total: 0, startedAt: null, finishedAt: null });
       return {
-      id: j.id,
-      title: `${row.kind} #${row.number}: ${row.title}`,
-      summary: jobHealth({ ...j, dryRun: isDryRunConfig(j.config) }).summary,
-      createdAt: j.createdAt,
-      // A one-off import from a link also carries a (hidden) schedule: not "scheduled".
-      scheduled: !!j.scheduleId && repeats.has(j.scheduleId),
+        id: j.id,
+        title: `${row.kind} #${row.number}: ${row.title.length > 70 ? `${row.title.slice(0, 67)}…` : row.title}`,
+        summary: jobHealth({ ...j, dryRun: isDryRunConfig(j.config) }).summary,
+        createdAt: j.createdAt,
+        // A one-off import from a link also carries a (hidden) schedule: not "scheduled".
+        scheduled: !!j.scheduleId && list.repeats.has(j.scheduleId),
       };
     }),
     stats,
     checkScore,
     checkDrop,
-    templates: EXPORT_TEMPLATES.map(({ key, title, description, icon }) => ({ key, title, description, icon })),
+    templates: EXPORT_TEMPLATES.map(({ key, title, description }) => ({ key, title, description })),
+    presets: presets.slice(0, 6).map((p) => ({ id: p.id, name: p.name })),
     backupsEnabled: backupsAllowed(session.shop),
-    filter,
-    total,
     askEnabled: assistantAllowed(session.shop),
-    scheduleCount: schedules.filter((s) => s.enabled).length,
+    scheduleCount: list.schedules.filter((s) => s.enabled).length,
     maxUploadMb: MAX_UPLOAD_MB,
-    historyDays: EXPORT_HISTORY_DAYS,
   };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const form = await request.formData();
   const id = String(form.get("id"));
   if (form.get("intent") === "cancel") await cancelJob(session.shop, id);
-  if (form.get("intent") === "rerun") await rerunJob(session.shop, id);
+  if (form.get("intent") === "rerun") return redirect(`/app/jobs/${(await rerunJob(session.shop, id)).id}`);
   if (form.get("intent") === "seen-all") await markReviewed(session.shop);
+  if (form.get("intent") === "quick-export") {
+    // One click: a template or a saved export, run as it is.
+    try {
+      const [kind, key] = id.split(/:(.*)/s);
+      const preset = kind === "preset" ? (await listPresets(session.shop)).find((p) => p.id === key) : null;
+      const template = kind === "template" ? getTemplate(key) : null;
+      if (!preset && !template) throw new Error("That export is no longer there");
+      const config = parseExportConfig({ entities: preset ? preset.data.entities : template!.entities });
+      const job = await createExportJob(session.shop, config, preset?.data.format ?? "xlsx", preset?.name ?? template!.title);
+      return redirect(`/app/jobs/${job.id}`);
+    } catch (e: any) {
+      if (e instanceof Response) throw e;
+      return { error: e.message as string };
+    }
+  }
   if (form.get("intent") === "enable-backups") {
     // One click: every data type, daily at 02:30 in the merchant's time zone, kept 30 days, first backup now.
     try {
@@ -90,333 +89,152 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 /** "today", "yesterday", "3 days ago". */
 function daysAgo(d: string | Date): string {
   const n = Math.floor((Date.now() - new Date(d).getTime()) / 86400_000);
-  return n <= 0 ? "Today" : n === 1 ? "Yesterday" : `${n} days ago`;
+  return n <= 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`;
 }
-
-/** One number of the dashboard, optionally a link. */
-function Tile({ label, value, note, tone, href, onClick }: { label: string; value: number | string; note?: string; tone?: "critical" | "warn" | "ok" | "brand"; href?: string; onClick?: () => void }) {
-  const body = (
-    <div className={`bp-tile${tone ? ` bp-tile-${tone}` : ""}`}>
-      <span className="bp-tile-label">{label}</span>
-      <span className="bp-tile-value">{typeof value === "number" ? value.toLocaleString("en") : value}</span>
-      {note ? <span className="bp-tile-note">{note}</span> : null}
-    </div>
-  );
-  return (
-    <div role="listitem">
-      {href || onClick ? (
-        <s-clickable href={href} onClick={onClick} borderRadius="large">
-          {body}
-        </s-clickable>
-      ) : (
-        body
-      )}
-    </div>
-  );
-}
-
-const HISTORY_FILTERS: Array<{ key: JobFilter; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "export", label: "Exports" },
-  { key: "import", label: "Imports" },
-  { key: "scheduled", label: "Scheduled" },
-  { key: "problems", label: "Problems" },
-];
 
 export default function Home() {
-  const { jobs, attention, filter, total, scheduleCount, maxUploadMb, historyDays, askEnabled, stats, templates, backupsEnabled, checkScore, checkDrop } = useLoaderData<typeof loader>();
-  const revalidator = useRevalidator();
-  const fetcher = useFetcher();
-  const [params, setParams] = useSearchParams();
+  const { jobs, attention, total, scheduleCount, maxUploadMb, askEnabled, stats, templates, presets, backupsEnabled, checkScore, checkDrop } = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<{ error?: string }>();
   const pendingIntent = fetcher.state !== "idle" ? String(fetcher.formData?.get("intent") ?? "") : "";
-  // The job whose button was just pressed, until the list has refreshed.
+  // The job or export whose button was just pressed, until the list has refreshed.
   const pendingId = fetcher.state !== "idle" ? String(fetcher.formData?.get("id") ?? "") || null : null;
-  const anyActive = jobs.some((j) => isActive(j.status));
-
-  // Poll while jobs are running.
-  useEffect(() => {
-    if (!anyActive) return;
-    const t = setInterval(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 3000);
-    return () => clearInterval(t);
-  }, [anyActive, revalidator]);
+  usePolling(jobs.some((j) => isActive(j.status)), 3000);
+  const first = attention[0];
 
   return (
     <s-page heading="Bulkport" inlineSize="large">
       <div className="bp-column">
-        {attention.length ? (
-          <s-banner tone="critical" heading={`${attention.length} ${attention.length === 1 ? "job needs" : "jobs need"} your attention`}>
+        {fetcher.data?.error ? (
+          <s-banner tone="critical" heading="That didn't work">
+            {fetcher.data.error}
+          </s-banner>
+        ) : null}
+        {/* One banner for whatever needs action, with the way to it. */}
+        {first ? (
+          <s-banner tone="critical" heading={attention.length === 1 ? `${first.title} needs your attention` : `${attention.length} jobs need your attention`}>
             <s-stack direction="block" gap="small">
-              {attention.slice(0, 5).map((a) => (
+              {attention.slice(0, 3).map((a) => (
                 <s-text key={a.id}>
                   <s-link href={`/app/jobs/${a.id}`}>{a.title}</s-link>
                   {a.scheduled ? " (scheduled)" : ""} · {formatDate(a.createdAt)}: {a.summary}
                 </s-text>
               ))}
-              {attention.length > 5 ? <s-text tone="neutral">…and {attention.length - 5} more in the list below.</s-text> : null}
               <s-stack direction="inline" gap="small">
-                <s-button onClick={() => fetcher.submit({ intent: "seen-all", id: "" }, { method: "post" })}>Mark all as seen</s-button>
+                <s-button variant="primary" href={attention.length === 1 ? `/app/jobs/${first.id}` : "/app/jobs?show=problems"}>
+                  {attention.length === 1 ? "Open it" : "See them all"}
+                </s-button>
+                <s-button onClick={() => fetcher.submit({ intent: "seen-all", id: "" }, { method: "post" })}>Mark as seen</s-button>
               </s-stack>
             </s-stack>
           </s-banner>
-        ) : null}
-        {checkDrop ? (
-          <s-banner tone="warning" heading={`Your AI readiness score dropped from ${checkDrop.from} to ${checkDrop.to}`}>
+        ) : checkDrop ? (
+          <s-banner tone="warning" heading={`Your catalogue health score dropped from ${checkDrop.from} to ${checkDrop.to}`}>
             <s-stack direction="block" gap="small">
-              <s-text>The weekly data check found more products with gaps than last time, often newly added ones.</s-text>
+              <s-text>The weekly check found more products with gaps than last time, often newly added ones.</s-text>
               <s-stack direction="inline">
                 <s-button href="/app/check">See what changed</s-button>
               </s-stack>
             </s-stack>
           </s-banner>
         ) : null}
-        <AskBox enabled={askEnabled} />
+
+        <div className="bp-strip" role="list" aria-label="Status">
+          {backupsEnabled ? (
+            <a role="listitem" href="/app/backups" className="bp-strip-item">
+              <i className={`bp-dot ${stats.backupOn ? "bp-ok" : "bp-warn"}`} />
+              {stats.backupOn ? `Backups on${stats.lastBackupAt ? `, last ${daysAgo(stats.lastBackupAt)}` : ""}` : `Daily backups are off${stats.lastBackupAt ? `, last ${daysAgo(stats.lastBackupAt)}` : ""}`}
+            </a>
+          ) : null}
+          <a role="listitem" href="/app/check" className="bp-strip-item">
+            <i className={`bp-dot ${checkScore === null ? "bp-idle" : checkScore >= 80 ? "bp-ok" : "bp-warn"}`} />
+            {checkScore === null ? "Catalogue health: not checked yet" : `Catalogue health ${checkScore}${checkDrop ? `, down ${checkDrop.from - checkDrop.to}` : ""}`}
+          </a>
+          <a role="listitem" href="/app/schedules" className="bp-strip-item">
+            <i className={`bp-dot ${stats.nextSchedule ? "bp-ok" : "bp-idle"}`} />
+            {stats.nextSchedule ? `Next automation ${formatDate(stats.nextSchedule.nextRunAt)} (${scheduleCount} on)` : "No automations set up"}
+          </a>
+          {stats.problems ? (
+            <a role="listitem" href="/app/jobs?show=problems" className="bp-strip-item">
+              <i className="bp-dot bp-bad" />
+              {stats.problems} {stats.problems === 1 ? "problem" : "problems"} in the last 7 days
+            </a>
+          ) : null}
+        </div>
+        {backupsEnabled && !stats.backupOn && !stats.lastBackupAt ? (
+          <s-banner tone="info" heading="Keep a daily backup, so a mistake can be put right">
+            <s-stack direction="inline" gap="small">
+              <s-button
+                variant="primary"
+                loading={pendingIntent === "enable-backups"}
+                disabled={pendingIntent === "enable-backups"}
+                onClick={() => fetcher.submit({ intent: "enable-backups", id: "", timezone: browserTimeZone() }, { method: "post" })}
+              >
+                Turn on daily backups
+              </s-button>
+              <s-button href="/app/backups">Choose options</s-button>
+            </s-stack>
+          </s-banner>
+        ) : null}
 
         {stats.firstRun ? (
-          <s-section heading="Welcome to Bulkport">
-            <s-stack direction="block" gap="base">
-              <s-text tone="neutral">Edit your store in a spreadsheet, in three steps. Nothing changes in the store until the last one.</s-text>
-              <div className="bp-steps">
-                <div className="bp-step">
-                  <span className="bp-step-n">1</span>
-                  <s-stack direction="block" gap="small-300">
-                    <s-text type="strong">Export</s-text>
-                    <s-text tone="neutral">Pick a template below, or choose your own data and columns.</s-text>
-                  </s-stack>
-                </div>
-                <div className="bp-step">
-                  <span className="bp-step-n">2</span>
-                  <s-stack direction="block" gap="small-300">
-                    <s-text type="strong">Edit the file</s-text>
-                    <s-text tone="neutral">In Excel or Google Sheets. Keep only the rows and columns you change.</s-text>
-                  </s-stack>
-                </div>
-                <div className="bp-step">
-                  <span className="bp-step-n">3</span>
-                  <s-stack direction="block" gap="small-300">
-                    <s-text type="strong">Preview, then import</s-text>
-                    <s-text tone="neutral">See what would change for every row before you apply it.</s-text>
-                  </s-stack>
-                </div>
+          <s-section>
+            <s-text tone="neutral">
+              New here? Export a file, edit it in Excel or Google Sheets, then drop it below: you see exactly what would change for every row before anything is applied.
+            </s-text>
+          </s-section>
+        ) : null}
+
+        <div className="bp-home">
+          <div className="bp-home-import">
+            <ImportForm maxUploadMb={maxUploadMb} />
+          </div>
+          <s-section>
+            <s-stack direction="block" gap="small">
+              <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+                <s-heading>Export</s-heading>
+                <s-button href="/app/export?new=1">Build your own</s-button>
+              </s-stack>
+              <s-text tone="neutral">One click starts the export; the file is ready on its page.</s-text>
+              <div className="bp-quick">
+                {[...templates.map((t) => ({ id: `template:${t.key}`, title: t.title, note: t.description, edit: `/app/export?template=${t.key}` })), ...presets.map((p) => ({ id: `preset:${p.id}`, title: p.name, note: "Your saved export", edit: "/app/export" }))].map((x) => (
+                  <div key={x.id} className="bp-quick-row">
+                    <div className="bp-quick-text">
+                      <s-text type="strong">{x.title}</s-text>
+                      <s-text tone="neutral">{x.note}</s-text>
+                    </div>
+                    <s-button variant="tertiary" href={x.edit} accessibilityLabel={`Adjust ${x.title} before exporting`}>
+                      Adjust
+                    </s-button>
+                    <s-button loading={pendingIntent === "quick-export" && pendingId === x.id} disabled={pendingIntent === "quick-export"} onClick={() => fetcher.submit({ intent: "quick-export", id: x.id }, { method: "post" })}>
+                      Export
+                    </s-button>
+                  </div>
+                ))}
               </div>
             </s-stack>
           </s-section>
-        ) : (
-          <div className="bp-tiles" role="list" aria-label="Last 7 days">
-            <Tile label="Exports, last 7 days" value={stats.exports} note={stats.exported ? `${stats.exported.toLocaleString("en")} items` : "none yet"} />
-            <Tile label="Imports, last 7 days" value={stats.imports} note={[stats.changed ? `${stats.changed.toLocaleString("en")} items imported` : stats.imports ? "nothing changed" : "none yet", stats.previews ? `${stats.previews} preview${stats.previews === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")} />
-            <Tile
-              label="Problems"
-              value={stats.problems}
-              tone={stats.problems ? "critical" : "ok"}
-              note={stats.problems ? "see Problems below" : "all clear"}
-              onClick={stats.problems ? () => setParams({ show: "problems" }, { replace: true, preventScrollReset: true }) : undefined}
-            />
-            <Tile
-              label="Scheduled jobs"
-              value={scheduleCount}
-              href="/app/schedules"
-              note={stats.nextSchedule ? `next: ${formatDate(stats.nextSchedule.nextRunAt)}` : "none set up"}
-            />
-            <Tile
-              label="AI readiness"
-              value={checkScore === null ? "—" : `${checkScore} / 100`}
-              href="/app/check"
-              tone={checkScore === null ? "warn" : checkScore < 60 ? "critical" : "brand"}
-              note={checkScore === null ? "run the data check" : "product data check"}
-            />
-            {backupsEnabled ? (
-              <Tile
-                label="Last backup"
-                value={stats.lastBackupAt ? daysAgo(stats.lastBackupAt) : "—"}
-                href="/app/backups"
-                tone={stats.backupOn ? undefined : "warn"}
-                note={stats.backupOn ? (stats.nextBackupAt ? `next: ${formatDate(stats.nextBackupAt)}` : "daily") : "daily backups are off"}
-              />
-            ) : null}
-          </div>
-        )}
+        </div>
 
-        {backupsEnabled && !stats.backupOn ? (
-          <s-section>
-            <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
-              <s-stack direction="inline" gap="base" alignItems="center">
-                <s-icon type="shield-check-mark" />
-                <s-stack direction="block" gap="small-300">
-                  <s-heading>Set up daily backups</s-heading>
-                  <s-text tone="neutral">
-                    {stats.lastBackupAt
-                      ? `Daily backups are off. Your last backup was ${daysAgo(stats.lastBackupAt).toLowerCase()}.`
-                      : "Keep a daily copy of your products, customers, orders and more, so a bad import or a mistake can be undone."}
-                  </s-text>
-                </s-stack>
-              </s-stack>
-              <s-stack direction="inline" gap="small">
-                <s-button href="/app/backups">Choose options</s-button>
-                <s-button
-                  variant="primary"
-                  loading={pendingIntent === "enable-backups"}
-                  disabled={pendingIntent === "enable-backups"}
-                  onClick={() => fetcher.submit({ intent: "enable-backups", id: "", timezone: browserTimeZone() }, { method: "post" })}
-                >
-                  Turn on daily backups
-                </s-button>
-              </s-stack>
-            </s-stack>
-          </s-section>
-        ) : null}
-
-        <s-section>
-          <s-stack direction="block" gap="base">
+        <s-section padding="none" accessibilityLabel="Recent jobs">
+          <s-box padding="base">
             <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
               <s-stack direction="block" gap="small-300">
-                <s-heading>Export</s-heading>
-                <s-text tone="neutral">Start from a template, or build your own with any data, filters and columns.</s-text>
+                <s-heading>Recent jobs</s-heading>
+                <s-text tone="neutral">Previews change nothing and are marked as previews, so they are never counted as imports.</s-text>
               </s-stack>
-              <s-button variant="primary" icon="plus" href="/app/export">
-                New export
-              </s-button>
+              <s-link href="/app/jobs">All jobs{total > jobs.length ? ` (${total.toLocaleString("en")})` : ""}</s-link>
             </s-stack>
-            <div className="bp-templates">
-              {templates.map((t) => (
-                <s-clickable key={t.key} href={`/app/export?template=${t.key}`} border="base" borderRadius="base" padding="base">
-                  <s-stack direction="block" gap="small-300">
-                    <s-stack direction="inline" gap="small" alignItems="center">
-                      <s-icon type={t.icon as any} />
-                      <s-text type="strong">{t.title}</s-text>
-                    </s-stack>
-                    <s-text tone="neutral">{t.description}</s-text>
-                  </s-stack>
-                </s-clickable>
-              ))}
-            </div>
-          </s-stack>
+          </s-box>
+          {jobs.length ? (
+            <JobList jobs={jobs} pendingId={pendingIntent === "quick-export" ? null : pendingId} onAction={(intent, id) => fetcher.submit({ intent, id }, { method: "post" })} />
+          ) : (
+            <s-box padding="none base base base">
+              <s-text tone="neutral">Exports and imports you run will be listed here.</s-text>
+            </s-box>
+          )}
         </s-section>
 
-        <ImportForm maxUploadMb={maxUploadMb} />
-
-        <s-stack direction="inline" gap="small" alignItems="center">
-          <s-heading>History</s-heading>
-          {HISTORY_FILTERS.map((f) => (
-            <s-button
-              key={f.key}
-              variant={filter === f.key ? "primary" : "tertiary"}
-              onClick={() => setParams(f.key === "all" ? {} : { show: f.key }, { replace: true, preventScrollReset: true })}
-            >
-              {f.label}
-            </s-button>
-          ))}
-        </s-stack>
-        {jobs.length === 0 ? (
-          <s-section>
-            <s-text tone="neutral">
-              {filter === "all"
-                ? "Exports and imports you run will be listed here."
-                : filter === "problems"
-                  ? "Nothing has failed. Jobs that fail or finish with errors are listed here."
-                  : "No jobs of this kind yet."}
-            </s-text>
-          </s-section>
-        ) : (
-          <s-section padding="none" accessibilityLabel="Job history">
-            <div className="bp-jobs">
-              {jobs.map((job) => {
-                const row = jobRow(job);
-                return (
-                  <div className="bp-job" key={job.id}>
-                    <div className="bp-job-main">
-                      <div className="bp-job-line">
-                        <span className={`bp-kind bp-kind-${job.type}`} aria-hidden="true">
-                          {job.type === "export" ? "↑" : "↓"}
-                        </span>
-                        <s-link href={`/app/jobs/${job.id}`}>
-                          {row.kind} #{row.number}
-                        </s-link>
-                        <s-text type="strong">{row.title}</s-text>
-                        {row.counts.map((c) => (
-                          <s-badge key={c.label} tone={c.tone}>
-                            {c.label}
-                          </s-badge>
-                        ))}
-                      </div>
-                      <div className="bp-job-line bp-job-meta">
-                        <span>{formatDate(job.createdAt)}</span>
-                        {row.took ? <span>{row.took}</span> : null}
-                        {job.repeat ? <span>↻ {job.repeat}</span> : null}
-                      </div>
-                      {job.error ? (
-                        <s-text tone="critical">{job.error}</s-text>
-                      ) : job.problems ? (
-                        <s-text tone="critical">{jobHealth({ ...job, dryRun: isDryRunConfig(job.config) }).summary}</s-text>
-                      ) : null}
-                    </div>
-                    <div className="bp-job-side">
-                      <div className="bp-job-line bp-job-end">
-                        <s-badge>{row.format}</s-badge>
-                        <HealthBadge job={job} />
-                      </div>
-                      <div className="bp-job-line bp-job-end">
-                        {job.links.result ? (
-                          <s-link href={job.links.result} target="_blank">
-                            {job.fileName ?? "Download"}
-                          </s-link>
-                        ) : null}
-                        {isActive(job.status) ? (
-                          <s-button
-                            variant="secondary"
-                            tone="critical"
-                            icon="stop-circle"
-                            loading={pendingId === job.id}
-                            onClick={() => fetcher.submit({ intent: "cancel", id: job.id }, { method: "post" })}
-                          >
-                            Stop
-                          </s-button>
-                        ) : row.kind === "Preview" ? (
-                          <s-button variant="secondary" icon="view" href={`/app/jobs/${job.id}`}>
-                            Review
-                          </s-button>
-                        ) : (
-                          <s-button
-                            variant="secondary"
-                            icon="refresh"
-                            loading={pendingId === job.id}
-                            disabled={pendingId !== null && pendingId !== job.id}
-                            accessibilityLabel={`Run ${row.kind.toLowerCase()} ${row.number} again`}
-                            onClick={() => fetcher.submit({ intent: "rerun", id: job.id }, { method: "post" })}
-                          >
-                            {row.kind === "Import" ? "Preview again" : "Run again"}
-                          </s-button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </s-section>
-        )}
-        {total > jobs.length ? (
-          <s-stack direction="inline" gap="small" alignItems="center" justifyContent="center">
-            <s-text tone="neutral">
-              Showing {jobs.length} of {total.toLocaleString("en")}
-            </s-text>
-            <s-button
-              onClick={() => {
-                const next = new URLSearchParams(params);
-                next.set("n", String(jobs.length + 30));
-                setParams(next, { replace: true, preventScrollReset: true });
-              }}
-            >
-              Show more
-            </s-button>
-          </s-stack>
-        ) : null}
-        {historyDays > 0 ? (
-          <s-text tone="neutral">
-            Exports stay in this list for {historyDays} days, then they and their files are cleared. A schedule's latest file is kept for its permanent link.
-          </s-text>
-        ) : null}
+        <AskBox enabled={askEnabled} />
       </div>
     </s-page>
   );

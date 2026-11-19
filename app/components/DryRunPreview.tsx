@@ -60,8 +60,8 @@ export function ImportSteps({ step }: { step: 1 | 2 | 3 }) {
   return (
     <div className="bp-stepper" role="list" aria-label="Import steps">
       {steps.map((label, i) => (
-        <div key={label} role="listitem" className={`bp-step${i + 1 === step ? " bp-step-on" : ""}${i + 1 < step ? " bp-step-done" : ""}`} aria-current={i + 1 === step ? "step" : undefined}>
-          <span className="bp-step-n">{i + 1 < step ? "✓" : i + 1}</span>
+        <div key={label} role="listitem" className={`bp-stp${i + 1 === step ? " bp-stp-on" : ""}${i + 1 < step ? " bp-stp-done" : ""}`} aria-current={i + 1 === step ? "step" : undefined}>
+          <span className="bp-stp-n">{i + 1 < step ? "✓" : i + 1}</span>
           {label}
         </div>
       ))}

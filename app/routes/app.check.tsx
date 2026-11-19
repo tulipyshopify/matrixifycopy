@@ -91,7 +91,7 @@ export default function DataCheck() {
   ] as const;
 
   return (
-    <s-page heading="Data check" inlineSize="base">
+    <s-page heading="Catalogue health" inlineSize="base">
       <s-button slot="primary-action" variant="primary" loading={busy} disabled={busy} onClick={() => fetcher.submit({ intent: "run" }, { method: "post" })}>
         {latest ? "Check again" : "Run the check"}
       </s-button>

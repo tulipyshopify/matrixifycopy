@@ -19,11 +19,14 @@ export default function App() {
     <AppProvider apiKey={apiKey}>
       <s-app-nav>
         <s-link href="/app">Home</s-link>
-        <s-link href="/app/schedules">Schedules</s-link>
+        <s-link href="/app/import">Import</s-link>
+        <s-link href="/app/export">Export</s-link>
+        <s-link href="/app/jobs">Jobs</s-link>
+        <s-link href="/app/schedules">Automations</s-link>
         <s-link href="/app/backups">Backups</s-link>
-        <s-link href="/app/check">Data check</s-link>
-        <s-link href="/app/connect">Connect</s-link>
-        <s-link href="/app/help">Sheet reference</s-link>
+        <s-link href="/app/check">Catalogue health</s-link>
+        <s-link href="/app/connect">Settings</s-link>
+        <s-link href="/app/help">Help</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>
