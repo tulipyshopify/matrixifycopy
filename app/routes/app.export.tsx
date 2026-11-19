@@ -7,6 +7,7 @@ import { ExportForm, type ExportPayload } from "../components/ExportForm";
 import { askedExport } from "../lib/ai/assistant.server";
 import { fixExport } from "../lib/check/check.server";
 import { getTemplate } from "../lib/jobs/templates";
+import { ALL_RULES } from "../lib/check/rules";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -27,6 +28,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     editing: null,
     entities: entityCatalog().filter((e) => e.canExport),
     presets: await listPresets(session.shop),
+    // What the form starts from, by name, so "Preset" doesn't say "Latest export" for a template.
+    startName: params.get("check")
+      ? `Data check: ${ALL_RULES.find((r) => r.key === params.get("rule"))?.title ?? "products to fix"}`
+      : getTemplate(params.get("template"))
+        ? `Template: ${getTemplate(params.get("template"))!.title}`
+        : params.get("ask")
+          ? "Your request"
+          : params.get("from")
+            ? "The export you opened"
+            : "Latest export",
     // "Edit and export again" on a job page opens the form with that job's set-up.
     // "Adjust first" from Ask Bulkport opens its set-up; "Edit and export again" a job's.
     latest: params.get("check")
@@ -72,14 +83,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewExport() {
-  const { entities, presets, latest, editing } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const { entities, presets, latest, editing } = data;
   return (
     <s-page heading={editing ? `Edit schedule: ${editing.name}` : "New export"} inlineSize="large">
       <s-link slot="breadcrumb-actions" href={editing ? "/app/schedules" : "/app"}>
         {editing ? "Schedules" : "Home"}
       </s-link>
       <div className="bp-column">
-        <ExportForm key={editing?.id ?? "new"} entities={entities} presets={presets} latest={latest} editing={editing} />
+        <ExportForm key={editing?.id ?? "new"} entities={entities} presets={presets} latest={latest} editing={editing} startName={"startName" in data ? data.startName : undefined} />
       </div>
     </s-page>
   );

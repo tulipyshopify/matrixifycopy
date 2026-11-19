@@ -11,6 +11,8 @@ export interface ExportSummary {
   entity: string;
   rows: number;
   items: number;
+  /** Columns in the file beyond the data type's fixed ones: metafields, stock per location… */
+  dataColumns?: string[];
 }
 
 export interface RunExportArgs {
@@ -118,8 +120,12 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
         for (const r of rows) await spool.push(r);
       });
       await spool.finish();
-      await out.addSheet(entity.sheet, selectColumns(entity, options, spool.headers(entity.columns)), spool.rows());
-      summaries.push({ entity: entity.key, rows: spool.count, items });
+      const columns = selectColumns(entity, options, spool.headers(entity.columns));
+      await out.addSheet(entity.sheet, columns, spool.rows());
+      // Columns that come from the store's own data (metafields, stock per location), as written to the file.
+      const fixed = new Set(entity.columns);
+      const dynamic = columns.filter((c) => !fixed.has(c));
+      summaries.push({ entity: entity.key, rows: spool.count, items, ...(dynamic.length ? { dataColumns: dynamic.slice(0, 500) } : {}) });
       log(`${entity.sheet}: exported ${items} items in ${spool.count} rows`);
     } finally {
       await spool.dispose();

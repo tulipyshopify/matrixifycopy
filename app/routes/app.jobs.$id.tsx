@@ -113,7 +113,13 @@ export default function JobDetail() {
         Jobs
       </s-link>
       {links.result ? (
-        <s-button slot="primary-action" variant="primary" href={links.result} target="_blank">
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          href={links.result}
+          target="_blank"
+          onClick={() => (globalThis as any).shopify?.toast?.show("Download started. Look in your browser's downloads.")}
+        >
           {job.type === "export" ? "Download export" : "Download results"}
         </s-button>
       ) : null}

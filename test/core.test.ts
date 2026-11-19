@@ -322,7 +322,7 @@ describe("exporter", () => {
       tmpDir: dir,
       log: () => {},
     });
-    expect(summary).toEqual({ entity: "products", rows: 2, items: 2 });
+    expect(summary).toEqual({ entity: "products", rows: 2, items: 2, dataColumns: ["Metafield: a.a [x]", "Metafield: b.b [x]"] });
     const [sheet] = await readWorkbook(await out.close());
     expect(sheet.headers).toEqual(["ID", "Handle", "Title", "Metafield: a.a [x]", "Metafield: b.b [x]"]);
   });

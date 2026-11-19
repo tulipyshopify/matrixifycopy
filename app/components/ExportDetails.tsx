@@ -50,7 +50,7 @@ export function ExportDetails({
 }: {
   entities: EntityInfo[];
   exported: ExportedEntity[];
-  stats: Array<{ entity?: string; items?: number; rows?: number }>;
+  stats: Array<{ entity?: string; items?: number; rows?: number; dataColumns?: string[] }>;
 }) {
   return (
     <>
@@ -128,6 +128,26 @@ export function ExportDetails({
                           </s-badge>
                         ))}
                       </s-stack>
+                      {stat?.dataColumns?.length ? (
+                        <>
+                          <s-text tone="neutral">
+                            Columns made from your store's data, as they are in the file ({stat.dataColumns.length}
+                            {stat.dataColumns.length >= 500 ? " or more" : ""}):
+                          </s-text>
+                          <div className="bp-chips" role="list">
+                            {stat.dataColumns.slice(0, 80).map((c) => (
+                              <div key={c} role="listitem" className="bp-chip bp-chip-static">
+                                {c}
+                              </div>
+                            ))}
+                          </div>
+                          {stat.dataColumns.length > 80 ? <s-text tone="neutral">…and {stat.dataColumns.length - 80} more.</s-text> : null}
+                        </>
+                      ) : stat && e.groups.some((g) => /metafields/.test(g.key) && groups.includes(g.key)) ? (
+                        <s-text tone="neutral">
+                          Metafields were asked for, and none of the exported items has one, so the file has no "Metafield: …" columns.
+                        </s-text>
+                      ) : null}
                       {o.locations ? <s-text>Inventory locations: {o.locations.join(", ")}</s-text> : null}
                       {o.metafields ? <s-text>Metafields: {o.metafields.join(", ")}</s-text> : null}
                       {o.variantMetafields ? <s-text>Variant metafields: {o.variantMetafields.join(", ")}</s-text> : null}

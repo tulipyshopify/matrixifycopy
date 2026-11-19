@@ -232,6 +232,12 @@ const OP_LABELS: Record<FilterOp, string> = {
 
 export function opLabel(field: FilterField, op: FilterOp): string {
   if (op === "any_of" && field.type !== "enum") return "is one of";
+  // Shopify's search matches from the start of each word, not anywhere in the
+  // text ("barrel" finds "Barrel planter" and "Oak barrels", not "Wheelbarrel").
+  // Only fields the export checks itself can match in the middle of a word.
+  if (field.type === "text" && !field.local && (op === "contains" || op === "not_contains")) {
+    return op === "contains" ? "has a word starting with" : "has no word starting with";
+  }
   if (field.type === "date")
     return (
       { gte: "on or after", lte: "on or before", between: "between" }[
@@ -851,6 +857,9 @@ function ColumnPicker({
     (c) => required.has(c) || columns.includes(c),
   ).length;
   const allGroups = entity.groups.every((g) => groups.includes(g.key));
+  // Extra data adds columns of its own (one per metafield or location), on top of the fixed ones.
+  const extraOn = sections.extra.filter((g) => groups.includes(g.key));
+  const extraOff = sections.extra.filter((g) => !groups.includes(g.key));
   const all = selected === entity.columns.length && allGroups;
   const setGroup = (list: string[], key: string, on: boolean) =>
     on ? [...new Set([...list, key])] : list.filter((x) => x !== key);
@@ -911,7 +920,9 @@ function ColumnPicker({
       <>
       <s-box background="subdued" borderRadius="base" padding="small base">
         <s-checkbox
-          label={`${selected} of ${entity.columns.length} columns selected`}
+          label={`${selected} of ${entity.columns.length} columns selected${
+            extraOn.length ? `, plus ${extraOn.map((g) => g.label.toLowerCase()).join(", ")}` : ""
+          }${extraOff.length && all === false && selected === entity.columns.length ? ` (not included: ${extraOff.map((g) => g.label.toLowerCase()).join(", ")})` : ""}`}
           checked={all}
           indeterminate={
             !all && (selected > required.size || groups.length > 0)
@@ -1094,21 +1105,10 @@ function ColumnPicker({
               )}
               </s-stack>
             ) : g.key === "metafields" || g.key === "variant_metafields" ? (
-              <s-text-field
-                label="Only these metafields (optional)"
-                details="namespace.key, separated by commas, e.g. custom.material, custom.care. Leave empty for all."
-                value={
-                  g.key === "metafields"
-                    ? state.metafields
-                    : state.variantMetafields
-                }
-                onInput={(ev: any) =>
-                  onChange(
-                    g.key === "metafields"
-                      ? { metafields: ev.currentTarget.value }
-                      : { variantMetafields: ev.currentTarget.value },
-                  )
-                }
+              <MetafieldPicker
+                owner={g.key === "variant_metafields" ? "PRODUCTVARIANT" : (METAFIELD_OWNER[entity.key] ?? "")}
+                value={g.key === "metafields" ? state.metafields : state.variantMetafields}
+                onChange={(v) => onChange(g.key === "metafields" ? { metafields: v } : { variantMetafields: v })}
               />
             ) : undefined}
           </Section>
@@ -1131,6 +1131,84 @@ function ColumnPicker({
 let locationsCache: string[] | null = null;
 
 /** Store's active location names (fetched once); null while loading. */
+/** Shopify's owner type for each data type's "Metafield: …" columns. */
+const METAFIELD_OWNER: Record<string, string> = {
+  products: "PRODUCT",
+  smart_collections: "COLLECTION",
+  custom_collections: "COLLECTION",
+  customers: "CUSTOMER",
+  companies: "COMPANY",
+  orders: "ORDER",
+  draft_orders: "DRAFTORDER",
+  pages: "PAGE",
+  blog_posts: "ARTICLE",
+  shop: "SHOP",
+};
+
+type MetafieldDefinition = { key: string; name: string; type: string };
+const definitionsCache = new Map<string, MetafieldDefinition[]>();
+
+/**
+ * Which metafields to export: the store's own definitions as tick-boxes
+ * (none ticked = all metafields), with a box to type any that have no
+ * definition.
+ */
+function MetafieldPicker({ owner, value, onChange }: { owner: string; value: string; onChange: (v: string) => void }) {
+  const [defs, setDefs] = useState<MetafieldDefinition[] | null>(definitionsCache.get(owner) ?? null);
+  useEffect(() => {
+    if (!owner || definitionsCache.has(owner)) return;
+    let live = true;
+    fetch(`/app/api/metafields?owner=${owner}`)
+      .then((r) => (r.ok ? r.json() : { definitions: [] }))
+      .then((d) => {
+        definitionsCache.set(owner, d.definitions ?? []);
+        if (live) setDefs(d.definitions ?? []);
+      })
+      .catch(() => live && setDefs([]));
+    return () => {
+      live = false;
+    };
+  }, [owner]);
+  const [typed, setTyped] = useState<string | null>(null);
+  const chosen = splitList(value);
+  const known = new Set((defs ?? []).map((d) => d.key));
+  const toggle = (key: string, on: boolean) => onChange((on ? [...new Set([...chosen, key])] : chosen.filter((k) => k !== key)).join(", "));
+  return (
+    <s-stack direction="block" gap="small">
+      {defs === null && owner ? <s-text tone="neutral">Loading your metafields…</s-text> : null}
+      {defs?.length ? (
+        <>
+          <s-text tone="neutral">
+            {chosen.length ? `Only the ${chosen.length} ticked ${chosen.length === 1 ? "metafield is" : "metafields are"} exported.` : "Nothing ticked: every metafield is exported. Tick some to export only those."}
+          </s-text>
+          <s-grid gridTemplateColumns="repeat(auto-fill, minmax(240px, 1fr))" gap="small base">
+            {defs.map((d) => (
+              <s-checkbox
+                key={d.key}
+                label={d.name || d.key}
+                details={`${d.key}${d.type ? ` · ${d.type.replace(/_/g, " ")}` : ""}`}
+                checked={chosen.includes(d.key)}
+                onChange={(ev: any) => toggle(d.key, ev.currentTarget.checked)}
+              />
+            ))}
+          </s-grid>
+        </>
+      ) : null}
+      <s-text-field
+        label={defs?.length ? "Others, without a definition (optional)" : "Only these metafields (optional)"}
+        details="namespace.key, separated by commas, e.g. custom.material, custom.care. Leave empty for all."
+        value={defs?.length ? (typed ?? chosen.filter((k) => !known.has(k)).join(", ")) : value}
+        onInput={(ev: any) => {
+          const text = String(ev.currentTarget.value);
+          // Kept as typed (commas and all) while it is being edited.
+          setTyped(text);
+          onChange(defs?.length ? [...chosen.filter((k) => known.has(k)), ...splitList(text)].join(", ") : text);
+        }}
+      />
+    </s-stack>
+  );
+}
+
 function useLocations(enabled: boolean): string[] | null {
   const [list, setList] = useState<string[] | null>(locationsCache);
   useEffect(() => {
@@ -1427,7 +1505,8 @@ function panelOptions(e: EntityInfo, s: EntityState) {
  */
 function useItemCount(e: EntityInfo, s: EntityState): string | null {
   const [label, setLabel] = useState<string | null>(null);
-  const key = JSON.stringify([s.enabled, s.filters, s.dateRange, s.query]);
+  // A filter still waiting for its value changes nothing: no need to count again.
+  const key = JSON.stringify([s.enabled, s.filters.filter((f) => (f.value ?? "").trim() !== ""), s.dateRange, s.query]);
   useEffect(() => {
     if (!s.enabled) return;
     const controller = new AbortController();
@@ -1629,10 +1708,13 @@ export function ExportForm({
   presets: initialPresets = [],
   latest = null,
   editing = null,
+  startName = "Latest export",
 }: {
   entities: EntityInfo[];
   presets?: SavedPreset[];
   latest?: PresetData | null;
+  /** What `latest` is, for the Preset list: "Latest export", "Template: Prices"… */
+  startName?: string;
   /** An existing schedule being changed; `latest` then holds its set-up. */
   editing?: ScheduleBeingEdited | null;
 }) {
@@ -1788,7 +1870,7 @@ export function ExportForm({
               onChange={(ev: any) => loadPreset(ev.currentTarget.value)}
             >
               {latest ? (
-                <s-option value="latest">{editing ? "This schedule" : "Latest export"}</s-option>
+                <s-option value="latest">{editing ? "This schedule" : startName}</s-option>
               ) : null}
               <s-option value="blank">New blank export</s-option>
               {presets.length ? (
@@ -1974,7 +2056,9 @@ export function ExportForm({
                 .map((e) => {
                   const st = state[e.key];
                   const n = e.columns.filter((c) => st.columns.includes(c)).length;
-                  return `${e.sheet}: ${n} of ${e.columns.length} columns`;
+                  // Data sets that add their own columns (one per metafield or location).
+                  const extras = e.groups.filter((g) => /^(inventory|metafields|variant_metafields)$/.test(g.key) && st.groups.includes(g.key)).map((g) => g.label.toLowerCase());
+                  return `${e.sheet}: ${n} of ${e.columns.length} columns${extras.length ? ` + ${extras.join(", ")}` : ""}`;
                 })
                 .join(" · ")} · ${format === "csv" ? "CSV" : "Excel"}${scheduled ? " · scheduled" : ""}`
             : "Add a data type to export"}
