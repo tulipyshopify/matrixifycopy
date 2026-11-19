@@ -1113,6 +1113,7 @@ async function prepareCreate(
   if (omitHandle) delete fields.handle;
   if (!fields.title) fail(0, "Title is required to create a product");
   else if (fields.title.length > 255) fail(0, `Title is ${fields.title.length} characters long; Shopify allows 255`);
+  if (/<script\b/i.test(fields.descriptionHtml ?? "")) warnings.push(`Row ${rowNo(0)}: the description contains a <script> tag, which would run code on the product page`);
   // A new product starts as a draft unless the file says otherwise, so a
   // mistyped handle can't put a half-filled product on sale.
   const statusDefaulted = !fields.status;
@@ -1453,6 +1454,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   metafieldsFromRow(top, "Metafield", plan.errors);
   const title = cell(top, "Title");
   if (title && title.length > 255) fail(0, `Title is ${title.length} characters long; Shopify allows 255`);
+  if (pc.changed.has("Body HTML") && /<script\b/i.test(cell(top, "Body HTML") ?? "")) plan.warnings.push(`Row ${rowNo(0)}: the description contains a <script> tag, which would run code on the product page`);
   // Drop the cells that match the store, so only real changes are sent.
   for (const col of [...PRODUCT_COMPARED, ...Object.keys(top).filter((h) => parseMetafieldColumn(h, "Metafield"))]) {
     if (!pc.changed.has(col)) delete plan.top[col];
@@ -2156,6 +2158,7 @@ export async function importProduct(
       return {
         status: "OK",
         command,
+        title: cell(top, "Title") || undefined,
         seen: existence,
         preview: { action: "create", changes: prepared.changes, warnings: prepared.warnings, creates: 1 },
       };
@@ -2173,6 +2176,7 @@ export async function importProduct(
           status: "OK",
           command,
           id: existing.id,
+          title: existing.title,
           seen: existence,
           preview: { action: "delete", changes: [`Deletes the product ${what}. This cannot be undone.`], warnings: [], deletes: 1 },
         };
@@ -2243,7 +2247,7 @@ export async function importProduct(
       const plan = await planUpdate(ctx, existing, rows, rowNo);
       const seen = { ...existence, ...plan.seen };
       if (plan.errors.length) {
-        return { status: "Failed", command, id: existing.id, message: plan.errors.join("; "), errors: plan.errors };
+        return { status: "Failed", command, id: existing.id, title: existing.title, message: plan.errors.join("; "), errors: plan.errors };
       }
       const changes = changeLines(plan.changes);
       const clears = plan.changes.filter((c) => c.clears).map((c) => c.label);
@@ -2255,7 +2259,7 @@ export async function importProduct(
         ...(plan.deletes ? { deletes: plan.deletes } : {}),
         ...(plan.creates ? { creates: plan.creates } : {}),
       };
-      if (dry) return { status: "OK", command, id: existing.id, message: plan.notes.join("; ") || undefined, seen: compactSeen(seen, plan.changes.map((c) => c.label)), preview };
+      if (dry) return { status: "OK", command, id: existing.id, title: existing.title, message: plan.notes.join("; ") || undefined, seen: compactSeen(seen, plan.changes.map((c) => c.label)), preview };
       const stale = staleFields(meta.expectedSeen, seen);
       if (stale.length) return failStale(stale);
       if (!changes.length) {

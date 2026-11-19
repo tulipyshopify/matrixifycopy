@@ -5,7 +5,7 @@ import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
-import { DryRunPreview, ImportConfirm } from "../components/DryRunPreview";
+import { ImportReview, ImportSteps } from "../components/DryRunPreview";
 import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
 import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
@@ -27,8 +27,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     preview,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
     needs: dryRun && job.status === "finished" ? applyNeeds(job.stats) : null,
-    // The first items that would be deleted, by name, for the confirmation.
-    deleting: preview.flatMap((s) => s.items.filter((i) => i.action === "delete" || i.action === "replace" || i.deletes).map((i) => i.item)).slice(0, 5),
     job: {
       id: job.id,
       type: job.type,
@@ -82,7 +80,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, canApply, needs, deleting } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, canApply, needs } = useLoaderData<typeof loader>();
   let exported: any[] = [];
   try {
     if (job.type === "export") exported = JSON.parse(job.config).entities ?? [];
@@ -138,6 +136,8 @@ export default function JobDetail() {
         </s-button>
       )}
 
+      {job.type === "import" && job.kind === "job" ? <ImportSteps step={dryRun ? 2 : 3} /> : null}
+
       {fetcher.data?.error ? (
         <s-banner tone="critical" heading="Could not start the import">
           {fetcher.data.error}
@@ -152,12 +152,12 @@ export default function JobDetail() {
           <s-text>
             {active
               ? "Every row is checked against the store as a real import would, without changing anything."
-              : "Below is what the import would do with each item. Check it, then confirm at the bottom of the preview to import for real."}
+              : "Every item was compared with what is in the store right now. Risky rows start as Skip: choose what to include, then review and apply."}
           </s-text>
         </s-banner>
       ) : null}
 
-      {!job.error && job.status === "finished" && health.problems > 0 ? (
+      {!job.error && job.status === "finished" && health.problems > 0 && !dryRun ? (
         <s-banner tone={dryRun ? "warning" : "critical"} heading={dryRun ? "The preview found problems" : "Finished with errors"}>
           <s-stack direction="block" gap="small">
             <s-text>{health.summary}.</s-text>
@@ -174,6 +174,16 @@ export default function JobDetail() {
         <s-banner tone="critical" heading={job.status === "finished" ? "Finished, with a problem" : dryRun ? "The preview could not be made" : "Job failed"}>
           {job.error}
         </s-banner>
+      ) : null}
+
+      {needs && dryRun ? (
+        <ImportReview
+          sheets={preview}
+          needs={needs}
+          canApply={canApply}
+          busy={applying}
+          onImport={(confirm) => fetcher.submit({ intent: "apply", confirm: JSON.stringify(confirm) }, { method: "post" })}
+        />
       ) : null}
 
       <s-section heading="Status">
@@ -276,17 +286,6 @@ export default function JobDetail() {
             </s-table-body>
           </s-table>
         </s-section>
-      ) : null}
-
-      {preview.length ? <DryRunPreview sheets={preview} /> : null}
-
-      {canApply && needs ? (
-        <ImportConfirm
-          needs={needs}
-          deleting={deleting}
-          busy={applying}
-          onImport={(confirm) => fetcher.submit({ intent: "apply", confirm: JSON.stringify(confirm) }, { method: "post" })}
-        />
       ) : null}
 
       <s-section heading="Log">

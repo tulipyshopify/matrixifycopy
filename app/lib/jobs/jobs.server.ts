@@ -517,23 +517,43 @@ export function applyNeeds(stats: unknown): ApplyNeeds {
   return needs;
 }
 
-/** The confirmations given on the preview page (or by an API caller). */
+/** How an item of a preview is treated when deciding what needs a person's say-so. */
+export type PreviewKind = "delete" | "create" | "look" | "update" | "none" | "failed";
+
+/**
+ * Deletions, new items and anything with a warning or an emptied field are
+ * "risky": each needs its own Include or Skip before an import, and starts
+ * out as Skip.
+ */
+export function previewKind(i: Pick<PreviewItem, "action" | "deletes" | "warnings" | "clears">): PreviewKind {
+  if (i.action === "failed" || i.action === "skipped") return "failed";
+  if (i.action === "none") return "none";
+  if (i.action === "delete" || i.action === "replace" || i.deletes) return "delete";
+  if (i.action === "create") return "create";
+  if (i.warnings?.length || i.clears?.length) return "look";
+  return "update";
+}
+export const isRisky = (k: PreviewKind) => k === "delete" || k === "create" || k === "look";
+
+/** The decisions made on the preview page (or by an API caller). */
 export interface ApplyConfirm {
-  creates?: boolean;
-  clearing?: boolean;
-  warnings?: boolean;
-  failing?: boolean;
-  skippedSheets?: boolean;
-  /** For deletions: the word DELETE, typed. */
+  /** Items to leave out, by sheet name then item key. */
+  exclude?: Record<string, string[]>;
+  /** Risky items the person chose to include, by sheet name then item key. */
+  include?: Record<string, string[]>;
+  /** For deletions that are included: the word DELETE, typed. */
   deletes?: string;
+  /** A yes to the risky items of a very large file that the preview has no room to list one by one. */
+  rest?: boolean;
 }
 
 /**
  * Runs a dry-run import for real: same file, same options, without the dry run.
  * Uses the file the preview was made from, even when it came from a link.
- * Anything risky in the preview (new items, deletions, emptied fields,
- * warnings, rows that would fail) must be confirmed first; the check is made
- * here as well as on the page, so no route can skip it.
+ * Every risky item listed in the preview (a deletion, a new item, a warning,
+ * an emptied field) must have been given an Include or a Skip; included
+ * deletions need the typed word DELETE. The check is made here as well as on
+ * the page, so no route can skip it.
  */
 export async function applyDryRun(shop: string, id: string, confirm: ApplyConfirm | "trusted" = {}) {
   const job = await getJob(shop, id);
@@ -548,16 +568,37 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
   if (!job.inputFile) throw new Error("The previewed file is no longer available. Import it again.");
   const needs = applyNeeds(job.stats);
   if (!needs.changes) throw new Error("There is nothing to import: the preview found no changes to make.");
+  let exclude: Record<string, string[]> | undefined;
   if (confirm !== "trusted") {
-    const missing = [
-      needs.deletes && (confirm.deletes ?? "").trim().toUpperCase() !== "DELETE" ? `type DELETE to confirm ${needs.deletes} deletion${needs.deletes === 1 ? "" : "s"}` : "",
-      needs.creates && !confirm.creates ? `confirm creating ${needs.creates} new item${needs.creates === 1 ? "" : "s"}` : "",
-      needs.clearing && !confirm.clearing ? `confirm emptying fields on ${needs.clearing} item${needs.clearing === 1 ? "" : "s"}` : "",
-      needs.warned && !confirm.warnings ? `confirm you have read the warnings on ${needs.warned} item${needs.warned === 1 ? "" : "s"}` : "",
-      needs.failing && !confirm.failing ? `confirm skipping ${needs.failing} item${needs.failing === 1 ? "" : "s"} that would fail` : "",
-      needs.skippedSheets.length && !confirm.skippedSheets ? `confirm that ${needs.skippedSheets.length} sheet${needs.skippedSheets.length === 1 ? " is" : "s are"} not imported` : "",
-    ].filter(Boolean);
-    if (missing.length) throw new Error(`Before importing for real: ${missing.join("; ")}.`);
+    const sheets = await readPreview(shop, id);
+    const out = new Map<string, Set<string>>(Object.entries(confirm.exclude ?? {}).map(([k, v]) => [k, new Set(v)]));
+    const inc = new Map<string, Set<string>>(Object.entries(confirm.include ?? {}).map(([k, v]) => [k, new Set(v)]));
+    let changes = needs.changes;
+    let deletes = needs.deletes;
+    let undecided = 0;
+    const listed = { delete: 0, create: 0, look: 0 };
+    for (const s of sheets) {
+      for (const i of s.items) {
+        const kind = previewKind(i);
+        if (kind === "failed" || kind === "none") continue;
+        const skipped = !!i.key && out.get(s.sheet)?.has(i.key);
+        if (isRisky(kind)) {
+          listed[kind as "delete"]++;
+          if (!skipped && !(i.key && inc.get(s.sheet)?.has(i.key))) undecided++;
+        }
+        if (skipped) {
+          changes--;
+          if (kind === "delete") deletes--;
+        }
+      }
+    }
+    if (undecided) throw new Error(`Before importing: choose Include or Skip for ${undecided} item${undecided === 1 ? "" : "s"} that need a decision (new items, deletions, warnings or emptied fields).`);
+    // Risky items of a very large file beyond what the preview lists.
+    const unlisted = Math.max(0, needs.deletes - listed.delete) + Math.max(0, needs.creates - listed.create) + Math.max(0, needs.clearing + needs.warned - listed.look);
+    if (unlisted && !confirm.rest) throw new Error(`Before importing: ${unlisted} more item${unlisted === 1 ? "" : "s"} would create, delete or empty something and are not listed one by one. Confirm them, or split the file.`);
+    if (deletes > 0 && (confirm.deletes ?? "").trim().toUpperCase() !== "DELETE") throw new Error(`Before importing: type DELETE to confirm ${deletes} deletion${deletes === 1 ? "" : "s"}.`);
+    if (changes <= 0) throw new Error("Every change is set to Skip, so there is nothing to import. Include at least one.");
+    exclude = Object.fromEntries([...out].map(([k, v]) => [k, [...v]]).filter(([, v]) => (v as string[]).length));
   }
   const { dryRun: _d, ...options } = config.options;
   return prisma.job.create({
@@ -565,7 +606,7 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
       shop,
       type: "import",
       // previewOf: the import compares each item with what this preview saw.
-      config: JSON.stringify({ ...config, options, previewOf: job.id }),
+      config: JSON.stringify({ ...config, options, previewOf: job.id, ...(exclude && Object.keys(exclude).length ? { exclude } : {}) }),
       format: job.format,
       name: job.name,
       inputFile: job.inputFile,

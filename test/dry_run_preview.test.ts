@@ -47,7 +47,7 @@ describe("dry-run preview", () => {
       log: () => {},
     });
     expect(mutations).toEqual([]);
-    expect(s.preview).toEqual([
+    expect(s.preview).toMatchObject([
       {
         row: 2,
         item: "ID: 1001",
@@ -116,31 +116,48 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("Import for real", async ()
     expect(JSON.parse(again.config)).toEqual({ options: { defaultCommand: "UPDATE", dryRun: true } });
   });
 
-  it("asks for a confirmation of everything risky before importing for real", async () => {
+  it("needs an Include or Skip for every risky item, and the typed word for deletions", async () => {
+    const { jobDir } = await import("../app/lib/jobs/storage.server");
     const config = JSON.stringify({ options: { dryRun: true } });
-    const make = (stats: string) => prisma.job.create({ data: { shop, type: "import", status: "finished", config, inputFile: "x/input.csv", stats } });
+    const make = async (stats: string, items: any[] = []) => {
+      const job = await prisma.job.create({ data: { shop, type: "import", status: "finished", config, inputFile: "x/input.csv", stats } });
+      fs.writeFileSync(path.join(jobDir(shop, job.id), "preview.json"), JSON.stringify([{ sheet: "Products", entity: "products", items }]));
+      return job;
+    };
+    const item = (key: string, action: string, extra: Record<string, unknown> = {}) => ({ row: 2, item: key, key, command: "MERGE", action, message: "", changes: ["x"], ...extra });
     // Nothing would change: nothing to import.
     await expect(jobs.applyDryRun(shop, (await make(stat({ unchanged: 10 }))).id)).rejects.toThrow(/nothing to import/);
-    // Creates, cleared fields, warnings, failing rows and a sheet left out each need a yes; deletions the typed word.
-    const risky = await make(
-      JSON.stringify([
-        { sheet: "Products", entity: "products", items: 12, ok: 9, failed: 3, skipped: 0, risk: { creates: 2, updates: 5, deletes: 1, unchanged: 1, clearing: 4, warned: 2 } },
-        { sheet: "Notes", entity: null, items: 0, ok: 0, failed: 0, skipped: 7, warnings: ["Not imported: not recognised, nothing imported."] },
-      ]),
-    );
-    expect(jobs.applyNeeds(risky.stats)).toEqual({
-      changes: 8, creates: 2, updates: 5, deletes: 1, unchanged: 1, clearing: 4, warned: 2, failing: 3,
-      skippedSheets: [{ sheet: "Notes", rows: 7, reason: "not recognised, nothing imported." }],
-    });
-    await expect(jobs.applyDryRun(shop, risky.id)).rejects.toThrow(
-      /type DELETE to confirm 1 deletion; confirm creating 2 new items; confirm emptying fields on 4 items; confirm you have read the warnings on 2 items; confirm skipping 3 items that would fail; confirm that 1 sheet is not imported/,
-    );
-    const all = { creates: true, clearing: true, warnings: true, failing: true, skippedSheets: true };
+    // A plain update needs no decisions.
+    expect((await jobs.applyDryRun(shop, (await make(stat({ updates: 3, unchanged: 7 }), [item("a", "update"), item("b", "update"), item("c", "update")])).id)).status).toBe("queued");
+
+    const items = [
+      item("u1", "update"),
+      item("w1", "update", { warnings: ["price drops 90%"] }),
+      item("c1", "update", { clears: ["Tags"] }),
+      item("n1", "create"),
+      item("d1", "delete"),
+      item("f1", "failed"),
+    ];
+    const risky = await make(JSON.stringify([{ sheet: "Products", entity: "products", items: 6, ok: 5, failed: 1, skipped: 0, risk: { creates: 1, updates: 3, deletes: 1, unchanged: 0, clearing: 1, warned: 1 } }]), items);
+    expect(items.map((i) => jobs.previewKind(i as any))).toEqual(["update", "look", "look", "create", "delete", "failed"]);
+    // No decisions given: refused.
+    await expect(jobs.applyDryRun(shop, risky.id)).rejects.toThrow(/choose Include or Skip for 4 items/);
+    // Everything risky skipped: only the plain update goes, and the import is told what to leave out.
+    const safe = await jobs.applyDryRun(shop, risky.id, { exclude: { Products: ["w1", "c1", "n1", "d1"] } });
+    expect(JSON.parse(safe.config)).toMatchObject({ previewOf: risky.id, exclude: { Products: ["w1", "c1", "n1", "d1"] } });
+    // Including the deletion needs the word.
+    const all = { include: { Products: ["w1", "c1", "n1", "d1"] } };
+    await expect(jobs.applyDryRun(shop, risky.id, all)).rejects.toThrow(/type DELETE to confirm 1 deletion/);
     await expect(jobs.applyDryRun(shop, risky.id, { ...all, deletes: "yes" })).rejects.toThrow(/type DELETE/);
-    await expect(jobs.applyDryRun(shop, risky.id, { ...all, deletes: "DELETE", warnings: false })).rejects.toThrow(/read the warnings/);
-    expect((await jobs.applyDryRun(shop, risky.id, { ...all, deletes: " delete " })).status).toBe("queued");
-    // A plain update needs no ticks.
-    expect((await jobs.applyDryRun(shop, (await make(stat({ updates: 3, unchanged: 7 }))).id)).status).toBe("queued");
+    expect(JSON.parse((await jobs.applyDryRun(shop, risky.id, { ...all, deletes: " delete " })).config).exclude).toBeUndefined();
+    // The deletion skipped, the rest included: no word needed.
+    expect((await jobs.applyDryRun(shop, risky.id, { include: { Products: ["w1", "c1", "n1"] }, exclude: { Products: ["d1"] } })).status).toBe("queued");
+    // Skipping every change leaves nothing to do.
+    await expect(jobs.applyDryRun(shop, risky.id, { exclude: { Products: ["u1", "w1", "c1", "n1", "d1"] } })).rejects.toThrow(/nothing to import/);
+    // A file too large to list every risky item: those need one explicit yes.
+    const big = await make(stat({ updates: 5000, creates: 40 }), [item("n1", "create")]);
+    await expect(jobs.applyDryRun(shop, big.id, { include: { Products: ["n1"] } })).rejects.toThrow(/39 more items would create, delete or empty something/);
+    expect((await jobs.applyDryRun(shop, big.id, { include: { Products: ["n1"] }, rest: true })).status).toBe("queued");
     await prisma.job.deleteMany({ where: { shop } });
   });
 });

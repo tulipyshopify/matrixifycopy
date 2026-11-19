@@ -34,6 +34,8 @@ export interface ImportConfig {
    * order name, email, path or code). Used to restore single items from a backup.
    */
   onlyItems?: string[];
+  /** Items the person chose to skip at the preview, by sheet name. */
+  exclude?: Record<string, string[]>;
 }
 
 /** Columns that can name an item when restoring just some of a backup. */
@@ -269,6 +271,7 @@ export async function executeJob(
       progress: deps.progress,
       isCancelled: deps.isCancelled,
       expected,
+      exclude: config.options?.dryRun ? undefined : config.exclude,
     });
     const resultFile = await out.close();
     // The dry-run preview is kept in a file of its own beside the results.

@@ -723,3 +723,31 @@ describe("audit: alerts outside the app (H5)", () => {
     expect(alertText({ ...job, kind: "backup", type: "export", scheduled: false }, { status: "failed", problems: 0, summary: "", error: "Disk full" })).toMatch(/Store backup failed\. Disk full/);
   });
 });
+
+describe("redesign: skipping rows at the preview", () => {
+  it("leaves out the items set to Skip, and names each product in the preview", async () => {
+    const store = wovenWood();
+    const sheets = await file("dryrun_products_test.csv");
+    const p = await preview(sheets, store);
+    expect(p.row(2)).toMatchObject({ key: "Handle=66-litre-wooden-potato-planter-barrel", title: "66 Litre Wooden Potato Planter Barrel" });
+    const logs: string[] = [];
+    const stats = await runImport({
+      ctx: { gql: store.gql, options: { defaultCommand: "MERGE" }, log: () => {}, cache: new Map() },
+      sheets: structuredClone(sheets),
+      entities: ENTITIES,
+      log: (m) => logs.push(m),
+      exclude: { [sheets[0].name]: [p.row(2).key!, p.row(4).key!] },
+    });
+    // The price change and the create were skipped: nothing written, nothing created.
+    expect(store.mutations()).toEqual([]);
+    expect(store.byHandle("66-litre-wooden-potato-planter-barrel")!.variants[0].price).toBe("44.99");
+    expect(store.byHandle("bulkport-test-does-not-exist")).toBeUndefined();
+    expect(stats[0]).toMatchObject({ ok: 1, failed: 1, skipped: 2 });
+  });
+
+  it("warns about a script tag in a description", async () => {
+    const store = wovenWood();
+    const p = await preview([{ name: "Products", headers: ["Handle", "Body HTML"], rows: [{ Handle: "willow-bunch-weave-hurdle-fence-panel", "Body HTML": "<script>alert(1)</script><p>Panel</p>" }] }], store);
+    expect(p.items[0].warnings?.[0]).toMatch(/description contains a <script> tag/);
+  });
+});

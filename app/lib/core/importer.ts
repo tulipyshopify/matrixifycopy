@@ -49,6 +49,10 @@ export interface PreviewItem {
   row: number;
   /** What identifies it: "ID: 123", "Handle: blue-shirt"… */
   item: string;
+  /** The item's key within its sheet: how a later import is told to leave it out. */
+  key?: string;
+  /** A name to show beside the key (the product's title), when known. */
+  title?: string;
   command: string;
   action: "create" | "update" | "delete" | "replace" | "none" | "failed" | "skipped";
   message: string;
@@ -209,6 +213,8 @@ export interface RunImportArgs {
    * values the preview saw. An item whose values differ now is not imported.
    */
   expected?: Record<string, Record<string, Record<string, string>>>;
+  /** Items left out at the preview, by sheet name: they are skipped, untouched. */
+  exclude?: Record<string, string[]>;
 }
 
 /** A row that must not be imported as it stands, whatever the data type. */
@@ -314,6 +320,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       }
     }
     const expected = args.expected?.[sheet.name];
+    const excluded = args.exclude?.[sheet.name] ? new Set(args.exclude[sheet.name]) : null;
 
     const results: Array<{ item: ImportItem; result: ItemResult }> = [];
     const previews = new Map<ImportItem, Pick<PreviewItem, "action" | "changes">>();
@@ -359,6 +366,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
           const unreadable = unreadableCell(item.rows);
           if (command === "IGNORE") {
             result = { status: "Skipped", command, message: "Command IGNORE" };
+          } else if (excluded?.has(item.key)) {
+            result = { status: "Skipped", command, message: "Left out at the preview" };
           } else if (unreadable) {
             result = { status: "Failed", command, message: unreadable };
           } else if (blocked.has(index)) {
@@ -442,6 +451,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
           const rich = result.preview;
           return {
             row: item.rowIndexes[0] + 2,
+            key: item.key,
+            ...(result.title ? { title: result.title } : {}),
             item: keyCol ? `${keyCol}: ${firstValue(item.rows[0], keyCol)}` : `Row ${item.rowIndexes[0] + 2}`,
             command: result.command,
             action: result.status === "Failed" ? "failed" : result.status === "Skipped" ? "skipped" : (rich?.action ?? p?.action ?? "none"),

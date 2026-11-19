@@ -239,6 +239,8 @@ export interface ItemResult {
   /** Resulting resource GID, if any. */
   id?: string;
   message?: string;
+  /** The item's name (a product's title), for lists that otherwise only show its key. */
+  title?: string;
   /** Every problem found, when there is more than one (message joins them). */
   errors?: string[];
   /** Extra cells to write back into the rows of this item (e.g. new Variant IDs). */
