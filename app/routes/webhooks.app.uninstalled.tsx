@@ -15,6 +15,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Stop schedules and queued work; files are removed on shop/redact.
   await db.schedule.updateMany({ where: { shop }, data: { enabled: false } });
   await db.job.updateMany({ where: { shop, status: "queued" }, data: { status: "cancelled" } });
+  // Access from outside ends with the app: keys, assistant connections and the Drive link.
+  await db.apiKey.updateMany({ where: { shop, revokedAt: null }, data: { revokedAt: new Date() } });
+  await db.oAuthGrant.deleteMany({ where: { shop } });
+  await db.shopSetting.updateMany({ where: { shop }, data: { driveToken: null, driveFolder: null, alertWebhook: null } });
 
   return new Response();
 };

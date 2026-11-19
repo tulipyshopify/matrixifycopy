@@ -9,6 +9,7 @@ import { EXPIRY_CHOICES, createKey, listKeys, revokeKey, type KeyScope } from ".
 import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
 import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
+import { approveConnection, listConnections, removeConnection } from "../lib/api/oauth.server";
 
 /** SHA-256 of the command-line file as this server hands it out, to check a download against. */
 function cliChecksum(): string {
@@ -37,6 +38,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     historyChoices: HISTORY_CHOICES,
     expiryChoices: EXPIRY_CHOICES,
     cliSha: cliChecksum(),
+    connections: await listConnections(session.shop),
     keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, readOnly: k.readOnly, expiresAt: k.expiresAt, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
   };
 };
@@ -51,6 +53,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const sent = await sendAlert(session.shop, `Bulkport, ${session.shop.replace(/\.myshopify\.com$/, "")}: alerts are set up. Failed scheduled jobs and backups will be posted here.`);
       if (!sent) throw new Error("The address was saved, but the test message was not accepted. Check that it is an incoming-webhook address.");
       return { saved: "Saved. A test message was posted." };
+    }
+    if (form.get("intent") === "approve") {
+      const name = await approveConnection(session.shop, String(form.get("code") ?? ""));
+      return { saved: `Approved. ${name} is now connected; go back to its tab, which continues by itself.` };
+    }
+    if (form.get("intent") === "disconnect") {
+      await removeConnection(session.shop, String(form.get("id")));
+      return { saved: "Disconnected." };
     }
     if (form.get("intent") === "emails") {
       const list = await saveAlertEmails(session.shop, String(form.get("emails") ?? ""));
@@ -102,7 +112,8 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved } = useLoaderData<typeof loader>();
+  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections } = useLoaderData<typeof loader>();
+  const [code, setCode] = useState("");
   const [undoStop, setUndoStop] = useState(undoSaved);
   const [emailList, setEmailList] = useState(emails);
   const [stopAt, setStopAt] = useState(String(failStop));
@@ -283,18 +294,52 @@ export default function Connect() {
       </s-section>
 
       <s-section heading="AI assistants: Claude and ChatGPT">
-        <s-paragraph>
-          Add Bulkport as a custom connector (an MCP server). The assistant can then export data, read results and prepare import previews when you ask. It cannot change your store: you apply a preview yourself in the app.
-        </s-paragraph>
-        <s-paragraph>Connector address (the key is part of it, so keep the address private):</s-paragraph>
-        <Code text={`${appUrl}/mcp/${key}`} />
-        <s-unordered-list>
-          <s-list-item>Claude: Settings → Connectors → Add custom connector, and paste the address.</s-list-item>
-          <s-list-item>ChatGPT: Settings → Apps & Connectors → turn on Developer mode → Create, paste the address, authentication "None".</s-list-item>
-          <s-list-item>
-            Tools that can send a header instead: address <code>{appUrl}/mcp</code> with header <code>Authorization: Bearer {key.slice(0, 3)}…</code>
-          </s-list-item>
-        </s-unordered-list>
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Add Bulkport as a custom connector (an MCP server). The assistant can then export data, read results and prepare import previews when you ask. It cannot change your store: you apply a preview yourself in the app.
+          </s-paragraph>
+          <s-paragraph>Connector address:</s-paragraph>
+          <Code text={`${appUrl}/mcp`} />
+          <s-unordered-list>
+            <s-list-item>Claude: Settings → Connectors → Add custom connector, and paste the address.</s-list-item>
+            <s-list-item>ChatGPT: Settings → Apps & Connectors → Developer mode → Create, paste the address, authentication "OAuth".</s-list-item>
+            <s-list-item>The assistant opens a page with a code. Type that code here to approve it:</s-list-item>
+          </s-unordered-list>
+          <div className="bp-url-row">
+            <s-text-field label="Approve a connection" placeholder="ABCD-EFGH" details="The code is shown by the assistant when it connects, and works for 15 minutes." value={code} onInput={(ev: any) => setCode(ev.currentTarget.value)} />
+            <s-button variant="primary" disabled={code.replace(/[^A-Za-z0-9]/g, "").length !== 8 || fetcher.state !== "idle"} onClick={() => (fetcher.submit({ intent: "approve", code }, { method: "post" }), setCode(""))}>
+              Approve
+            </s-button>
+          </div>
+          {saved ? <s-text tone="success">{saved}</s-text> : null}
+          {connections.length ? (
+            <s-table>
+              <s-table-header-row>
+                <s-table-header>Connected assistant</s-table-header>
+                <s-table-header>Approved</s-table-header>
+                <s-table-header>Last used</s-table-header>
+                <s-table-header></s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {connections.map((c) => (
+                  <s-table-row key={c.id}>
+                    <s-table-cell>{c.name}</s-table-cell>
+                    <s-table-cell>{c.approvedAt ? formatDate(c.approvedAt) : "—"}</s-table-cell>
+                    <s-table-cell>{c.lastUsedAt ? formatDate(c.lastUsedAt) : "Never"}</s-table-cell>
+                    <s-table-cell>
+                      <s-button variant="tertiary" tone="critical" onClick={() => fetcher.submit({ intent: "disconnect", id: c.id }, { method: "post" })}>
+                        Disconnect
+                      </s-button>
+                    </s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
+          ) : null}
+          <s-text tone="neutral">
+            For a tool that can't sign in this way: create an access key above and either send it as the header <code>Authorization: Bearer {key.slice(0, 3)}…</code> to <code>{appUrl}/mcp</code>, or, as a last resort, use the address <code>{appUrl}/mcp/{key.slice(0, 3)}…</code> with the key in it (anyone who has that address can read the store's data).
+          </s-text>
+        </s-stack>
       </s-section>
 
       <s-section heading="Command line">

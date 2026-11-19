@@ -11,6 +11,7 @@ import { pruneBackups } from "./backups.server";
 import { checkExclusions } from "../check/check.server";
 import { alertText, sendAlert } from "./alerts.server";
 import { uploadToDrive } from "./drive.server";
+import { clearStaleRequests } from "../api/oauth.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports, rerunJob, startUndo, undoOnStop } from "./jobs.server";
@@ -335,6 +336,7 @@ export function startWorker() {
         const n = await cleanupOldFiles();
         if (n) console.log(`[worker] removed ${n} old job folders`);
         const cleared = await clearOldExports();
+        await clearStaleRequests().catch(() => {});
         const pruned = await pruneBackups();
         if (pruned) console.log(`[worker] removed ${pruned} old backups`);
         if (cleared) console.log(`[worker] cleared ${cleared} exports from the history`);

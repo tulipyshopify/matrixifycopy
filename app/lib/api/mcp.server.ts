@@ -238,7 +238,7 @@ export async function handleMcp(request: Request, pathKey?: string): Promise<Res
     auth = await checkKey(pathKey ?? bearerKey(request));
   } catch (e: any) {
     const status = e instanceof ApiError ? e.status : 500;
-    return json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: e.message } }, status, status === 401 ? { "WWW-Authenticate": "Bearer" } : {});
+    return json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: e.message } }, status, status === 401 ? { "WWW-Authenticate": `Bearer resource_metadata="${(process.env.SHOPIFY_APP_URL ?? "").replace(/\/+$/, "")}/.well-known/oauth-protected-resource"` } : {});
   }
   let body: unknown;
   try {
