@@ -141,6 +141,10 @@ export async function downloadSource(source: string, dir: string): Promise<{ fil
 /** Uploads a result file to an ftp(s), sftp or WebDAV URL; a URL ending in "/" keeps the file name. */
 export async function uploadResult(file: string, target: string): Promise<string> {
   const url = new URL(target);
+  if (isAzureBlob(url)) {
+    await assertSafeHost(url);
+    return uploadAzure(file, url);
+  }
   if (!UPLOAD_PROTOCOLS.includes(url.protocol)) throw new Error("Upload target must be ftp://, ftps://, sftp://, webdav(s):// or s3://");
   await assertSafeHost(url);
   if (url.protocol === "s3:") return uploadS3(file, url);
@@ -178,6 +182,57 @@ export async function uploadResult(file: string, target: string): Promise<string
     await c.uploadFrom(file, path.posix.basename(remote));
   });
   return remote;
+}
+
+// --- Azure Blob Storage -------------------------------------------------------
+
+/** An Azure container address with a SAS token: https://ACCOUNT.blob.core.windows.net/CONTAINER/folder/?sv=…&sig=… */
+export function isAzureBlob(url: URL): boolean {
+  return url.protocol === "https:" && /\.blob\.core\.windows\.net$/i.test(url.hostname);
+}
+
+/** Whether a link can be a place to copy files to. */
+export function isUploadTarget(url: URL): boolean {
+  return UPLOAD_PROTOCOLS.includes(url.protocol) || isAzureBlob(url);
+}
+
+/**
+ * Uploads to an Azure container using a SAS token (a signed, expiring
+ * permission limited to that container; the storage account key is never
+ * needed, and must not be used).
+ */
+async function uploadAzure(file: string, url: URL): Promise<string> {
+  if (!url.searchParams.get("sig")) throw new Error("The Azure address needs its SAS token: copy the container's \"Blob SAS URL\", which ends in ?sv=…&sig=…");
+  const parts = decodeURIComponent(url.pathname).split("/").filter(Boolean);
+  if (!parts.length) throw new Error("The Azure address must name a container: https://ACCOUNT.blob.core.windows.net/CONTAINER/?sv=…");
+  const blobPath = `/${[...parts, path.basename(file)].join("/")}`;
+  const size = (await fs.promises.stat(file)).size;
+  const res = await fetch(`${url.origin}${blobPath.split("/").map(encodeURIComponent).join("/")}${url.search}`, {
+    method: "PUT",
+    headers: { "x-ms-blob-type": "BlockBlob", "x-ms-version": "2021-08-06", "Content-Length": String(size), "Content-Type": "application/octet-stream" },
+    body: Readable.toWeb(fs.createReadStream(file)) as any,
+    duplex: "half",
+    redirect: "manual",
+  } as RequestInit);
+  if (res.status === 403) {
+    const expiry = url.searchParams.get("se");
+    const expired = expiry && Date.parse(expiry) < Date.now();
+    throw new Error(expired ? `The Azure SAS token expired on ${expiry!.slice(0, 10)}. Create a new one and paste the new address.` : "Azure refused the SAS token: it must allow Write and Create on this container, and not be expired (HTTP 403)");
+  }
+  if (res.status === 404) throw new Error("Azure has no container with this name (HTTP 404)");
+  if (!res.ok) throw new Error(`Azure answered HTTP ${res.status}`);
+  return blobPath;
+}
+
+/** When an Azure SAS address stops working (its "se" value), or null. */
+export function sasExpiry(target: string): Date | null {
+  try {
+    const u = new URL(target);
+    const se = isAzureBlob(u) ? u.searchParams.get("se") : null;
+    return se && !Number.isNaN(Date.parse(se)) ? new Date(se) : null;
+  } catch {
+    return null;
+  }
 }
 
 // --- S3-compatible object storage ---------------------------------------------
@@ -295,6 +350,8 @@ export function redactUrl(u: string): string {
   try {
     const url = new URL(u);
     if (url.password) url.password = "****";
+    // The signature of an Azure SAS address is its secret.
+    if (url.searchParams.has("sig")) url.searchParams.set("sig", "****");
     return url.toString();
   } catch {
     return u;

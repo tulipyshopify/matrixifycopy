@@ -40,7 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ? "Your request"
           : params.get("from")
             ? "The export you opened"
-            : "Latest export (without its filters)",
+            : "Latest export",
     // "Edit and export again" on a job page opens the form with that job's set-up.
     // "Adjust first" from Ask Bulkport opens its set-up; "Edit and export again" a job's.
     latest: params.get("check")
@@ -51,19 +51,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? ((await askedExport(session.shop, params.get("ask")!)) ?? (await latestExportPreset(session.shop)))
       : params.get("from")
       ? await latestExportPreset(session.shop, params.get("from")!)
-      : withoutFilters(await latestExportPreset(session.shop)),
+      : // A plain "New export" starts empty: the last export may have been someone else's (or an assistant's).
+        null,
   };
 };
 
-
-/**
- * A plain "New export" starts from the last export's data and columns, but
- * never from its filters: those belonged to whoever ran it, for that one job.
- */
-function withoutFilters<T extends { entities: Array<{ entity: string; options: any }> } | null>(preset: T): T {
-  if (!preset) return preset;
-  return { ...preset, entities: preset.entities.map((e) => ({ ...e, options: { ...e.options, filters: undefined, dateRange: undefined, query: undefined, limit: undefined } })) };
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const auth = await authenticate.admin(request);

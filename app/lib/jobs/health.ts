@@ -21,6 +21,7 @@ interface StatLike {
   items?: number;
   failed?: number;
   skipped?: number;
+  warnings?: string[];
 }
 
 const ACTIVE = new Set(["queued", "running", "uploading"]);
@@ -55,7 +56,12 @@ export function jobHealth(job: { type: string; status: string; error?: string | 
   if (job.type !== "import") return { level: "ok", label: "Finished", problems: 0, summary: "" };
   const { failed, unimported, sheets } = countProblems(stats);
   const problems = failed + unimported;
-  if (!problems) return { level: "ok", label: job.dryRun ? "Preview ready" : "Finished", problems: 0, summary: "" };
+  if (!problems) {
+    // Nothing failed, but something in the file was left out or not applied: not a plain green.
+    const notes = (Array.isArray(stats) ? stats : []).flatMap((s) => ((s as { warnings?: string[] }).warnings ?? []).filter((w) => !w.startsWith("Not imported: ")));
+    if (notes.length && !job.dryRun) return { level: "warning", label: "Finished with warnings", problems: 0, summary: `${notes[0]}${notes.length > 1 ? ` (and ${notes.length - 1} more, see the log)` : ""}` };
+    return { level: "ok", label: job.dryRun ? "Preview ready" : "Finished", problems: 0, summary: "" };
+  }
   const parts = [
     failed ? `${plural(failed, job.dryRun ? "item would fail" : "item failed", job.dryRun ? "items would fail" : "items failed")}` : "",
     unimported ? `${plural(sheets.length, "sheet")} not imported (${sheets.join(", ")})` : "",

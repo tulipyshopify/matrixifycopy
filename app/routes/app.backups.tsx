@@ -9,6 +9,8 @@ import {
   DEFAULT_BACKUP_TYPES,
   backupDestination,
   backupNow,
+  destinationExpiresIn,
+  testDestination,
   backupsAllowed,
   getBackupSchedule,
   listBackups,
@@ -25,7 +27,7 @@ import { browserTimeZone } from "../components/ScheduleTime";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const allowed = backupsAllowed(session.shop);
-  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "", restoreFields: [], drive: { available: false, connected: false, connectUrl: "" } };
+  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "", destinationExpiresIn: null, restoreFields: [], drive: { available: false, connected: false, connectUrl: "" } };
   const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), prisma.shopSetting.findUnique({ where: { shop: session.shop } })]);
   let types = DEFAULT_BACKUP_TYPES;
   try {
@@ -41,6 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? { enabled: schedule.enabled, runAt: schedule.runAt ?? "02:30", timezone: schedule.timezone ?? "", nextRunAt: schedule.nextRunAt, types }
       : null,
     destination: backupDestination(schedule),
+    destinationExpiresIn: destinationExpiresIn(schedule),
     drive: { available: driveAvailable(), connected: await driveConnected(session.shop), connectUrl: driveAvailable() ? driveConnectUrl(session.shop) : "" },
     restoreFields: RESTORE_FIELDS.map(({ key, label, note, byDefault }) => ({ key, label, note, byDefault })),
     backups: backups.map((b) => ({
@@ -65,6 +68,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = form.get("intent");
   try {
+    if (intent === "test-destination") {
+      const where = await testDestination(session.shop);
+      return { ok: `It works: a small test file was written to ${where}. You can delete it.` };
+    }
     if (intent === "drive-off") {
       await disconnectDrive(session.shop);
       return { ok: "Google Drive is disconnected. Backups already saved there stay in your Drive." };
@@ -172,6 +179,9 @@ export default function Backups() {
             A full copy of the chosen data, kept on Bulkport's server. Each backup is a ZIP of CSV files in the same layout as exports, so
             you can open it in Excel or import it back.
           </s-paragraph>
+          <s-text tone="neutral">
+            Keeping customer and order data for a long time is a choice to make deliberately (GDPR asks that personal data is kept no longer than needed).
+          </s-text>
           <s-switch label="Back up every day" checked={enabled} onChange={(ev: any) => setEnabled(ev.currentTarget.checked)} />
           <s-grid gridTemplateColumns="1fr 1fr" gap="base">
             <s-text-field
@@ -183,9 +193,9 @@ export default function Backups() {
             />
             {/* Re-created once in the browser: the server-rendered select can come up showing its first option. */}
             <s-select key={mounted ? "client" : "server"} label="Keep backups for" value={keepDays} onChange={(ev: any) => setKeepDays(ev.currentTarget.value)}>
-              {[7, 14, 30, 90].map((d) => (
+              {[7, 14, 30, 90, 180, 365].map((d) => (
                 <s-option key={d} value={String(d)}>
-                  {d} days
+                  {d === 180 ? "6 months" : d === 365 ? "1 year" : `${d} days`}
                 </s-option>
               ))}
             </s-select>
@@ -211,11 +221,23 @@ export default function Backups() {
               label="Cloud storage, or a folder on an SFTP, FTP or WebDAV server"
               labelAccessibilityVisibility="exclusive"
               placeholder="s3://s3.eu-west-2.amazonaws.com/my-bucket/backups/"
-              details="A second copy that you hold. Amazon S3: s3://s3.REGION.amazonaws.com/BUCKET/folder/ with an access key and secret below. Google Cloud Storage: s3://storage.googleapis.com/BUCKET/folder/ with an HMAC key. Also Cloudflare R2, Backblaze, SFTP, FTP, or WebDAV drives (Nextcloud, Box, pCloud…). Leave empty to keep backups on Bulkport's server only."
+              details="A second copy that you hold. Amazon S3: s3://s3.REGION.amazonaws.com/BUCKET/folder/ with an access key and secret below. Google Cloud Storage: s3://storage.googleapis.com/BUCKET/folder/ with an HMAC key. Azure: paste the container's Blob SAS URL (https://ACCOUNT.blob.core.windows.net/CONTAINER?sv=…), made for that one container with Write and Create only, never the account key. Also Cloudflare R2, Backblaze, SFTP, FTP, or WebDAV drives (Nextcloud, Box, pCloud…). Leave empty to keep backups on Bulkport's server only."
               value={destination}
               onInput={(ev: any) => setDestination(ev.currentTarget.value)}
             />
-            {destination.trim() ? (
+            {data.destinationExpiresIn !== null ? (
+              <s-text tone={data.destinationExpiresIn <= 7 ? "critical" : "caution"}>
+                {data.destinationExpiresIn < 0 ? "The Azure SAS token has expired: backup copies are failing. Paste a new address." : `The Azure SAS token expires in ${data.destinationExpiresIn} day${data.destinationExpiresIn === 1 ? "" : "s"}. Paste a new address before then.`}
+              </s-text>
+            ) : null}
+            {data.destination && destination === data.destination ? (
+              <s-stack direction="inline">
+                <s-button loading={busy && fetcher.formData?.get("intent") === "test-destination"} disabled={busy} onClick={() => fetcher.submit({ intent: "test-destination" }, { method: "post" })}>
+                  Test connection
+                </s-button>
+              </s-stack>
+            ) : null}
+            {destination.trim() && !/blob\.core\.windows\.net/i.test(destination) ? (
               <s-grid gridTemplateColumns="1fr 1fr" gap="base">
                 <s-text-field label="User name or access key" autocomplete="off" details={data.destination ? "Leave empty to keep the saved sign-in." : undefined} value={destUser} onInput={(ev: any) => setDestUser(ev.currentTarget.value)} />
                 <s-password-field label="Password or secret" autocomplete="new-password" details="Stored encrypted and never shown again." value={destPassword} onInput={(ev: any) => setDestPassword(ev.currentTarget.value)} />
@@ -240,7 +262,7 @@ export default function Backups() {
                 <s-text tone="neutral">Opens Google in a new tab. Bulkport can only see the files it saves there. Reload this page afterwards.</s-text>
               </s-stack>
             ) : (
-              <s-text tone="neutral">Not set up on this server yet: it needs a Google sign-in client (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in its settings file).</s-text>
+              <s-text tone="neutral">Coming soon. Until then, use cloud storage above for a copy you hold.</s-text>
             )}
           </s-stack>
           {data.schedule?.enabled ? <s-text tone="neutral">Next backup: {formatDate(data.schedule.nextRunAt)}</s-text> : null}

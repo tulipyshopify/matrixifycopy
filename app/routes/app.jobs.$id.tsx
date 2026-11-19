@@ -236,6 +236,7 @@ export default function JobDetail() {
           needs={needs}
           canApply={canApply}
           busy={applying}
+          undoDays={undoDays}
           onImport={(confirm) => fetcher.submit({ intent: "apply", confirm: JSON.stringify(confirm) }, { method: "post" })}
         />
       ) : null}
@@ -258,7 +259,7 @@ export default function JobDetail() {
                 disabled={job.cancelRequested}
                 onClick={() => fetcher.submit({ intent: "cancel" }, { method: "post" })}
               >
-                {job.cancelRequested ? "Stopping…" : job.type === "export" ? "Stop export" : "Stop import"}
+                {job.cancelRequested ? "Stopping…" : job.type === "export" ? "Stop export" : dryRun ? "Stop preview" : "Stop import"}
               </s-button>
             ) : null}
           </s-stack>

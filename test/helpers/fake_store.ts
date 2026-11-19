@@ -133,11 +133,11 @@ export function fakeStore(products: FakeProduct[], locationNames = ["Warehouse"]
       const sku = /sku:"(.*)"$/.exec(v.query)?.[1];
       return { productVariants: { nodes: products.flatMap((p) => p.variants.filter((x) => x.sku === sku).map((x) => ({ id: x.id, sku: x.sku, product: { id: p.id, handle: p.handle } }))), pageInfo: { hasNextPage: false } } };
     },
-    ImportProductMetafieldsNow: (v) => ({ product: { metafields: { nodes: Object.entries(find(v.id)!.metafields).filter(([k]) => v.keys.includes(k)).map(([k, m]) => ({ namespace: k.split(".")[0], key: k.split(".")[1], ...m })) } } }),
+    ImportProductMetafieldsNow: (v) => ({ product: { metafields: { nodes: Object.entries(find(v.id)!.metafields).filter(([k]) => v.keys.includes(k)).map(([k, m]) => ({ namespace: k.split(".")[0], key: k, ...m })) } } }),
     ImportVariantMetafieldsNow: (v) => ({
       nodes: v.ids.map((id: string) => {
         const x = products.flatMap((p) => p.variants).find((y) => y.id === id);
-        return x ? { id, metafields: { nodes: Object.entries(x.metafields).filter(([k]) => v.keys.includes(k)).map(([k, m]) => ({ namespace: k.split(".")[0], key: k.split(".")[1], ...m })) } } : null;
+        return x ? { id, metafields: { nodes: Object.entries(x.metafields).filter(([k]) => v.keys.includes(k)).map(([k, m]) => ({ namespace: k.split(".")[0], key: k, ...m })) } } : null;
       }),
     }),
     ImportStockNow: (v) => ({

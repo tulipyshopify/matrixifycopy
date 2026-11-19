@@ -7,7 +7,7 @@ import type { ExportConfig } from "./runner.server";
 import { RESTORE_FIELDS } from "./runner.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
 import { backupDir, openSecret, resolveStored, sealSecret } from "./storage.server";
-import { UPLOAD_PROTOCOLS, redactUrl } from "./sources.server";
+import { isAzureBlob, isUploadTarget, redactUrl, sasExpiry, uploadResult } from "./sources.server";
 
 /**
  * Store backups: a full export of the chosen data types, run every day (or on
@@ -23,7 +23,7 @@ export const BACKUP_TYPES = ENTITIES.filter((e) => e.export && e.key !== "payout
 
 export const DEFAULT_BACKUP_TYPES = BACKUP_TYPES.map((t) => t.key);
 
-export const KEEP_DAYS = [7, 14, 30, 90];
+export const KEEP_DAYS = [7, 14, 30, 90, 180, 365];
 
 export function backupsAllowed(shop: string): boolean {
   const list = (process.env.BACKUP_SHOPS ?? "*").split(/[,\s]+/).filter(Boolean);
@@ -105,11 +105,12 @@ export async function saveBackupSettings(shop: string, input: BackupSettingsInpu
       } catch {
         throw new Error("The copy destination is not a valid link. It starts with s3://, sftp://, ftp:// or webdavs://");
       }
-      if (!UPLOAD_PROTOCOLS.includes(u.protocol)) throw new Error("The copy destination must start with s3://, sftp://, ftp://, ftps:// or webdavs://");
+      if (!isUploadTarget(u)) throw new Error("The copy destination must start with s3://, sftp://, ftp://, ftps:// or webdavs://, or be an Azure container address (https://…blob.core.windows.net/…)");
+      if (isAzureBlob(u) && u.searchParams.get("sig") === "****") throw new Error("Paste the full Azure address again, with its SAS token");
       if (input.uploadUser) u.username = encodeURIComponent(input.uploadUser);
       if (input.uploadPassword) u.password = encodeURIComponent(input.uploadPassword);
       if (u.password === "****") throw new Error("Enter the password for the copy destination");
-      if (!u.pathname.endsWith("/")) u.pathname += "/";
+      if (!u.pathname.endsWith("/") && !isAzureBlob(u)) u.pathname += "/";
       uploadUrl = sealSecret(u.toString());
     }
   } else if (existing?.uploadUrl && (input.uploadUser || input.uploadPassword)) {
@@ -120,6 +121,29 @@ export async function saveBackupSettings(shop: string, input: BackupSettingsInpu
   }
   const withCopy = uploadUrl === undefined ? data : { ...data, uploadUrl };
   return existing ? prisma.schedule.update({ where: { id: existing.id }, data: withCopy }) : prisma.schedule.create({ data: { shop, ...withCopy } });
+}
+
+/** Writes a small file to the saved copy destination, to prove the address and sign-in work. */
+export async function testDestination(shop: string): Promise<string> {
+  const target = openSecret((await getBackupSchedule(shop))?.uploadUrl);
+  if (!target) throw new Error("Save a copy destination first, then test it");
+  const dir = backupDir(shop, "connection-test");
+  const file = path.join(dir, "bulkport-connection-test.txt");
+  await fs.promises.writeFile(file, `Bulkport could write here on ${new Date().toISOString()}. This file can be deleted.\n`);
+  try {
+    return await uploadResult(file, target);
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Days until the copy destination's Azure SAS token stops working, when that is within a month; else null. */
+export function destinationExpiresIn(schedule: { uploadUrl: string | null } | null, now = Date.now()): number | null {
+  const target = openSecret(schedule?.uploadUrl);
+  const when = target ? sasExpiry(target) : null;
+  if (!when) return null;
+  const days = Math.floor((when.getTime() - now) / 86400_000);
+  return days <= 30 ? days : null;
 }
 
 /** Starts a backup now with the saved (or default) data types. */

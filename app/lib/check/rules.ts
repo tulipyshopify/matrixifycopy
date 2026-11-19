@@ -129,7 +129,7 @@ export const RULES: Rule[] = [
   },
   {
     key: "no_seo",
-    title: "No search title or description",
+    title: "Search title or description missing",
     severity: "recommended",
     why: "These are the short summary search engines and agents show first.",
     fixColumns: ["Handle", "SEO Title", "SEO Description"],

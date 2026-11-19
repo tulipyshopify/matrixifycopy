@@ -54,6 +54,8 @@ function ChangeLine({ text }: { text: string }) {
   );
 }
 
+const undoUntil = (days: number) => new Date(Date.now() + days * 86400_000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+
 /** Where an import is in its three steps. */
 export function ImportSteps({ step }: { step: 1 | 2 | 3 }) {
   const steps = ["File and settings", "Preview changes", "Confirm and apply"];
@@ -89,12 +91,15 @@ export function ImportReview({
   needs,
   canApply,
   busy,
+  undoDays = 90,
   onImport,
 }: {
   sheets: PreviewSheet[];
   needs: ApplyNeeds;
   canApply: boolean;
   busy: boolean;
+  /** How long an import's undo record is kept. */
+  undoDays?: number;
   onImport: (confirm: ApplyConfirm) => void;
 }) {
   const all = useMemo(() => sheets.flatMap((s) => s.items.map((i) => ({ sheet: s.sheet, item: i, kind: kindOf(i), id: `${s.sheet}\u0000${i.key ?? i.row}` }))), [sheets]);
@@ -351,6 +356,12 @@ export function ImportReview({
                 </s-stack>
               </s-banner>
             ) : null}
+            <s-banner tone="success" heading={`You can undo this until ${undoUntil(undoDays)}`}>
+              <s-text>
+                What each item looked like is recorded before it is changed, and kept on Bulkport's server for {undoDays} days. "Undo this import" on the job's page then opens a preview of putting it back.
+                {deletesIncluded ? " A deleted product can't be undone that way: restore it from a backup." : ""}
+              </s-text>
+            </s-banner>
             <s-text color="subdued">
               Each item is checked against the store once more as it is applied: anything changed since this preview is left alone and reported. Items that already match the store are not touched.
             </s-text>

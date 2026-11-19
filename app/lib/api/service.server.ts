@@ -69,7 +69,26 @@ export async function startExport(auth: KeyAuth, input: ExportRequest) {
   let config;
   try {
     config = parseExportConfig({
-      entities: input.sheets.map(({ sheet, ...options }) => ({ entity: findSheet(sheet).key, options })),
+      entities: input.sheets.map(({ sheet, ...options }) => {
+        const e = findSheet(sheet);
+        // Columns were named and no groups: fetch only the data those columns need,
+        // so the file holds what was asked for and not every metafield and stock column too.
+        if (options.columns?.length && !options.groups) {
+          const cols = options.columns;
+          options.groups = (e.groups ?? [])
+            .filter((g) => {
+              const prefix = (g as { columnPrefix?: string }).columnPrefix;
+              if (prefix) return cols.some((c) => c.startsWith(prefix));
+              if (g.key === "metafields") return cols.some((c) => /^Metafield: /.test(c));
+              if (g.key === "variant_metafields") return cols.some((c) => /^Variant Metafield: /.test(c));
+              if (g.key === "inventory") return cols.some((c) => /^Inventory .+: /.test(c));
+              const word = g.label.split(/[\s&]/)[0].replace(/s$/, "");
+              return cols.some((c) => c.startsWith(word));
+            })
+            .map((g) => g.key);
+        }
+        return { entity: e.key, options };
+      }),
     });
   } catch (e: any) {
     if (e instanceof ApiError) throw e;

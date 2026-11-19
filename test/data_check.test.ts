@@ -46,7 +46,7 @@ describe("product data rules", () => {
     expect(problems({ "Image Alt Text": "" })).toEqual(["Images without alt text"]);
     expect(problems({ Title: "Bin" })).toEqual(["Title too short or too long"]);
     expect(problems({ Vendor: "", Type: "" })).toEqual(["No vendor (brand)", "No product type"]);
-    expect(problems({ "SEO Description": "" })).toEqual(["No search title or description"]);
+    expect(problems({ "SEO Description": "" })).toEqual(["Search title or description missing"]);
     expect(problems({ "Variant Weight": "0" })).toEqual(["A shipped variant with no weight"]);
     expect(problems({ "Variant Weight": "0", "Variant Requires Shipping": "FALSE" })).toEqual([]);
     // The rules added for Shopify's agentic channels.

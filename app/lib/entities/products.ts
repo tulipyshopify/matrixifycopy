@@ -765,11 +765,11 @@ export function isShopifyHosted(url: string): boolean {
  */
 function altFor(ctx: ImportContext, src: string, alt: string | undefined): string | undefined {
   if (!alt || !isShopifyHosted(src)) return alt;
-  if (!ctx.cache.has("warnedSharedAlt")) {
+  const message = "Image Alt Text was not applied to images already hosted on Shopify: those files can be shared with other products, and changing the text would change it there too.";
+  if (ctx.warn) ctx.warn(message);
+  else if (!ctx.cache.has("warnedSharedAlt")) {
     ctx.cache.set("warnedSharedAlt", true);
-    ctx.log(
-      "Image Alt Text was not applied to images already hosted on Shopify: those files can be shared with other products, and changing the text would change it there too.",
-    );
+    ctx.log(message);
   }
   return undefined;
 }
@@ -1325,7 +1325,13 @@ const metafieldKeys = (rows: Row[], prefix: string) => [
   ),
 ];
 
-const metafieldMap = (nodes: any[] | undefined): MetafieldsNow => new Map((nodes ?? []).map((m: any) => [`${m.namespace}.${m.key}`, { type: m.type, value: m.value }]));
+/**
+ * Metafields by "namespace.key". When metafields are asked for by name
+ * (`keys:`), Shopify returns each one's `key` already in that combined form
+ * ("custom.material", not "material"), so it must not be prefixed again.
+ */
+export const metafieldMap = (nodes: any[] | undefined): MetafieldsNow =>
+  new Map((nodes ?? []).map((m: any) => [String(m.key).startsWith(`${m.namespace}.`) ? String(m.key) : `${m.namespace}.${m.key}`, { type: m.type, value: m.value }]));
 
 /** Stock per inventory item: location id -> quantity name -> number. */
 type StockNow = Map<string, Map<string, { name: string; quantities: Record<string, number> }>>;

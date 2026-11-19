@@ -59,8 +59,24 @@ export function ImportForm({
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const signIn = NEEDS_SIGN_IN.test(url.trim());
+  // A sign-in typed into the link is moved to its own fields, so it is never left on show.
+  const tidyLink = (value: string): string => {
+    try {
+      const u = new URL(value.trim());
+      if (!NEEDS_SIGN_IN.test(value.trim()) || (!u.username && !u.password) || u.password === "****") return value;
+      if (u.username) setUsername(decodeURIComponent(u.username));
+      if (u.password) setPassword(decodeURIComponent(u.password));
+      u.username = "";
+      u.password = "";
+      const clean = u.toString();
+      setUrl(clean);
+      return clean;
+    } catch {
+      return value;
+    }
+  };
   const useLink = () => {
-    const problem = linkProblem(url);
+    const problem = linkProblem(tidyLink(url));
     setLinkError(problem);
     if (!problem) setSource("url");
   };
@@ -87,8 +103,10 @@ export function ImportForm({
   const submit = (preview = false) => {
     const form = new FormData();
     if (!source) return;
+    let link = url;
     if (source === "url") {
-      const problem = linkProblem(url);
+      link = tidyLink(url);
+      const problem = linkProblem(link);
       setLinkError(problem);
       if (problem) return;
     }
@@ -97,9 +115,18 @@ export function ImportForm({
     form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch, hold: repeating && hold && !dryRun }));
     if (source === "file" && file) form.set("file", file);
     if (source === "url") {
-      form.set("url", url);
-      if (signIn && username) form.set("username", username);
-      if (signIn && password) form.set("password", password);
+      form.set("url", link);
+      // Read from the link itself when it was only just tidied (state updates land after this call).
+      let typed: URL | null = null;
+      try {
+        typed = new URL(url.trim());
+      } catch {
+        typed = null;
+      }
+      const user = username || (typed && typed.password !== "****" ? decodeURIComponent(typed.username) : "");
+      const pass = password || (typed && typed.password !== "****" ? decodeURIComponent(typed.password) : "");
+      if (NEEDS_SIGN_IN.test(link) && user) form.set("username", user);
+      if (NEEDS_SIGN_IN.test(link) && pass) form.set("password", pass);
       if (editing) form.set("scheduleId", editing.id);
       form.set("intervalMinutes", String(repeating ? interval : 0));
       if (repeating && name.trim()) form.set("name", name.trim());
@@ -166,7 +193,7 @@ export function ImportForm({
             Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.
           </s-text>
           {source === "file" && file ? <s-text>Selected file: {file.name}</s-text> : null}
-          {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}</s-text> : null}
+          {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}{username ? ` (signing in as ${username})` : ""}</s-text> : null}
             </>
           )}
           {signIn && (source === "url" || editing) ? (

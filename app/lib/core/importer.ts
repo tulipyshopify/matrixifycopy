@@ -338,7 +338,12 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       sheetWarnings.push(`Column "${u.header}" is not a ${entity.sheet} column and is ignored.${u.suggestion ? ` Did you mean "${u.suggestion}"?` : ""}`);
     }
     for (const w of sheetWarnings) log(`Sheet "${sheet.name}": ${w}`);
-    if (sheetWarnings.length) summary.warnings = sheetWarnings;
+    // Importers add to these as they go (each message once).
+    ctx.warn = (message: string) => {
+      if (sheetWarnings.includes(message)) return;
+      sheetWarnings.push(message);
+      log(`Sheet "${sheet.name}": ${message}`);
+    };
 
     // Checks that need the whole sheet (a loop between rows, the same key twice).
     let blocked = new Map<number, string[]>();
@@ -501,6 +506,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    if (sheetWarnings.length) summary.warnings = sheetWarnings;
     if (!undo.length && before.length && summary.ok > 0) undo.push(...before);
     if (undo.length) summary.undo = undo;
     if (undoNotes.length) summary.undoNotes = undoNotes;

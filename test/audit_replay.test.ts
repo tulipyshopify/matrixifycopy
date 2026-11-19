@@ -912,3 +912,72 @@ describe("redesign: undo for other data types", () => {
     expect(logs2.join("\n")).toMatch(/could not record the items for undo \(search unavailable\)/);
   });
 });
+
+describe("fix check 19 Nov: metafields read as empty", () => {
+  it("reads metafields whether Shopify names them 'key' or 'namespace.key', so unchanged ones are no change", async () => {
+    const { metafieldMap } = await import("../app/lib/entities/products");
+    // Asked for by name, Shopify answers with the combined name in `key`.
+    expect([...metafieldMap([{ namespace: "global", key: "global.description_tag", type: "single_line_text_field", value: "x" }, { namespace: "reviews", key: "rating_count", type: "number_integer", value: "8" }]).keys()]).toEqual(["global.description_tag", "reviews.rating_count"]);
+    const store = wovenWood();
+    const panel = store.byHandle("willow-bunch-weave-hurdle-fence-panel")!;
+    panel.metafields = {
+      "global.description_tag": { type: "single_line_text_field", value: "These bunch weave willow hurdles" },
+      "mc-facebook.google_product_category": { type: "single_line_text_field", value: "502973" },
+      "reviews.rating": { type: "rating", value: '{"scale_min":"1.0","scale_max":"5.0","value":"5.0"}' },
+      "custom.restock_date": { type: "date", value: "2026-12-10" },
+    };
+    const sheet: Sheet = {
+      name: "Products",
+      headers: ["Handle", "Metafield: global.description_tag [single_line_text_field]", "Metafield: mc-facebook.google_product_category [single_line_text_field]", "Metafield: reviews.rating [rating]", "Metafield: custom.restock_date [date]"],
+      rows: [{ Handle: panel.handle, "Metafield: global.description_tag [single_line_text_field]": "These bunch weave willow hurdles", "Metafield: mc-facebook.google_product_category [single_line_text_field]": "502973", "Metafield: reviews.rating [rating]": '{"scale_min": "1.0", "scale_max": "5.0", "value": "5.0"}', "Metafield: custom.restock_date [date]": "2026-12-09" }],
+    };
+    const p = await preview([sheet], store, { defaultCommand: "UPDATE" });
+    // Only the one real difference is listed.
+    expect(p.items[0].changes).toEqual(["Metafield custom.restock_date: 2026-12-10 → 2026-12-09"]);
+  });
+});
+
+describe("fix check 19 Nov: smaller bugs", () => {
+  it("a job where a column was left out finishes with warnings, not plain green", async () => {
+    const { jobHealth } = await import("../app/lib/jobs/health");
+    const stats = [{ sheet: "Products", entity: "products", items: 2, ok: 2, failed: 0, skipped: 0, warnings: ["Image Alt Text was not applied to images already hosted on Shopify"] }];
+    expect(jobHealth({ type: "import", status: "finished", stats })).toMatchObject({ level: "warning", label: "Finished with warnings", problems: 0 });
+    expect(jobHealth({ type: "import", status: "finished", stats: [{ ...stats[0], warnings: undefined }] })).toMatchObject({ level: "ok", label: "Finished" });
+    // The importer collects them: alt text on a Shopify-hosted image.
+    const store = zzStore();
+    const sheet: Sheet = { name: "Products", headers: ["Handle", "Image Src", "Image Alt Text"], rows: [{ Handle: "zz-bulkport-test-07-images", "Image Src": "https://cdn.shopify.com/s/files/1/x/files/a.jpg?v=1", "Image Alt Text": "A planter" }] };
+    const r = await real([sheet], store);
+    expect(r.stats[0].warnings?.[0]).toMatch(/Image Alt Text was not applied/);
+    expect(jobHealth({ type: "import", status: "finished", stats: r.stats as any }).label).toBe("Finished with warnings");
+  });
+
+  it.skipIf(!fs.existsSync("prisma/dev.sqlite"))("a preview with failing rows doesn't raise the attention banner; a held one does", async () => {
+    process.env.DATABASE_URL ??= "file:dev.sqlite";
+    const { default: prisma } = await import("../app/db.server");
+    const jobs = await import("../app/lib/jobs/jobs.server");
+    const shop = `attention-${Date.now()}.myshopify.com`;
+    const make = (config: object) => prisma.job.create({ data: { shop, type: "import", status: "finished", problems: 2, config: JSON.stringify(config), stats: "[]" } });
+    await make({ options: { dryRun: true, defaultCommand: "UPDATE" } });
+    const held = await make({ options: { dryRun: true, hold: true }, autoApply: true });
+    const realJob = await make({ options: { defaultCommand: "UPDATE" } });
+    expect((await jobs.needsAttention(shop)).map((j) => j.id).sort()).toEqual([held.id, realJob.id].sort());
+    await prisma.job.deleteMany({ where: { shop } });
+  });
+
+  it("an export asked for by columns fetches only what those columns need", async () => {
+    process.env.DATABASE_URL ??= "file:dev.sqlite";
+    if (!fs.existsSync("prisma/dev.sqlite")) return;
+    const { default: prisma } = await import("../app/db.server");
+    const service = await import("../app/lib/api/service.server");
+    const shop = `cols-${Date.now()}.myshopify.com`;
+    const auth = { shop, keyId: "k", name: "Claude", canImport: false, readOnly: false };
+    const a = await service.startExport(auth, { sheets: [{ sheet: "Products", columns: ["ID", "Title"] }] });
+    const b = await service.startExport(auth, { sheets: [{ sheet: "Products", columns: ["ID", "Variant SKU", "Variant Price", "Image Src"] }] });
+    const c = await service.startExport(auth, { sheets: [{ sheet: "Products" }] });
+    const groups = async (id: string) => JSON.parse((await prisma.job.findUniqueOrThrow({ where: { id } })).config).entities[0].options.groups;
+    expect(await groups(a.id)).toEqual([]);
+    expect(await groups(b.id)).toEqual(["variants", "images"]);
+    expect(await groups(c.id)).toBeUndefined();
+    await prisma.job.deleteMany({ where: { shop } });
+  });
+});

@@ -337,6 +337,9 @@ export function needsAttention(shop: string) {
       shop,
       kind: { not: "check" },
       reviewedAt: null,
+      // A preview that finds problems is the preview doing its job. Only one that
+      // a schedule is holding for approval asks for attention.
+      NOT: { AND: [{ config: { contains: '"dryRun":true' } }, { NOT: { config: { contains: '"autoApply":true' } } }] },
       createdAt: { gte: new Date(Date.now() - ATTENTION_DAYS * 86400_000) },
       OR: [{ status: "failed" }, { status: "finished", problems: { gt: 0 } }],
     },

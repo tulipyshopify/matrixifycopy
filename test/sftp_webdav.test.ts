@@ -209,3 +209,18 @@ describe("S3-compatible storage", () => {
     }
   });
 });
+
+describe("Azure Blob Storage", () => {
+  it("recognises a container SAS address, hides its signature, and reads its expiry", async () => {
+    const { isAzureBlob, isUploadTarget, sasExpiry } = await import("../app/lib/jobs/sources.server");
+    const sas = "https://wovenwood.blob.core.windows.net/backups/daily?sv=2024-11-04&se=2027-01-31T00%3A00%3A00Z&sp=cw&sig=SECRETSIG";
+    expect(isAzureBlob(new URL(sas))).toBe(true);
+    expect(isUploadTarget(new URL(sas))).toBe(true);
+    expect(isUploadTarget(new URL("https://example.com/x"))).toBe(false);
+    expect(redactUrl(sas)).not.toContain("SECRETSIG");
+    expect(redactUrl(sas)).toContain("sig=****");
+    expect(sasExpiry(sas)?.toISOString()).toBe("2027-01-31T00:00:00.000Z");
+    expect(sasExpiry("sftp://host/x")).toBeNull();
+    await expect(uploadResult("x.zip", "https://wovenwood.blob.core.windows.net/backups")).rejects.toThrow(/needs its SAS token/);
+  });
+});

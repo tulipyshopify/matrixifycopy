@@ -201,8 +201,8 @@ export default function Home() {
               </s-stack>
               <s-text tone="neutral">One click starts the export; the file is ready on its page.</s-text>
               <div className="bp-quick">
-                {[...templates.map((t) => ({ id: `template:${t.key}`, title: t.title, note: t.description, edit: `/app/export?template=${t.key}` })), ...presets.map((p) => ({ id: `preset:${p.id}`, title: p.name, note: "Your saved export", edit: "/app/export" }))].map((x) => (
-                  <div key={x.id} className="bp-quick-row">
+                {[...templates.map((t) => ({ id: `template:${t.key}`, title: t.title, note: t.description, edit: `/app/export?template=${t.key}` })), ...presets.map((p) => ({ id: `preset:${p.id}`, title: p.name, note: "Your saved export", edit: "/app/export" }))].map((x, i) => (
+                  <div key={x.id} className={`bp-quick-row${i >= 3 ? " bp-quick-more" : ""}`}>
                     <div className="bp-quick-text">
                       <s-text type="strong">{x.title}</s-text>
                       <s-text tone="neutral">{x.note}</s-text>

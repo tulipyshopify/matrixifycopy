@@ -216,6 +216,12 @@ export interface ImportContext {
    * in plain words, or null when it is fine. Absent in tests (no network).
    */
   checkImageUrl?: (url: string) => Promise<string | null>;
+  /**
+   * Something in the sheet was left out or not applied (a column the import
+   * can't use, say). Shown with the sheet in the preview, and makes a real
+   * import finish "with warnings" instead of plain green.
+   */
+  warn?: (message: string) => void;
 }
 
 export type ResultStatus = "OK" | "Failed" | "Skipped";

@@ -97,7 +97,7 @@ export default function App() {
 .bp-quick-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid #ebebeb}
 .bp-quick-text{display:flex;flex-direction:column;flex:1;min-width:0}
 @media (max-width:860px){.bp-home{grid-template-columns:1fr}}
-@media (max-width:640px){.bp-column{padding-bottom:72px}}
+@media (max-width:640px){.bp-column{padding-bottom:72px}.bp-quick-more{display:none}.bp-quick-text s-text[tone="neutral"]{display:none}.bp-actionbar{bottom:68px}}
 .bp-job-end s-link{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block}
 .bp-code{display:flex;gap:8px;align-items:flex-start;background:#f6f6f7;border:1px solid #e3e3e3;border-radius:8px;padding:8px 10px;margin:6px 0}
 .bp-code pre{margin:0;flex:1;min-width:0;overflow-x:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}

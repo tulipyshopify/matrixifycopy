@@ -262,7 +262,7 @@ export default function Connect() {
       <s-section heading="Alerts by email">
         <s-stack direction="block" gap="small-200">
           <s-paragraph>Failed or partly failed scheduled jobs and backups, and scheduled imports held for approval, can be emailed.</s-paragraph>
-          {canEmail ? null : <s-text tone="caution">This server has no email account set up yet (SMTP_URL in its settings file), so nothing can be sent until it has.</s-text>}
+          {canEmail ? null : <s-text tone="caution">Email alerts aren't switched on for this app yet. You can save the addresses now; alerts start arriving once it is. Until then, use Slack or Teams below.</s-text>}
           <div className="bp-url-row">
             <s-text-field label="Email addresses" labelAccessibilityVisibility="exclusive" placeholder="you@example.com, team@example.com" value={emailList} onInput={(ev: any) => setEmailList(ev.currentTarget.value)} />
             <s-button disabled={fetcher.state !== "idle" || emailList.trim() === emails} onClick={() => fetcher.submit({ intent: "emails", emails: emailList }, { method: "post" })}>
