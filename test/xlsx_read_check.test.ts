@@ -54,11 +54,11 @@ describe("reading .xlsx files completely", () => {
     }
   });
 
-  it("refuses a file it can't read completely, instead of importing part of it", async () => {
+  it("falls back to reading the whole file when the quick reader keeps coming up short", async () => {
     const file = await twoSheets();
     const spy = shortReads(5);
     try {
-      await expect(readWorkbook(file)).rejects.toThrow(/couldn't be read completely \(found 1 of its 2 sheets\)/);
+      expect((await readWorkbook(file)).map((s) => s.name)).toEqual(["Products & Co", "Customers"]);
     } finally {
       spy.mockRestore();
     }

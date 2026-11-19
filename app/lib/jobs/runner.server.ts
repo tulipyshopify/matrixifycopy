@@ -23,6 +23,11 @@ export interface ImportConfig {
   generate?: GenerateSpec;
   /** AI-drafted fixes from the data check: likewise built when the job runs. */
   aiFix?: AiFixSpec;
+  /**
+   * The preview job this import was started from ("Import for real"). Items
+   * that changed in the store since that preview are not imported.
+   */
+  previewOf?: string;
 }
 
 export interface JobRecord {
@@ -55,6 +60,8 @@ export interface RunnerDeps {
   count?: (entity: string, options: ExportOptions) => Promise<number | null>;
   /** The worker's bulk runner reports prepared root items through this hook. */
   bulkEvents?: { onRoots: (n: number) => void };
+  /** Checks an image link loads and is an image (see ImportContext.checkImageUrl). */
+  checkImageUrl?: (url: string) => Promise<string | null>;
 }
 
 /** Share of an export's time spent while Shopify prepares the data (the rest is writing the file). */
@@ -165,25 +172,44 @@ export async function executeJob(
     const resultFormat: OutputFormat = /\.(csv|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
     const cache = new Map<string, unknown>();
+    // "Import for real" after a preview: what the preview saw in the store, to compare with now.
+    let expected: Record<string, Record<string, Record<string, string>>> | undefined;
+    if (config.previewOf && !config.options?.dryRun) {
+      try {
+        const saved = JSON.parse(await fs.promises.readFile(path.join(jobDir(job.shop, config.previewOf), PREVIEW_FILE), "utf8")) as Array<{ sheet: string; seen?: Record<string, Record<string, string>> }>;
+        expected = Object.fromEntries(saved.filter((s) => s.seen).map((s) => [s.sheet, s.seen!]));
+        deps.log("Checking each item against the preview: anything changed in the store since then is left alone and reported.");
+      } catch {
+        deps.log("The preview's record is no longer kept, so this import can't check for changes made since the preview.");
+      }
+    }
+    // The same image link is often on many rows: check each once.
+    const checked = new Map<string, Promise<string | null>>();
+    const checkImageUrl = deps.checkImageUrl
+      ? (url: string) => {
+          if (!checked.has(url)) checked.set(url, deps.checkImageUrl!(url));
+          return checked.get(url)!;
+        }
+      : undefined;
     const stats = await runImport({
-      ctx: { gql: deps.gql, options: config.options ?? {}, log: deps.log, cache },
+      ctx: { gql: deps.gql, options: config.options ?? {}, log: deps.log, cache, checkImageUrl },
       sheets,
       entities: ENTITIES,
       out,
       log: deps.log,
       progress: deps.progress,
       isCancelled: deps.isCancelled,
+      expected,
     });
     const resultFile = await out.close();
     // The dry-run preview is kept in a file of its own beside the results.
-    const previews = stats.filter((s) => s.preview?.length);
-    if (previews.length) {
+    if (config.options?.dryRun) {
       await fs.promises.writeFile(
         path.join(dir, PREVIEW_FILE),
-        JSON.stringify(previews.map((s) => ({ sheet: s.sheet, entity: s.entity, items: s.preview }))),
+        JSON.stringify(stats.map((s) => ({ sheet: s.sheet, entity: s.entity, items: s.preview ?? [], seen: s.seen, risk: s.risk, warnings: s.warnings }))),
       );
     }
-    return { resultFile, stats: stats.map(({ preview: _p, ...s }) => s) };
+    return { resultFile, stats: stats.map(({ preview: _p, seen: _s, ...s }) => s) };
   }
 
   throw new Error(`Unknown job type ${job.type}`);

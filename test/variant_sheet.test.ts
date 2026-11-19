@@ -85,7 +85,7 @@ describe("variant-only sheets", () => {
   it("updates the variant's metafields and adjusts stock at the named location, found by Variant ID", async () => {
     const m = mock();
     const r = await importProduct(ctx(m.gql), [row("11", "PP0064", "-3")], "MERGE");
-    expect(r).toMatchObject({ status: "OK", id: product.id, message: "Updated" });
+    expect(r).toMatchObject({ status: "OK", id: product.id, message: expect.stringMatching(/^Updated/) });
     const upd = m.calls.find((c) => c.op === "ImportVariantsUpdate")!.vars;
     expect(upd.productId).toBe(product.id);
     expect(upd.variants).toHaveLength(1);

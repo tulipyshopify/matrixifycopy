@@ -11,7 +11,16 @@ export interface Sheet {
   name: string;
   headers: string[];
   rows: Row[];
+  /** Things the reader noticed that the person should know (e.g. the text encoding it assumed). */
+  notes?: string[];
 }
+
+/**
+ * Put in a cell that holds a formula whose result was not saved in the file
+ * (files written by scripts, not by Excel). The import fails such a row with a
+ * clear reason instead of importing an empty or wrong value.
+ */
+export const NO_VALUE_MARK = "#NOVALUE!";
 
 export const EXCEL_MAX_ROWS = 1_048_576;
 export const EXCEL_MAX_CELL = 32_767;
@@ -27,6 +36,7 @@ function cellText(v: any): string {
   if (typeof v === "object") {
     if (Array.isArray(v.richText)) return v.richText.map((r: any) => r.text).join("");
     if ("result" in v) return cellText(v.result);
+    if ("formula" in v || "sharedFormula" in v) return `${NO_VALUE_MARK}=${v.formula ?? v.sharedFormula}`;
     if ("text" in v) return cellText(v.text);
     if ("error" in v) return "";
   }
@@ -61,6 +71,48 @@ export function parseCsv(text: string): { headers: string[]; rows: Row[] } {
   const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const parsed = Papa.parse<string[]>(clean, { skipEmptyLines: false });
   return rowsFromMatrix(parsed.data as string[][]);
+}
+
+/**
+ * Turns a text file's bytes into text, working out the encoding: UTF-8 and
+ * UTF-16 by their marks (or UTF-16's tell-tale zero bytes), and anything that
+ * is not valid UTF-8 as Windows-1252, which is what Excel on Windows saves
+ * "CSV" files in. Never produces replacement characters from a readable file.
+ */
+export function decodeText(buf: Uint8Array): { text: string; encoding: string } {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return { text: b.subarray(3).toString("utf8"), encoding: "UTF-8" };
+  if (b[0] === 0xff && b[1] === 0xfe) return { text: new TextDecoder("utf-16le").decode(b.subarray(2)), encoding: "UTF-16" };
+  if (b[0] === 0xfe && b[1] === 0xff) return { text: new TextDecoder("utf-16be").decode(b.subarray(2)), encoding: "UTF-16" };
+  // UTF-16 without a mark: every other byte of plain text is zero.
+  const sample = b.subarray(0, 2000);
+  if (sample.length >= 4) {
+    let even = 0;
+    let odd = 0;
+    for (let i = 0; i < sample.length; i++) if (sample[i] === 0) i % 2 ? odd++ : even++;
+    if (odd > sample.length * 0.2 && even < sample.length * 0.02) return { text: new TextDecoder("utf-16le").decode(b), encoding: "UTF-16" };
+    if (even > sample.length * 0.2 && odd < sample.length * 0.02) return { text: new TextDecoder("utf-16be").decode(b), encoding: "UTF-16" };
+  }
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(b), encoding: "UTF-8" };
+  } catch {
+    // Latin-1 for the bytes both share, then the Windows-1252 extras (€ ‚ „ … – — ‘ ’ “ ” • ™ …).
+    const text = b.toString("latin1").replace(/[\x80-\x9f]/g, (c) => CP1252[c.charCodeAt(0) - 0x80] ?? c);
+    return { text, encoding: "Windows-1252" };
+  }
+}
+
+const CP1252 = "€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008dŽ\u008f\u0090‘’“”•–—˜™š›œ\u009džŸ";
+
+/** Reads CSV bytes into a sheet, noting the encoding when it had to be guessed. */
+function csvSheet(name: string, data: Uint8Array): Sheet {
+  const { text, encoding } = decodeText(data);
+  const { headers, rows } = parseCsv(text);
+  const sheet: Sheet = { name, headers, rows };
+  if (encoding === "Windows-1252") {
+    sheet.notes = ["This file is not saved as UTF-8, so it was read as Windows-1252 (Excel's \"CSV\" format). Check accented letters and currency signs in the preview; to be sure, save it as \"CSV UTF-8\"."];
+  }
+  return sheet;
 }
 
 /**
@@ -186,9 +238,45 @@ async function readXlsx(input: string | Buffer): Promise<Sheet[]> {
   if (complete(sheets)) return sheets;
   sheets = await streamXlsx(input);
   if (complete(sheets)) return sheets;
+  // Files written by other tools can list their sheets after the sheet data,
+  // which the streaming reader can't name. Read those the slower, whole-file way.
+  const size = typeof input === "string" ? (await fs.promises.stat(input)).size : input.length;
+  if (size <= WHOLE_FILE_MAX_BYTES) {
+    try {
+      const whole = await wholeXlsx(input);
+      if (complete(whole)) return whole;
+      sheets = whole;
+    } catch {
+      // fall through to the error below
+    }
+  }
+  const missing = names?.filter((n) => !sheets.some((x) => x.name === n)) ?? [];
   throw new Error(
-    `This Excel file couldn't be read completely (found ${sheets.length} of its ${worksheetCount} sheets). Save it again in Excel, or use CSV, and import it again.`,
+    missing.length
+      ? `This Excel file couldn't be read completely: sheet${missing.length === 1 ? "" : "s"} ${missing.map((n) => `"${n}"`).join(", ")} could not be read. Save the file again in Excel, or use CSV, and import it again.`
+      : `This Excel file couldn't be read completely (read ${sheets.length} of its ${worksheetCount} sheets). Save it again in Excel, or use CSV, and import it again.`,
   );
+}
+
+/** Largest .xlsx read the whole-file way (it is held in memory unpacked). */
+const WHOLE_FILE_MAX_BYTES = 30 * 1024 * 1024;
+
+async function wholeXlsx(input: string | Buffer): Promise<Sheet[]> {
+  const wb = new ExcelJS.Workbook();
+  if (typeof input === "string") await wb.xlsx.readFile(input);
+  else await wb.xlsx.load(input as any);
+  return wb.worksheets.map((ws) => {
+    const matrix: string[][] = [];
+    ws.eachRow({ includeEmpty: false }, (row, n) => {
+      const values = (row.values ?? []) as any[];
+      const arr: string[] = [];
+      for (let c = 1; c < values.length; c++) arr.push(cellText(values[c]));
+      matrix[n - 1] = arr;
+    });
+    for (let i = 0; i < matrix.length; i++) matrix[i] ??= [];
+    const { headers, rows } = rowsFromMatrix(matrix);
+    return { name: ws.name, headers, rows };
+  });
 }
 
 /**
@@ -201,8 +289,7 @@ export async function readWorkbook(filePath: string, originalName = path.basenam
   const baseName = path.basename(originalName, ext);
   if (ext === ".xlsx" || ext === ".xlsm") return readXlsx(filePath);
   if (ext === ".csv" || ext === ".txt" || ext === ".tsv") {
-    const { headers, rows } = parseCsv(await fs.promises.readFile(filePath, "utf8"));
-    return [{ name: baseName, headers, rows }];
+    return [csvSheet(baseName, await fs.promises.readFile(filePath))];
   }
   if (ext === ".zip") {
     const files = unzipSync(new Uint8Array(await fs.promises.readFile(filePath)));
@@ -211,9 +298,8 @@ export async function readWorkbook(filePath: string, originalName = path.basenam
       if (name.endsWith("/") || name.startsWith("__MACOSX")) continue;
       const e = path.extname(name).toLowerCase();
       const b = path.basename(name, e);
-      if (e === ".csv") {
-        const { headers, rows } = parseCsv(Buffer.from(data).toString("utf8"));
-        sheets.push({ name: b, headers, rows });
+      if (e === ".csv" || e === ".txt" || e === ".tsv") {
+        sheets.push(csvSheet(b, data));
       } else if (e === ".xlsx") {
         sheets.push(...(await readXlsx(Buffer.from(data))));
       }

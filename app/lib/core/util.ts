@@ -156,14 +156,92 @@ export function cellToMetafieldValue(type: string, cellValue: string): string {
   return v;
 }
 
+/** Checks a metafield value against its type the way Shopify will; the problem in plain words, or null. */
+export function metafieldProblem(type: string, value: string): string | null {
+  const list = type.startsWith("list.");
+  const base = list ? type.slice(5) : type;
+  let values: unknown[] = [value];
+  if (list) {
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) return "expected a list";
+      values = parsed;
+    } catch {
+      return "expected a list (one value per line, or a JSON array)";
+    }
+  }
+  const json = (v: unknown) => {
+    if (typeof v !== "string") return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return undefined;
+    }
+  };
+  for (const v of values) {
+    const t = typeof v === "string" ? v.trim() : String(v);
+    const bad = (what: string) => `expected ${what} but got "${t.length > 40 ? `${t.slice(0, 40)}…` : t}"`;
+    switch (base) {
+      case "number_integer":
+        if (!/^-?\d+$/.test(t)) return bad("a whole number");
+        break;
+      case "number_decimal":
+        if (!/^-?\d+(\.\d+)?$/.test(t)) return bad("a number");
+        break;
+      case "boolean":
+        if (!/^(true|false)$/i.test(t)) return bad("TRUE or FALSE");
+        break;
+      case "date":
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(t) || Number.isNaN(Date.parse(t))) return bad("a date like 2026-11-18");
+        break;
+      case "date_time":
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(t) || Number.isNaN(Date.parse(t))) return bad("a date and time like 2026-11-18T09:30:00Z");
+        break;
+      case "url":
+        if (!/^(https?|mailto|sms|tel):/i.test(t)) return bad("a link starting with https://");
+        break;
+      case "color":
+        if (!/^#[0-9a-f]{6}$/i.test(t)) return bad("a colour like #1D4ED8");
+        break;
+      case "json":
+      case "rich_text_field":
+        if (json(v) === undefined) return bad("valid JSON");
+        break;
+      case "dimension":
+      case "weight":
+      case "volume": {
+        const o = json(v) as any;
+        if (!o || typeof o !== "object" || Number.isNaN(Number(o.value)) || o.value === "" || o.value === null || !o.unit) return bad(`{"value": 1.5, "unit": "…"}`);
+        break;
+      }
+      case "money": {
+        const o = json(v) as any;
+        if (!o || typeof o !== "object" || Number.isNaN(Number(o.amount)) || !o.currency_code) return bad(`{"amount": "9.99", "currency_code": "GBP"}`);
+        break;
+      }
+      case "rating": {
+        const o = json(v) as any;
+        if (!o || typeof o !== "object" || Number.isNaN(Number(o.value)) || o.scale_min === undefined || o.scale_max === undefined) return bad(`{"value": "4", "scale_min": "1", "scale_max": "5"}`);
+        break;
+      }
+      default:
+        if (base.endsWith("_reference") && !/^gid:\/\/shopify\/\w+\/\S+$/.test(t)) return bad("a Shopify ID like gid://shopify/Product/123");
+        break;
+    }
+  }
+  return null;
+}
+
 /**
- * Collects metafield inputs from a row for the given column prefix. Blank cells
- * delete the metafield on merge, but only if `deleteBlank` is set; otherwise
- * they are skipped.
+ * Collects metafield inputs from a row for the given column prefix. Blank
+ * cells are returned separately (they clear the metafield). With `errors`,
+ * every value that doesn't fit its type is reported and left out; without, the
+ * first one throws.
  */
 export function metafieldsFromRow(
   row: Row,
   prefix = "Metafield",
+  errors?: string[],
 ): { set: Array<{ namespace: string; key: string; type: string; value: string }>; blank: MetafieldColumn[] } {
   const set: Array<{ namespace: string; key: string; type: string; value: string }> = [];
   const blank: MetafieldColumn[] = [];
@@ -171,8 +249,21 @@ export function metafieldsFromRow(
     const col = parseMetafieldColumn(header, prefix);
     if (!col) continue;
     const v = (row[header] ?? "").trim();
-    if (v === "") blank.push(col);
-    else set.push({ namespace: col.namespace, key: col.key, type: col.type, value: cellToMetafieldValue(col.type, v) });
+    if (v === "") {
+      blank.push(col);
+      continue;
+    }
+    try {
+      const value = cellToMetafieldValue(col.type, v);
+      const problem = metafieldProblem(col.type, value);
+      if (problem) throw new ImportError(problem);
+      set.push({ namespace: col.namespace, key: col.key, type: col.type, value });
+    } catch (e: any) {
+      if (!(e instanceof ImportError)) throw e;
+      const message = `${prefix} ${col.namespace}.${col.key}: ${e.message.replace(/^Expected/, "expected")}`;
+      if (!errors) throw new ImportError(message);
+      errors.push(message);
+    }
   }
   return { set, blank };
 }

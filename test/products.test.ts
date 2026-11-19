@@ -143,7 +143,7 @@ describe("product import", () => {
       "Image Src": "https://img/a.jpg",
       "Variant Image": "https://img/a.jpg",
     },
-    { Handle: "tee", "Option1 Value": "M", "Variant Price": "11", "Variant Inventory Qty": "3", "Image Src": "https://img/b.jpg", "Image Alt Text": "back" },
+    { Handle: "tee", "Option1 Value": "M", "Variant Price": "11", "Image Src": "https://img/b.jpg", "Image Alt Text": "back" },
   ];
 
   it("creates a product with productSet when it does not exist (MERGE)", async () => {
@@ -184,8 +184,11 @@ describe("product import", () => {
       inventoryQuantities: [{ locationId: "gid://shopify/Location/1", name: "available", quantity: 5 }],
       inventoryItem: { tracked: true, sku: "T-S" },
     });
-    // Variant Inventory Qty is a cross-location total: ignored in a 2-location store.
     expect(input.variants[1].inventoryQuantities).toBeUndefined();
+    // Variant Inventory Qty is a cross-location total: with 2 locations it is refused, not silently dropped.
+    await expect(importProduct(ctxFor(m.gql), [{ ...newProductRows[0] }, { ...newProductRows[1], "Variant Inventory Qty": "3" }], "MERGE")).rejects.toThrow(
+      /Row 2: Variant Inventory Qty can't be imported: this store has 2 locations.*"Inventory Available: Warehouse"/,
+    );
     expect(input.files).toEqual([
       { originalSource: "https://img/a.jpg", alt: undefined, contentType: "IMAGE" },
       { originalSource: "https://img/b.jpg", alt: "back", contentType: "IMAGE" },
@@ -234,7 +237,7 @@ describe("product import", () => {
     });
     expect((await importProduct(ctxFor(existing.gql), newProductRows, "NEW")).status).toBe("Failed");
     const missing = mockGql({ ImportProductByHandle: () => ({ productByIdentifier: null }) });
-    expect(await importProduct(ctxFor(missing.gql), newProductRows, "UPDATE")).toMatchObject({ status: "Failed", message: "Product not found" });
+    expect(await importProduct(ctxFor(missing.gql), newProductRows, "UPDATE")).toMatchObject({ status: "Failed", message: expect.stringMatching(/^Product not found \(no product has the handle "tee"\)/) });
   });
 
   const existingProduct = {
@@ -284,7 +287,7 @@ describe("product import", () => {
       { ID: "1", "Variant ID": "11", "Variant Command": "DELETE" },
     ];
     const r = await importProduct(ctxFor(m.gql), rows, "MERGE");
-    expect(r).toMatchObject({ status: "OK", message: "Updated" });
+    expect(r).toMatchObject({ status: "OK", message: expect.stringMatching(/^Updated \(\d+ changes\)/) });
 
     const update = m.calls.find((c) => c.op === "ImportProductUpdate")!.vars.product;
     expect(update).toEqual({ id: existingProduct.id, title: "Tee v2" }); // tags merged separately
@@ -296,7 +299,7 @@ describe("product import", () => {
 
     // "s" matches existing variant S case-insensitively.
     const upd = m.calls.find((c) => c.op === "ImportVariantsUpdate")!.vars;
-    expect(upd.variants).toEqual([{ id: "gid://shopify/ProductVariant/10", price: "12", optionValues: [{ optionName: "Size", name: "s" }] }]);
+    expect(upd.variants).toEqual([{ id: "gid://shopify/ProductVariant/10", price: "12" }]);
 
     const created = m.calls.find((c) => c.op === "ImportVariantsCreate")!.vars;
     expect(created.strategy).toBe("DEFAULT");
@@ -341,9 +344,9 @@ describe("product import", () => {
       ImportProductByHandle: () => ({ productByIdentifier: existingProduct }),
       ImportProductVariants: () => ({ product: { variants: { nodes: existingVariants, pageInfo: { hasNextPage: false, endCursor: null } } } }),
     });
-    await expect(
-      importProduct(ctxFor(m.gql), [{ Handle: "tee", "Option1 Name": "Colour", "Option1 Value": "Red" }], "MERGE"),
-    ).rejects.toThrow(/Option names/);
+    const r = await importProduct(ctxFor(m.gql), [{ Handle: "tee", "Option1 Name": "Colour", "Option1 Value": "Red" }], "MERGE");
+    expect(r).toMatchObject({ status: "Failed", message: expect.stringMatching(/Option names \(Colour\) differ from the product's \(Size\)/) });
+    expect(m.ops().some((o) => /Update|Create|Delete|Set/.test(o))).toBe(false);
   });
 
   it("deletes and replaces (new product first, then delete, then take the handle)", async () => {
@@ -354,7 +357,7 @@ describe("product import", () => {
       ImportProductSet: () => ({ productSet: ok({ product: { id: "gid://shopify/Product/2", handle: "tee-1", variants: { nodes: [] } } }) }),
       ImportProductUpdate: () => ({ productUpdate: ok({ product: { id: "gid://shopify/Product/2", handle: "tee" } }) }),
     });
-    expect(await importProduct(ctxFor(m.gql), [{ Handle: "tee" }], "DELETE")).toMatchObject({ status: "OK", message: "Deleted" });
+    expect(await importProduct(ctxFor(m.gql), [{ Handle: "tee" }], "DELETE")).toMatchObject({ status: "OK", message: expect.stringMatching(/^Deleted "Tee"/) });
     m.calls.length = 0;
     const r = await importProduct(ctxFor(m.gql), [{ Handle: "tee", Title: "Tee" }], "REPLACE");
     expect(r).toMatchObject({ status: "OK", id: "gid://shopify/Product/2", message: "Replaced" });

@@ -225,3 +225,39 @@ export function redactUrl(u: string): string {
     return u;
   }
 }
+
+/**
+ * Checks that an image link can be loaded and really is an image, before it
+ * is handed to Shopify (which would attach a broken placeholder and say
+ * nothing). Returns the problem in plain words, or null when the link is fine
+ * or can't be judged (a server that refuses the check is given the benefit).
+ */
+export async function checkImageUrl(url: string): Promise<string | null> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "is not a valid link";
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return "is not a web link (it must start with https://)";
+  try {
+    let res = await safeFetch(url, 5, { method: "HEAD", signal: AbortSignal.timeout(15_000) });
+    // Some servers don't answer HEAD: ask for the first bytes instead.
+    if (res.status === 405 || res.status === 501 || res.status === 403) {
+      res = await safeFetch(url, 5, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(15_000) });
+      await res.body?.cancel().catch(() => {});
+    }
+    if (res.status === 404 || res.status === 410) return `can't be loaded: the link answers "not found" (HTTP ${res.status})`;
+    if (res.status === 401 || res.status === 403) return `can't be loaded: the link needs a sign-in (HTTP ${res.status}), which Shopify doesn't have`;
+    if (res.status >= 400) return res.status >= 500 ? null : `can't be loaded (HTTP ${res.status})`;
+    const type = (res.headers.get("content-type") ?? "").toLowerCase();
+    if (type && !type.startsWith("image/") && !type.startsWith("application/octet-stream") && !type.startsWith("binary/")) {
+      return `is not an image: the link returns ${type.split(";")[0]}`;
+    }
+    return null;
+  } catch (e: any) {
+    if (/private address/i.test(e?.message ?? "")) return "points to a private address, which Shopify can't reach";
+    if (e?.cause?.code === "ENOTFOUND") return "can't be loaded: the website in the link doesn't exist";
+    return null;
+  }
+}

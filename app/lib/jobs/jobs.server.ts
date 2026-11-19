@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { PreviewItem } from "../core/importer";
+import type { ImportRisk, PreviewItem } from "../core/importer";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, DATE_UNITS, MAX_LIST_VALUES, listValues, opsFor } from "../core/types";
@@ -470,7 +470,8 @@ export async function applyDryRun(shop: string, id: string) {
     data: {
       shop,
       type: "import",
-      config: JSON.stringify({ ...config, options }),
+      // previewOf: the import compares each item with what this preview saw.
+      config: JSON.stringify({ ...config, options, previewOf: job.id }),
       format: job.format,
       name: job.name,
       inputFile: job.inputFile,
@@ -480,9 +481,19 @@ export async function applyDryRun(shop: string, id: string) {
 }
 
 /** A dry run's preview, if it has one. */
-export async function readPreview(shop: string, id: string): Promise<Array<{ sheet: string; entity: string | null; items: PreviewItem[] }>> {
+export interface PreviewSheet {
+  sheet: string;
+  entity: string | null;
+  items: PreviewItem[];
+  risk?: ImportRisk;
+  warnings?: string[];
+}
+
+export async function readPreview(shop: string, id: string): Promise<PreviewSheet[]> {
   try {
-    return JSON.parse(await fs.promises.readFile(path.join(jobDir(shop, id), PREVIEW_FILE), "utf8"));
+    const sheets = JSON.parse(await fs.promises.readFile(path.join(jobDir(shop, id), PREVIEW_FILE), "utf8")) as Array<PreviewSheet & { seen?: unknown }>;
+    // `seen` is for the import that follows, not for the page.
+    return sheets.map(({ seen: _seen, ...s }) => s);
   } catch {
     return [];
   }

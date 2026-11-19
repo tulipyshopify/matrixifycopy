@@ -11,7 +11,7 @@ import { pruneBackups } from "./backups.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports } from "./jobs.server";
-import { downloadSource, redactUrl, uploadResult } from "./sources.server";
+import { checkImageUrl, downloadSource, redactUrl, uploadResult } from "./sources.server";
 
 /**
  * In-process job worker. Polls the Job table, runs at most one job per shop
@@ -32,10 +32,21 @@ const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_HOURS ?? 12) * 3600_000;
 const MAX_ATTEMPTS = 2;
 
 const running = new Set<string>(); // job ids
-// One export and one import may run per shop at a time, so an import never
-// waits behind a long export. Keys are "<shop>:<type>".
-const runningShops = new Set<string>();
-const slot = (job: { shop: string; type: string }) => `${job.shop}:${job.type}`;
+// One export and one real import may run per shop at a time, so an import
+// never waits behind a long export. Previews change nothing, so they get
+// slots of their own: a quick preview doesn't queue behind a long import, or
+// behind another long preview. Keys are "<shop>:<kind>".
+const runningShops = new Map<string, number>();
+const PREVIEWS_PER_SHOP = 2;
+const slot = (job: { shop: string; type: string; config?: string | null }) =>
+  `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? "preview" : job.type}`;
+const slotFree = (key: string) => (runningShops.get(key) ?? 0) < (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1);
+const takeSlot = (key: string) => runningShops.set(key, (runningShops.get(key) ?? 0) + 1);
+const freeSlot = (key: string) => {
+  const n = (runningShops.get(key) ?? 1) - 1;
+  if (n > 0) runningShops.set(key, n);
+  else runningShops.delete(key);
+};
 
 async function claimNext() {
   const candidates = await prisma.job.findMany({
@@ -44,7 +55,7 @@ async function claimNext() {
     take: 50,
   });
   for (const job of candidates) {
-    if (runningShops.has(slot(job))) continue;
+    if (!slotFree(slot(job))) continue;
     // Atomic claim: only one worker flips queued -> running.
     const { count } = await prisma.job.updateMany({
       where: { id: job.id, status: "queued" },
@@ -57,7 +68,7 @@ async function claimNext() {
 
 async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   running.add(job.id);
-  runningShops.add(slot(job));
+  takeSlot(slot(job));
   const startedAt = Date.now();
   let timedOut = false;
 
@@ -135,6 +146,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       },
       isCancelled,
       bulkEvents,
+      checkImageUrl,
       timezone: () => shopTimezone(gql),
       // A change asked for in plain English builds its file: keep it, so
       // "Import for real" applies exactly what was previewed.
@@ -185,7 +197,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   } finally {
     clearInterval(timer);
     running.delete(job.id);
-    runningShops.delete(slot(job));
+    freeSlot(slot(job));
   }
 }
 

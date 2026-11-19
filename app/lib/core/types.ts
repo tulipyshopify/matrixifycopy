@@ -209,9 +209,29 @@ export interface ImportContext {
   options: ImportOptions;
   log: Logger;
   cache: Map<string, unknown>;
+  /**
+   * Checks that a link can be loaded and is an image; resolves to the problem
+   * in plain words, or null when it is fine. Absent in tests (no network).
+   */
+  checkImageUrl?: (url: string) => Promise<string | null>;
 }
 
 export type ResultStatus = "OK" | "Failed" | "Skipped";
+
+/** What an item's import would do (or did), field by field. */
+export interface ItemPreview {
+  action: "create" | "update" | "delete" | "replace" | "none";
+  /** One line per change, old value first: "Variant Price (SKU PB001): 44.99 → 45.99". */
+  changes: string[];
+  /** Things that are allowed but look wrong (a 90% price drop, compare-at below price…). */
+  warnings: string[];
+  /** Fields this item would empty ("Tags", "Body HTML"). */
+  clears?: string[];
+  /** Products, variants… this item would delete. */
+  deletes?: number;
+  /** New things this item would create (the item itself, or variants). */
+  creates?: number;
+}
 
 export interface ItemResult {
   status: ResultStatus;
@@ -219,8 +239,26 @@ export interface ItemResult {
   /** Resulting resource GID, if any. */
   id?: string;
   message?: string;
+  /** Every problem found, when there is more than one (message joins them). */
+  errors?: string[];
   /** Extra cells to write back into the rows of this item (e.g. new Variant IDs). */
   rowPatches?: Array<Row | undefined>;
+  /** Field-level detail, from data types that compare the file with the store. */
+  preview?: ItemPreview;
+  /**
+   * The store's current values of everything this item touches, as seen when
+   * it was checked. A real import that follows a preview compares the two and
+   * refuses an item that changed in between.
+   */
+  seen?: Record<string, string>;
+}
+
+/** Passed to an importer with each item. */
+export interface ItemMeta {
+  /** `seen` from the preview this import follows, if any. */
+  expectedSeen?: Record<string, string>;
+  /** Sheet row number of each of the item's rows (the header is row 1). */
+  rowNumbers?: number[];
 }
 
 export interface ColumnGroup {
@@ -242,7 +280,13 @@ export interface EntityImporter {
    * column value; rows with every key empty continue the previous item.
    */
   keyColumns: string[];
-  apply(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult>;
+  apply(ctx: ImportContext, rows: Row[], command: Command, meta?: ItemMeta): Promise<ItemResult>;
+  /**
+   * Called once per sheet before its items: checks that need the whole sheet
+   * (loops between rows, the same key twice). Returns problems by item index;
+   * those items fail without being applied.
+   */
+  prepare?(ctx: ImportContext, items: Array<{ rows: Row[]; rowIndexes: number[] }>, defaultCommand: Command): Promise<Map<number, string[]>>;
 }
 
 export interface Entity {
@@ -264,3 +308,10 @@ export interface Entity {
 }
 
 export class ImportError extends Error {}
+
+/** Several problems with one item, reported together. */
+export class ImportErrors extends ImportError {
+  constructor(public errors: string[]) {
+    super(errors.join("; "));
+  }
+}

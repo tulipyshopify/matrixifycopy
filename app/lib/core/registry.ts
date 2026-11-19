@@ -187,3 +187,110 @@ export async function detectEntityByMetafields(
   const [first, second] = scores;
   return first && first.n > 0 && first.n > (second?.n ?? 0) ? first.e : null;
 }
+
+// --- Columns the data type doesn't have ---------------------------------------
+
+/** Headers every sheet may carry, whatever the data type. */
+const ALWAYS_KNOWN = /^(ID|Command|Row #|Top Row|Import Result|Import Comment)$/i;
+/** Columns made from the store's own data (metafields, locations…): any name after the prefix is fine. */
+const OPEN_ENDED = /^((Variant )?Metafield: \S|Inventory [A-Za-z ]+: \S|Option[123] (Name|Value)$)/;
+/** Data types whose columns are a fixed list apart from the open-ended ones above. */
+const CLOSED_COLUMNS = new Set(["products", "redirects", "pages", "custom_collections", "smart_collections"]);
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let last = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const keep = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, last + (a[i - 1] === b[j - 1] ? 0 : 1));
+      last = keep;
+    }
+  }
+  return prev[b.length];
+}
+
+/**
+ * Headers the data type would silently ignore, each with the column it most
+ * resembles. For data types with free-form columns only near-misses are
+ * returned, so a legitimate extra column never raises a false alarm.
+ */
+export function unknownColumns(entity: Entity, headers: string[]): Array<{ header: string; suggestion: string | null }> {
+  const cols = new Set(entity.columns);
+  const lower = new Map(entity.columns.map((c) => [c.toLowerCase().replace(/\s+/g, " "), c]));
+  const out: Array<{ header: string; suggestion: string | null }> = [];
+  for (const raw of headers) {
+    const h = raw.replace(/ \(\d+\)$/, "").trim();
+    if (!h || cols.has(h) || ALWAYS_KNOWN.test(h) || OPEN_ENDED.test(h)) continue;
+    const same = lower.get(h.toLowerCase().replace(/\s+/g, " "));
+    let suggestion: string | null = same ?? null;
+    if (!suggestion) {
+      let best = 3;
+      for (const c of entity.columns) {
+        if (Math.abs(c.length - h.length) > 2) continue;
+        const d = editDistance(c.toLowerCase(), h.toLowerCase());
+        if (d < best) {
+          best = d;
+          suggestion = c;
+        }
+      }
+    }
+    // A header that only differs in capitals or spacing is still read by nobody: flag it too.
+    if (suggestion || CLOSED_COLUMNS.has(entity.key)) out.push({ header: raw, suggestion });
+  }
+  return out;
+}
+
+// --- Recognising a sheet by its handles ---------------------------------------
+
+const HANDLE_LOOKUPS: Array<{ keys: string[]; query: string; pick: (d: any) => string | null }> = [
+  {
+    keys: ["products"],
+    query: `#graphql
+      query ImportRecogniseProductHandle($q: String!) { products(first: 1, query: $q) { nodes { id } } }`,
+    pick: (d) => (d?.products?.nodes?.length ? "products" : null),
+  },
+  {
+    keys: ["smart_collections", "custom_collections"],
+    query: `#graphql
+      query ImportRecogniseCollectionHandle($q: String!) { collections(first: 1, query: $q) { nodes { id ruleSet { appliedDisjunctively } } } }`,
+    pick: (d) => (d?.collections?.nodes?.length ? (d.collections.nodes[0].ruleSet ? "smart_collections" : "custom_collections") : null),
+  },
+  {
+    keys: ["pages"],
+    query: `#graphql
+      query ImportRecognisePageHandle($q: String!) { pages(first: 1, query: $q) { nodes { id } } }`,
+    pick: (d) => (d?.pages?.nodes?.length ? "pages" : null),
+  },
+];
+
+/**
+ * For a sheet with little more than a Handle column (say Handle + Command, to
+ * delete; or Handle + Tags): looks its first handles up among products,
+ * collections and pages, and returns the data type if exactly one has them.
+ */
+export async function detectEntityByHandles(
+  gql: (query: string, variables?: Record<string, unknown>) => Promise<any>,
+  sheet: { headers?: string[]; rows: Array<Record<string, string>> },
+  entities: Entity[],
+): Promise<Entity | null> {
+  if (!(sheet.headers ?? []).includes("Handle")) return null;
+  const handles = [...new Set(sheet.rows.map((r) => (r.Handle ?? "").trim().toLowerCase()).filter((h) => /^[^\s"\\]+$/.test(h)))].slice(0, 3);
+  if (!handles.length) return null;
+  const { candidates } = scoreByHeaders(sheet.headers ?? [], entities);
+  const found = new Set<string>();
+  for (const lookup of HANDLE_LOOKUPS) {
+    if (!lookup.keys.some((k) => candidates.some((c) => c.key === k))) continue;
+    for (const handle of handles) {
+      try {
+        const key = lookup.pick(await gql(lookup.query, { q: `handle:"${handle}"` }));
+        if (key) found.add(key);
+      } catch {
+        // No access to this data type: not this one.
+      }
+    }
+  }
+  if (found.size !== 1) return null;
+  return candidates.find((c) => c.key === [...found][0]) ?? null;
+}
