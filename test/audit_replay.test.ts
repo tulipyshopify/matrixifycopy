@@ -656,3 +656,70 @@ describe("audit: data check (M10, M11)", () => {
     expect(logs[0]).toBe("Checking active products, leaving out those tagged internal, damaged stock");
   });
 });
+
+describe("audit: backups (H6)", () => {
+  it("restores only the chosen items of a backup, by handle, ID, order name or email", async () => {
+    const { keepOnlyItems } = await import("../app/lib/jobs/runner.server");
+    const sheets: Array<{ name: string; headers: string[]; rows: Array<Record<string, string>> }> = [
+      { name: "Products", headers: ["ID", "Handle", "Title"], rows: [{ ID: "1", Handle: "bin", Title: "Bin" }, { ID: "1", Handle: "bin", Title: "" }, { ID: "2", Handle: "panel", Title: "Panel" }] },
+      { name: "Orders", headers: ["ID", "Name", "Email"], rows: [{ ID: "9", Name: "#1001", Email: "a@example.com" }, { ID: "10", Name: "#1002", Email: "b@example.com" }] },
+      { name: "Pages", headers: ["ID", "Handle"], rows: [{ ID: "5", Handle: "about" }] },
+    ];
+    const r = keepOnlyItems(sheets, ["BIN", "1002", "b@example.com", "no-such-thing"]);
+    expect(sheets[0].rows.map((x) => x.Handle)).toEqual(["bin", "bin"]);
+    expect(sheets[1].rows.map((x) => x.Name)).toEqual(["#1002"]);
+    expect(sheets[2].rows).toEqual([]);
+    expect(r).toEqual({ kept: 3, missing: ["no-such-thing"] });
+  });
+});
+
+describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("audit: backup copy destination (H6)", async () => {
+  process.env.DATABASE_URL ??= "file:dev.sqlite";
+  process.env.SHOPIFY_API_SECRET ??= "test-secret";
+  process.env.BACKUP_SHOPS = "*";
+  const { default: prisma } = await import("../app/db.server");
+  const backups = await import("../app/lib/jobs/backups.server");
+  const shop = `backup-dest-${Date.now()}.myshopify.com`;
+  const base = { enabled: true, runAt: "02:30", timezone: "Europe/London", types: ["products"], keepDays: 30 };
+
+  it("stores the destination sealed, shows it without the password, and keeps it unless changed", async () => {
+    await backups.saveBackupSettings(shop, { ...base, uploadUrl: "sftp://files.example.com/backups", uploadUser: "shop", uploadPassword: "s3cret/pw" });
+    let s = (await backups.getBackupSchedule(shop))!;
+    expect(s.uploadUrl).not.toContain("s3cret");
+    expect(backups.backupDestination(s)).toBe("sftp://shop:****@files.example.com/backups/");
+    // Saved again with the link as shown: the sign-in is kept.
+    await backups.saveBackupSettings(shop, { ...base, uploadUrl: "sftp://shop:****@files.example.com/backups/" });
+    s = (await backups.getBackupSchedule(shop))!;
+    expect(backups.backupDestination(s)).toBe("sftp://shop:****@files.example.com/backups/");
+    await expect(backups.saveBackupSettings(shop, { ...base, uploadUrl: "https://example.com/x" })).rejects.toThrow(/must start with sftp/);
+    await backups.saveBackupSettings(shop, { ...base, uploadUrl: "" });
+    expect((await backups.getBackupSchedule(shop))!.uploadUrl).toBeNull();
+    // Restoring chosen items carries them on the preview job.
+    const { backupDir } = await import("../app/lib/jobs/storage.server");
+    const backup = await prisma.job.create({ data: { shop, type: "export", kind: "backup", status: "finished", config: JSON.stringify({ entities: [{ entity: "products", options: {} }] }) } });
+    const stored = path.join(backupDir(shop, backup.id), "Backup.zip");
+    fs.writeFileSync(stored, "zip");
+    await prisma.job.update({ where: { id: backup.id }, data: { resultFile: stored } });
+    const job = await backups.restorePreview(shop, backup.id, ["bin", "panel"]);
+    expect(JSON.parse(job.config)).toEqual({ options: { dryRun: true, defaultCommand: "MERGE" }, onlyItems: ["bin", "panel"] });
+    expect(job.name).toMatch(/^Restore 2 items from backup/);
+    await prisma.job.deleteMany({ where: { shop } });
+    await prisma.schedule.deleteMany({ where: { shop } });
+    await prisma.shopSetting.deleteMany({ where: { shop } });
+  });
+});
+
+describe("audit: alerts outside the app (H5)", () => {
+  it("words an alert for unattended jobs that went wrong, and stays quiet otherwise", async () => {
+    const { alertText } = await import("../app/lib/jobs/alerts.server");
+    const job = { shop: "wovenwooduk.myshopify.com", type: "import", kind: "job", name: "Carrier numbers", scheduled: true };
+    expect(alertText(job, { status: "failed", problems: 0, summary: "", error: "Download failed: HTTP 404" })).toBe(
+      'Bulkport, wovenwooduk: Scheduled import "Carrier numbers" failed. Download failed: HTTP 404 Open the app\'s home screen for details.',
+    );
+    expect(alertText(job, { status: "finished", problems: 3, summary: "3 items failed" })).toMatch(/finished with problems\. 3 items failed/);
+    expect(alertText(job, { status: "finished", problems: 0, summary: "" })).toBeNull();
+    // Someone is watching a job they started by hand.
+    expect(alertText({ ...job, scheduled: false }, { status: "failed", problems: 0, summary: "", error: "x" })).toBeNull();
+    expect(alertText({ ...job, kind: "backup", type: "export", scheduled: false }, { status: "failed", problems: 0, summary: "", error: "Disk full" })).toMatch(/Store backup failed\. Disk full/);
+  });
+});

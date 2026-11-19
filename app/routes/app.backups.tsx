@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
+import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   BACKUP_TYPES,
   DEFAULT_BACKUP_TYPES,
+  backupDestination,
   backupNow,
   backupsAllowed,
   getBackupSchedule,
@@ -21,7 +23,7 @@ import { browserTimeZone } from "../components/ScheduleTime";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const allowed = backupsAllowed(session.shop);
-  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES };
+  if (!allowed) return { allowed, schedule: null, backups: [], keepDays: 30, types: BACKUP_TYPES, destination: "" };
   const [schedule, backups, settings] = await Promise.all([getBackupSchedule(session.shop), listBackups(session.shop), prisma.shopSetting.findUnique({ where: { shop: session.shop } })]);
   let types = DEFAULT_BACKUP_TYPES;
   try {
@@ -36,6 +38,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     schedule: schedule
       ? { enabled: schedule.enabled, runAt: schedule.runAt ?? "02:30", timezone: schedule.timezone ?? "", nextRunAt: schedule.nextRunAt, types }
       : null,
+    destination: backupDestination(schedule),
     backups: backups.map((b) => ({
       id: b.id,
       status: b.status,
@@ -63,7 +66,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: "Backup started. It appears in the list below." };
     }
     if (intent === "restore") {
-      const job = await restorePreview(session.shop, String(form.get("id")));
+      const only = String(form.get("only") ?? "").split(/[\n,]/).map((v) => v.trim()).filter(Boolean);
+      const job = await restorePreview(session.shop, String(form.get("id")), only);
       return redirect(`/app/jobs/${job.id}`);
     }
     await saveBackupSettings(session.shop, {
@@ -72,6 +76,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       timezone: String(form.get("timezone") ?? ""),
       types: String(form.get("types") ?? "").split(",").filter(Boolean),
       keepDays: Number(form.get("keepDays")),
+      uploadUrl: form.has("uploadUrl") ? String(form.get("uploadUrl")) : undefined,
+      uploadUser: String(form.get("uploadUser") ?? ""),
+      uploadPassword: String(form.get("uploadPassword") ?? ""),
     });
     return { ok: "Saved" };
   } catch (e: any) {
@@ -102,23 +109,22 @@ export default function Backups() {
   const data = useLoaderData<typeof loader>();
   for (const t of data.types) BACKUP_LABEL[t.key] = t.label.toLowerCase();
   const fetcher = useFetcher<{ ok?: string; error?: string }>();
-  const revalidator = useRevalidator();
   const [enabled, setEnabled] = useState(data.schedule?.enabled ?? false);
   const [runAt, setRunAt] = useState(data.schedule?.runAt ?? "02:30");
   const [types, setTypes] = useState<string[]>(data.schedule?.types ?? data.types.map((t) => t.key));
   const [keepDays, setKeepDays] = useState(String(data.keepDays));
   const [confirm, setConfirm] = useState<string | null>(null);
+  const [only, setOnly] = useState("");
+  const [destination, setDestination] = useState(data.destination);
+  const [destUser, setDestUser] = useState("");
+  const [destPassword, setDestPassword] = useState("");
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const busy = fetcher.state !== "idle";
   const running = data.backups.some((b) => isActive(b.status));
   const total = data.backups.reduce((n, b) => n + b.size, 0);
 
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => revalidator.state === "idle" && revalidator.revalidate(), 3000);
-    return () => clearInterval(t);
-  }, [running, revalidator]);
+  usePolling(running, 3000);
 
   if (!data.allowed) {
     return (
@@ -189,6 +195,23 @@ export default function Backups() {
             </s-grid>
             <s-text tone="neutral">Discount codes of code-pool discounts are left out (they can run into millions); the discounts themselves are kept.</s-text>
           </s-stack>
+          <s-stack direction="block" gap="small">
+            <s-text type="strong">Also copy each backup to your own storage (optional)</s-text>
+            <s-url-field
+              label="Folder on an SFTP, FTP or WebDAV server"
+              labelAccessibilityVisibility="exclusive"
+              placeholder="sftp://files.example.com/backups/"
+              details="A second copy that you hold: an SFTP server, a storage box, or any cloud drive with WebDAV (Nextcloud, Box, pCloud…). Leave empty to keep backups on Bulkport's server only."
+              value={destination}
+              onInput={(ev: any) => setDestination(ev.currentTarget.value)}
+            />
+            {destination.trim() ? (
+              <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+                <s-text-field label="User name" autocomplete="off" details={data.destination ? "Leave empty to keep the saved sign-in." : undefined} value={destUser} onInput={(ev: any) => setDestUser(ev.currentTarget.value)} />
+                <s-password-field label="Password" autocomplete="new-password" details="Stored encrypted and never shown again." value={destPassword} onInput={(ev: any) => setDestPassword(ev.currentTarget.value)} />
+              </s-grid>
+            ) : null}
+          </s-stack>
           {data.schedule?.enabled ? <s-text tone="neutral">Next backup: {formatDate(data.schedule.nextRunAt)}</s-text> : null}
           <s-stack direction="inline" justifyContent="end">
             <s-button
@@ -196,7 +219,7 @@ export default function Backups() {
               disabled={busy || !types.length}
               onClick={() =>
                 fetcher.submit(
-                  { intent: "save", enabled: String(enabled), runAt, timezone: data.schedule?.timezone || browserTimeZone(), types: types.join(","), keepDays },
+                  { intent: "save", enabled: String(enabled), runAt, timezone: data.schedule?.timezone || browserTimeZone(), types: types.join(","), keepDays, uploadUrl: destination, uploadUser: destUser, uploadPassword: destPassword },
                   { method: "post" },
                 )
               }
@@ -240,14 +263,8 @@ export default function Backups() {
                         </s-button>
                       ) : null}
                       {b.status === "finished" && b.link ? (
-                        <s-button
-                          variant="tertiary"
-                          onClick={() => {
-                            if (confirm === b.id) fetcher.submit({ intent: "restore", id: b.id }, { method: "post" });
-                            else setConfirm(b.id);
-                          }}
-                        >
-                          {confirm === b.id ? "Preview restore" : "Restore…"}
+                        <s-button variant="tertiary" onClick={() => setConfirm(confirm === b.id ? null : b.id)}>
+                          Restore…
                         </s-button>
                       ) : null}
                     </s-stack>
@@ -258,11 +275,43 @@ export default function Backups() {
           </s-table>
         )}
       </s-section>
+      {confirm && data.backups.some((b) => b.id === confirm) ? (
+        <s-section heading={`Restore from the backup of ${formatDate(data.backups.find((b) => b.id === confirm)!.createdAt)}`}>
+          <s-stack direction="block" gap="base">
+            <s-text-area
+              label="Restore only these items (optional)"
+              details="One per line: a product or collection handle, an ID, an order name (#1234), a customer email or a redirect path, as in the backup. Leave empty to compare the whole backup with the store."
+              rows={4}
+              value={only}
+              onInput={(ev: any) => setOnly(ev.currentTarget.value)}
+            />
+            <s-text tone="neutral">
+              Either way this starts a preview: it lists only what differs from the backup, field by field, and changes nothing until you confirm there.
+            </s-text>
+            <s-stack direction="inline" gap="small">
+              <s-button variant="primary" loading={busy} disabled={busy} onClick={() => fetcher.submit({ intent: "restore", id: confirm, only }, { method: "post" })}>
+                {only.trim() ? "Preview restoring these items" : "Preview restoring everything"}
+              </s-button>
+              <s-button variant="tertiary" onClick={() => setConfirm(null)}>
+                Cancel
+              </s-button>
+            </s-stack>
+          </s-stack>
+        </s-section>
+      ) : null}
+      <s-section heading="What a backup covers">
+        <s-unordered-list>
+          <s-list-item>Kept and restorable: products with variants, prices, images (as links), stock per location and metafields; collections; customers; companies; discounts; draft orders; pages and blog posts; redirects; menus; metaobjects; shop metafields.</s-list-item>
+          <s-list-item>Kept for reference only: orders, payouts and files. Shopify doesn't let past orders be written back, so they can be read in the backup but not restored.</s-list-item>
+          <s-list-item>Not in a backup: the theme and its settings, other apps' data, gift card codes, customer passwords and payment details, and the codes of code-pool discounts.</s-list-item>
+          <s-list-item>Images are kept as links to Shopify's copies: an image deleted from Shopify's Files can't be restored from a backup.</s-list-item>
+        </s-unordered-list>
+      </s-section>
       <s-section>
         <s-paragraph>
           Restoring starts with a preview: you see what would be created or updated, and nothing changes until you press "Import for real".
-          Items are merged back (updated or re-created); nothing that was added since the backup is deleted. To restore only some
-          items, download the backup, keep the rows you want and import that file.
+          Items are merged back (updated or re-created); nothing that was added since the backup is deleted. Only what differs from the
+          backup is written; items that still match it are left alone.
         </s-paragraph>
       </s-section>
     </s-page>

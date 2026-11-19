@@ -4,6 +4,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { createKey, listKeys, revokeKey } from "../lib/api/keys.server";
+import { alertWebhookSet, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
 import { formatDate } from "../components/jobs";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -11,6 +12,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const keys = await listKeys(session.shop);
   return {
     appUrl: (process.env.SHOPIFY_APP_URL ?? "").replace(/\/+$/, ""),
+    alerts: await alertWebhookSet(session.shop),
     keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
   };
 };
@@ -19,6 +21,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
   try {
+    if (form.get("intent") === "alerts") {
+      await saveAlertWebhook(session.shop, String(form.get("url") ?? ""));
+      if (!String(form.get("url") ?? "").trim()) return { saved: "Alerts outside the app are off." };
+      const sent = await sendAlert(session.shop, `Bulkport, ${session.shop.replace(/\.myshopify\.com$/, "")}: alerts are set up. Failed scheduled jobs and backups will be posted here.`);
+      if (!sent) throw new Error("The address was saved, but the test message was not accepted. Check that it is an incoming-webhook address.");
+      return { saved: "Saved. A test message was posted." };
+    }
     if (form.get("intent") === "revoke") {
       await revokeKey(session.shop, String(form.get("id")));
       return { ok: true as const };
@@ -58,13 +67,15 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl } = useLoaderData<typeof loader>();
+  const { keys, appUrl, alerts } = useLoaderData<typeof loader>();
+  const [webhook, setWebhook] = useState("");
   const fetcher = useFetcher<typeof action>();
   const [name, setName] = useState("");
   const [canImport, setCanImport] = useState(false);
   const data = fetcher.data;
   const created = data && "created" in data ? data.created : null;
   const error = data && "error" in data ? data.error : null;
+  const saved = data && "saved" in data ? data.saved : null;
   const key = created?.key ?? "bp_YOUR_KEY";
 
   return (
@@ -144,6 +155,27 @@ export default function Connect() {
         <s-paragraph>
           <s-text color="subdued">A key gives access to this store's data. Treat it like a password, and revoke it here if it leaks or is no longer used.</s-text>
         </s-paragraph>
+      </s-section>
+
+      <s-section heading="Alerts to Slack or Teams">
+        <s-stack direction="block" gap="small-200">
+          <s-paragraph>
+            The home screen always flags jobs that need attention. To also be told outside the app when a scheduled export or import, or a backup, fails or finishes with problems, paste an incoming-webhook address from Slack or Microsoft Teams.
+          </s-paragraph>
+          {saved ? <s-text tone="success">{saved}</s-text> : null}
+          <s-text tone="neutral">{alerts ? "Alerts are on. The address is stored encrypted and not shown again; paste a new one to replace it." : "Alerts outside the app are off."}</s-text>
+          <div className="bp-url-row">
+            <s-url-field label="Incoming webhook address" labelAccessibilityVisibility="exclusive" placeholder="https://hooks.slack.com/services/…" value={webhook} onInput={(ev: any) => setWebhook(ev.currentTarget.value)} />
+            <s-button disabled={!webhook.trim() || fetcher.state !== "idle"} onClick={() => (fetcher.submit({ intent: "alerts", url: webhook }, { method: "post" }), setWebhook(""))}>
+              Save and test
+            </s-button>
+            {alerts ? (
+              <s-button variant="tertiary" tone="critical" onClick={() => fetcher.submit({ intent: "alerts", url: "" }, { method: "post" })}>
+                Turn off
+              </s-button>
+            ) : null}
+          </div>
+        </s-stack>
       </s-section>
 
       <s-section heading="AI assistants: Claude and ChatGPT">

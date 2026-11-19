@@ -261,3 +261,12 @@ export async function checkImageUrl(url: string): Promise<string | null> {
     return null;
   }
 }
+
+/** Posts JSON to an https address outside the app's own network (used for alert webhooks). */
+export async function safePostJson(url: string, body: unknown): Promise<number> {
+  const u = new URL(url);
+  if (u.protocol !== "https:") throw new Error("The address must start with https://");
+  await assertSafeHost(u);
+  const res = await fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(15_000) });
+  return res.status;
+}

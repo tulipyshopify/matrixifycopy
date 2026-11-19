@@ -10,8 +10,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 const COMMANDS: Array<[string, string]> = [
-  ["MERGE", "Update the item if it exists, otherwise create it. Default when the Command column is empty."],
-  ["UPDATE", "Only update existing items; rows for items that don't exist fail."],
+  ["UPDATE", "Only update existing items; rows for items that don't exist fail. Used when the Command column is empty, unless you choose another on the import screen."],
+  ["MERGE", "Update the item if it exists, otherwise create it. New products start as drafts unless the Status column says otherwise."],
   ["NEW", "Only create; fails if an item with the same ID/handle already exists."],
   ["REPLACE", "Delete the existing item and create it again from the file (it gets a new ID)."],
   ["DELETE", "Delete the item."],
@@ -40,6 +40,25 @@ export default function Help() {
           <s-paragraph>
             Metafields use columns named <code>Metafield: namespace.key [type]</code>, for example{" "}
             <code>Metafield: custom.material [single_line_text_field]</code>. List values go one per line in the cell.
+          </s-paragraph>
+        </s-stack>
+      </s-section>
+      <s-section heading="Stock columns (Products)">
+        <s-stack direction="block" gap="small">
+          <s-paragraph>
+            Stock is kept per location, so it has a column per location: <code>Inventory Available: Location name</code>, for example{" "}
+            <code>Inventory Available: Warehouse</code>. A number in it sets the stock there. To add or take away instead, use{" "}
+            <code>Inventory Available Adjust: Location name</code> with a number such as 5 or -3. The same pairs exist for On Hand, Damaged, Safety
+            Stock and Quality Control; Committed, Reserved and Incoming are worked out by Shopify and are export-only.
+          </s-paragraph>
+          <s-paragraph>
+            <code>Variant Inventory Qty</code> is the total over all locations and <code>Variant Inventory Adjust</code> changes it. They can be
+            imported only when the store has exactly one location; with more, the import stops that row and names the per-location column to use,
+            because a total can't be split between locations.
+          </s-paragraph>
+          <s-paragraph>
+            The preview shows each stock change as the quantity now and after, with the location. Stock for a variant Shopify isn't tracking
+            switches tracking on, and after an import the stock is read back to make sure it took.
           </s-paragraph>
         </s-stack>
       </s-section>

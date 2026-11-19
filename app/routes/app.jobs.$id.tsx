@@ -32,6 +32,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     job: {
       id: job.id,
       type: job.type,
+      kind: job.kind,
       status: job.status,
       name: job.name,
       format: job.format,
@@ -105,7 +106,7 @@ export default function JobDetail() {
   }, [job, active]);
   const health = jobHealth({ type: job.type, status: job.status, stats: job.statsRaw, dryRun });
   const pct = job.total ? Math.min(100, Math.floor((job.progress / job.total) * 100)) : null;
-  const heading = `${job.type === "export" ? "Export" : dryRun ? "Preview (dry run)" : "Import"}: ${jobSummary(job)}`;
+  const heading = `${job.kind === "backup" ? "Backup" : job.type === "export" ? "Export" : dryRun ? "Preview (dry run)" : "Import"}: ${jobSummary(job)}`;
 
   return (
     <s-page heading={heading} inlineSize="base">
@@ -170,7 +171,7 @@ export default function JobDetail() {
       ) : null}
 
       {job.error ? (
-        <s-banner tone="critical" heading="Job failed">
+        <s-banner tone="critical" heading={job.status === "finished" ? "Finished, with a problem" : dryRun ? "The preview could not be made" : "Job failed"}>
           {job.error}
         </s-banner>
       ) : null}

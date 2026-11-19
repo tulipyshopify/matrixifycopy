@@ -29,6 +29,37 @@ export interface ImportConfig {
    * that changed in the store since that preview are not imported.
    */
   previewOf?: string;
+  /**
+   * Import only the items identified by one of these values (ID, handle,
+   * order name, email, path or code). Used to restore single items from a backup.
+   */
+  onlyItems?: string[];
+}
+
+/** Columns that can name an item when restoring just some of a backup. */
+const ITEM_KEYS = ["ID", "Handle", "Name", "Email", "Path", "Code", "Variant SKU"];
+
+/** Keeps only the rows of the named items. Returns how many items were asked for but not found. */
+export function keepOnlyItems(sheets: Array<{ name: string; headers: string[]; rows: Array<Record<string, string>> }>, only: string[]): { kept: number; missing: string[] } {
+  const wanted = new Set(only.map((v) => v.trim().toLowerCase().replace(/^#/, "")).filter(Boolean));
+  const found = new Set<string>();
+  let kept = 0;
+  for (const sheet of sheets) {
+    const keys = ITEM_KEYS.filter((k) => sheet.headers.includes(k));
+    sheet.rows = sheet.rows.filter((row) => {
+      let keep = false;
+      for (const k of keys) {
+        const v = (row[k] ?? "").trim().toLowerCase().replace(/^#/, "");
+        if (v && wanted.has(v)) {
+          found.add(v);
+          keep = true;
+        }
+      }
+      return keep;
+    });
+    kept += sheet.rows.length;
+  }
+  return { kept, missing: [...wanted].filter((v) => !found.has(v)) };
 }
 
 export interface JobRecord {
@@ -197,6 +228,15 @@ export async function executeJob(
     await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
     const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
     deps.log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
+    let chosen = sheets;
+    if (config.onlyItems?.length) {
+      const { kept, missing } = keepOnlyItems(sheets, config.onlyItems);
+      // Sheets without any of the chosen items are left out entirely.
+      chosen = sheets.filter((s) => s.rows.length);
+      deps.log(`Only the ${config.onlyItems.length} chosen item(s) are imported: ${kept} row(s) kept.`);
+      if (missing.length) deps.log(`Not in the file: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? `, and ${missing.length - 20} more` : ""}.`);
+      if (!kept) throw new Error(`None of the chosen items is in this file (${config.onlyItems.slice(0, 5).join(", ")}${config.onlyItems.length > 5 ? "…" : ""}). Use the ID, handle, order name or email exactly as in the backup.`);
+    }
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));
     const resultFormat: OutputFormat = /\.(csv|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
@@ -222,7 +262,7 @@ export async function executeJob(
       : undefined;
     const stats = await runImport({
       ctx: { gql: deps.gql, options: config.options ?? {}, log: deps.log, cache, checkImageUrl },
-      sheets,
+      sheets: chosen,
       entities: ENTITIES,
       out,
       log: deps.log,

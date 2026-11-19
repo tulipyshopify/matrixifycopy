@@ -9,6 +9,7 @@ import { nextRun } from "./schedule-time";
 import { isDryRunConfig, jobHealth } from "./health";
 import { pruneBackups } from "./backups.server";
 import { checkExclusions } from "../check/check.server";
+import { alertText, sendAlert } from "./alerts.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
 import { clearOldExports } from "./jobs.server";
@@ -72,6 +73,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   takeSlot(slot(job));
   const startedAt = Date.now();
   let timedOut = false;
+  let copyError: string | null = null;
 
   let logBuf = "";
   let progress = { done: 0, total: 0 };
@@ -166,8 +168,15 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       const uploadUrl = openSecret(schedule?.uploadUrl);
       if (uploadUrl) {
         log(`Uploading to ${redactUrl(uploadUrl)}`);
-        const remote = await uploadResult(resultFile, uploadUrl);
-        log(`Uploaded ${path.basename(resultFile)} to ${remote}`);
+        try {
+          const remote = await uploadResult(resultFile, uploadUrl);
+          log(`Uploaded ${path.basename(resultFile)} to ${remote}`);
+        } catch (e: any) {
+          // A backup is still a backup when its copy elsewhere fails: keep it, and say so loudly.
+          if (job.kind !== "backup") throw e;
+          copyError = `The backup was made and is kept here, but copying it to ${redactUrl(uploadUrl)} failed: ${e?.message ?? e}`;
+          log(copyError);
+        }
       }
     }
 
@@ -181,7 +190,8 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
         status,
         resultFile,
         stats: JSON.stringify(stats),
-        problems: health.problems,
+        problems: health.problems + (copyError ? 1 : 0),
+        error: copyError,
         finishedAt: new Date(),
       },
     });
@@ -200,6 +210,18 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     clearInterval(timer);
     running.delete(job.id);
     freeSlot(slot(job));
+    // Unattended jobs that went wrong are also posted to the store's alert webhook, if it has one.
+    try {
+      const done = await prisma.job.findUnique({ where: { id: job.id }, select: { status: true, problems: true, error: true, stats: true, config: true } });
+      const schedule = job.scheduleId ? await prisma.schedule.findUnique({ where: { id: job.scheduleId }, select: { intervalMinutes: true } }) : null;
+      if (done) {
+        const health = jobHealth({ type: job.type, status: done.status, stats: done.stats, error: done.error, dryRun: isDryRunConfig(done.config) });
+        const text = alertText({ shop: job.shop, type: job.type, kind: job.kind, name: job.name, scheduled: (schedule?.intervalMinutes ?? 0) > 0 }, { status: done.status, problems: done.problems, summary: health.summary, error: done.error });
+        if (text) await sendAlert(job.shop, text);
+      }
+    } catch (e) {
+      console.error("[worker] alert failed", e);
+    }
   }
 }
 
