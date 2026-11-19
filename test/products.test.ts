@@ -383,7 +383,7 @@ describe("product import", () => {
     await expect(importProduct(ctxFor(m.gql), [{ Handle: "tee" }], "REPLACE")).rejects.toThrow(/Title is required/);
     await expect(
       importProduct(ctxFor(m.gql), [{ Handle: "tee", Title: "T", "Inventory Available: Nowhere": "1" }], "REPLACE"),
-    ).rejects.toThrow(/Location "Nowhere" not found/);
+    ).rejects.toThrow(/no location called "Nowhere"/);
     expect(m.ops()).not.toContain("ImportProductDelete");
   });
 });

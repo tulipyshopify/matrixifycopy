@@ -1,4 +1,4 @@
-import type { Gql } from "./types";
+import type { ExportContext, Gql } from "./types";
 import { ImportError } from "./types";
 import { paginate } from "./gql";
 
@@ -13,12 +13,14 @@ export interface LocationInfo {
   id: string;
   name: string;
   isActive: boolean;
+  /** Set when the location belongs to a fulfilment app; `managed` when only that app may change its stock. */
+  service?: { name: string; managed: boolean } | null;
 }
 
 const LOCATIONS = `#graphql
   query Locations($after: String) {
-    locations(first: 250, after: $after, includeInactive: true) {
-      nodes { id name isActive }
+    locations(first: 250, after: $after, includeInactive: true, includeLegacy: true) {
+      nodes { id name isActive fulfillmentService { serviceName inventoryManagement } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -27,16 +29,21 @@ const LOCATIONS = `#graphql
 export function getLocations(gql: Gql, cache: Map<string, unknown>): Promise<LocationInfo[]> {
   return cached(cache, "locations", async () => {
     const out: LocationInfo[] = [];
-    for await (const l of paginate<LocationInfo>(gql, LOCATIONS, {}, (d) => d.locations)) out.push(l);
+    for await (const l of paginate<any>(gql, LOCATIONS, {}, (d) => d.locations)) {
+      out.push({ id: l.id, name: l.name, isActive: l.isActive, service: l.fulfillmentService ? { name: l.fulfillmentService.serviceName ?? l.name, managed: !!l.fulfillmentService.inventoryManagement } : null });
+    }
     return out;
   });
 }
 
 export async function locationByName(gql: Gql, cache: Map<string, unknown>, name: string): Promise<LocationInfo> {
   const locations = await getLocations(gql, cache);
-  const loc =
-    locations.find((l) => l.name === name) ?? locations.find((l) => l.name.toLowerCase() === name.trim().toLowerCase());
-  if (!loc) throw new ImportError(`Location "${name}" not found`);
+  const loose = (v: string) => v.replace(/[\s\u00a0]+/g, " ").trim().toLowerCase();
+  const loc = locations.find((l) => l.name === name) ?? locations.find((l) => loose(l.name) === loose(name));
+  if (!loc) {
+    const names = locations.filter((l) => l.isActive).map((l) => `"${l.name}"`);
+    throw new ImportError(`This store has no location called "${name}". Its locations are: ${names.slice(0, 12).join(", ")}${names.length > 12 ? "…" : ""}`);
+  }
   return loc;
 }
 
@@ -161,4 +168,23 @@ export async function removeTags(gql: Gql, id: string, tags: string[]) {
   if (!tags.length) return;
   const d = await gql(TAGS_REMOVE, { id, tags });
   if (d.tagsRemove.userErrors?.length) throw new ImportError(`Tags: ${d.tagsRemove.userErrors[0].message}`);
+}
+
+/**
+ * For an export of "the first N" (a small test export): finds those N by ID
+ * with one ordinary request, so the bulk read that follows fetches only them
+ * instead of everything in the store. Returns the search to use.
+ */
+export async function narrowToLimit(ctx: ExportContext, root: "products" | "customers" | "orders", search: string): Promise<string> {
+  const limit = ctx.options.limit;
+  if (!limit || limit > 250) return search;
+  try {
+    const d = await ctx.gql(`#graphql\n      query ExportFirst_${root}($n: Int!, $q: String) { ${root}(first: $n, query: $q, sortKey: ID) { nodes { id } } }`, { n: limit, q: search || null });
+    const nodes = d?.[root]?.nodes;
+    if (!Array.isArray(nodes)) return search;
+    ctx.log(`Reading only the first ${nodes.length} (limit ${limit})`);
+    return nodes.length ? nodes.map((n: { id: string }) => `id:${String(n.id).split("/").pop()}`).join(" OR ") : "id:0";
+  } catch {
+    return search;
+  }
 }

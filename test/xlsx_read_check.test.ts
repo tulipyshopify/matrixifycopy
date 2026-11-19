@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import { describe, expect, it, vi } from "vitest";
-import { createXlsxOut, readWorkbook, readZipEntry, xlsxSheetNames, zipEntryNames } from "../app/lib/core/sheets";
+import { createXlsxOut, libraryXlsx, readWorkbook, readZipEntry, xlsxSheetNames, zipEntryNames } from "../app/lib/core/sheets";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "bulkport-xlsx-"));
 
@@ -43,12 +43,12 @@ describe("reading .xlsx files completely", () => {
     expect(await xlsxSheetNames(notZip)).toBeNull();
   });
 
-  it("reads a short read again", async () => {
+  it("the library reader never returns a short read: it reads the whole file instead", async () => {
     const file = await twoSheets();
     const spy = shortReads(1);
     try {
-      expect((await readWorkbook(file)).map((s) => s.name)).toEqual(["Products & Co", "Customers"]);
-      expect(spy).toHaveBeenCalledTimes(2);
+      expect((await libraryXlsx(file)).map((s) => s.name)).toEqual(["Products & Co", "Customers"]);
+      expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }

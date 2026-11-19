@@ -69,7 +69,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
 
   it("starts an export with columns and filters checked", async () => {
     const r = await call("POST", "exports", preview.key, {
-      sheets: [{ sheet: "Products", columns: ["ID", "Title", "Not a column"], filters: [{ field: "vendor", op: "is", value: "Woven Wood" }], limit: 5 }],
+      sheets: [{ sheet: "Products", columns: ["ID", "title"], filters: [{ field: "vendor", op: "is", value: "Woven Wood" }], limit: 5 }],
     });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ type: "export", status: "queued", preview: false, result_url: null });
@@ -78,6 +78,10 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     expect(JSON.parse(job.config).entities[0]).toMatchObject({ entity: "products", options: { columns: ["ID", "Title"], limit: 5, filters: [{ field: "vendor", op: "is", value: "Woven Wood" }] } });
     expect((await call("POST", "exports", preview.key, { sheets: [{ sheet: "Products", filters: [{ field: "nope", op: "is", value: "x" }] }] })).status).toBe(400);
     expect((await call("POST", "exports", preview.key, {})).status).toBe(400);
+    // R36: a column the sheet doesn't have is refused by name, like an unknown filter.
+    const bad = await call("POST", "exports", preview.key, { sheets: [{ sheet: "Products", columns: ["ID", "Not a column"] }] });
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toMatch(/Products has no column/);
   });
 
   it("makes every import a preview unless the key allows imports and asks for it", async () => {
@@ -200,5 +204,19 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     for (let i = 0; i < 1000; i++) await keys.checkKey(k.key, t);
     await expect(keys.checkKey(k.key, t)).rejects.toMatchObject({ status: 429 });
     await expect(keys.checkKey(k.key, t + 61_000)).resolves.toMatchObject({ shop });
+  });
+
+  it("R30: repeated wrong keys from one address are turned away; a real key from elsewhere still works", async () => {
+    const t = Date.now() + 10 * 60_000;
+    const wrong = `bp_${"x".repeat(45)}`;
+    for (let i = 0; i < keys.MAX_FAILURES; i++) await expect(keys.checkKey(wrong, t, "203.0.113.9")).rejects.toMatchObject({ status: 401 });
+    await expect(keys.checkKey(wrong, t, "203.0.113.9")).rejects.toMatchObject({ status: 429 });
+    await expect(keys.checkKey(null, t, "203.0.113.9")).rejects.toMatchObject({ status: 429 });
+    // Another address is not affected, and the lock lifts after a few minutes.
+    await expect(keys.checkKey(wrong, t, "198.51.100.1")).rejects.toMatchObject({ status: 401 });
+    await expect(keys.checkKey(wrong, t + 6 * 60_000, "203.0.113.9")).rejects.toMatchObject({ status: 401 });
+    const k = await keys.createKey(shop, "After lock", false);
+    await expect(keys.checkKey(k.key, t, "203.0.113.9")).resolves.toMatchObject({ shop });
+    expect(keys.callerAddress(new Request("https://x.test", { headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1" } }))).toBe("203.0.113.9");
   });
 });

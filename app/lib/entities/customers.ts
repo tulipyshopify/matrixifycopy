@@ -16,7 +16,10 @@ import {
   str,
   toGid,
 } from "../core/util";
-import { addTags, removeTags, writeMetafields } from "../core/lookups";
+import { addTags, narrowToLimit, removeTags, writeMetafields } from "../core/lookups";
+import { parseMetafieldColumn } from "../core/util";
+import type { MetafieldsNow, RowComparison } from "./product_compare";
+import { compareMetafields } from "./product_compare";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -186,7 +189,8 @@ export function customerToRows(c: any, groups: Set<string>): Row[] {
 async function exportCustomers(ctx: ExportContext, emit: (rows: Row[]) => Promise<void>) {
   const groups = new Set(ctx.options.groups ?? customersEntity.groups!.filter((g) => g.default).map((g) => g.key));
   let n = 0;
-  for await (const c of ctx.bulk(customersBulkQuery(customersSearch(ctx.options), groups))) {
+  const search = await narrowToLimit(ctx, "customers", customersSearch(ctx.options));
+  for await (const c of ctx.bulk(customersBulkQuery(search, groups))) {
     await emit(customerToRows(c, groups));
     ctx.progress(++n);
     if (ctx.options.limit && n >= ctx.options.limit) break;
@@ -197,7 +201,7 @@ async function exportCustomers(ctx: ExportContext, emit: (rows: Row[]) => Promis
 
 const CUSTOMER_FIELDS = `#graphql
   fragment ImportCustomer on Customer {
-    id firstName lastName tags
+    id firstName lastName displayName note locale taxExempt taxExemptions tags
     defaultEmailAddress { emailAddress marketingState marketingOptInLevel }
     defaultPhoneNumber { phoneNumber smsMarketingConsent { state optInLevel } }
     defaultAddress { id }
@@ -235,6 +239,13 @@ interface ExistingAddress {
 
 interface ExistingCustomer {
   id: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  displayName?: string | null;
+  note?: string | null;
+  locale?: string | null;
+  taxExempt?: boolean | null;
+  taxExemptions?: string[] | null;
   tags: string[];
   defaultEmailAddress: { emailAddress: string; marketingState: string; marketingOptInLevel: string | null } | null;
   defaultPhoneNumber: { phoneNumber: string; smsMarketingConsent: { state: string; optInLevel: string | null } } | null;
@@ -616,25 +627,280 @@ async function deleteCustomer(gql: Gql, id: string) {
   assertNoUserErrors(d.customerDelete, "Delete customer");
 }
 
+const CUSTOMER_METAFIELDS_NOW = `#graphql
+  query ImportCustomerMetafieldsNow($id: ID!, $keys: [String!]) {
+    customer(id: $id) { metafields(first: 250, keys: $keys) { nodes { namespace key type value } } }
+  }
+`;
+
+const digits = (v: string | null | undefined) => (v ?? "").replace(/[^\d+]/g, "");
+
+/** Problems with a customer row that can be told from the file alone. */
+function customerProblems(top: Row, isNew: boolean): string[] {
+  const errors: string[] = [];
+  const attempt = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (e) {
+      if (!(e instanceof ImportError)) throw e;
+      errors.push(e.message);
+    }
+  };
+  const email = cell(top, "Email");
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push(`Email "${email}" is not an email address`);
+  const phone = cell(top, "Phone");
+  if (phone && !/^\+?\d{7,15}$/.test(phone.replace(/[\s().-]/g, ""))) {
+    errors.push(`Phone "${phone}" is not a full phone number. Write it with the country code, for example +447911123456`);
+  }
+  attempt(() => customerFields(top));
+  attempt(() => consentFromRow(top, "Email", isNew));
+  attempt(() => consentFromRow(top, "SMS", isNew));
+  attempt(() => parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE"));
+  const mfErrors: string[] = [];
+  metafieldsFromRow(top, "Metafield", mfErrors);
+  errors.push(...mfErrors);
+  return errors;
+}
+
+const who = (c: ExistingCustomer) => [c.displayName, c.defaultEmailAddress?.emailAddress].filter(Boolean).join(", ") || `ID ${gidToId(c.id)}`;
+const addressLine = (a: Record<string, any>) => [a.address1, a.city, a.zip, a.countryCodeV2 ?? a.countryCode].filter(Boolean).join(", ") || "(no street)";
+
+/**
+ * What a row would change on a customer who exists, field by field, without
+ * writing anything: the file's cells against what the store holds now.
+ */
+async function previewUpdate(ctx: ImportContext, existing: ExistingCustomer, rows: Row[], top: Row, command: Command): Promise<ItemResult> {
+  const errors = customerProblems(top, false);
+  const changes: string[] = [];
+  const warnings: string[] = [];
+  const clears: string[] = [];
+  let deletes = 0;
+  const line = (label: string, old: string, next: string) => changes.push(`${label}: ${old === "" ? "(empty)" : old} → ${next === "" ? "(cleared)" : next}`);
+  const text = (col: string, now: string | null | undefined, blank: "clears" | "leaves", same = (a: string, b: string) => a === b) => {
+    const v = cell(top, col);
+    const cur = now ?? "";
+    if (v === undefined) return;
+    if (v === "") {
+      if (blank === "clears" && cur !== "") {
+        line(col, cur, "");
+        clears.push(col);
+      }
+      return;
+    }
+    if (!same(v, cur)) line(col, cur, v);
+  };
+  const caseless = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  text("Email", existing.defaultEmailAddress?.emailAddress, "leaves", caseless);
+  text("Phone", existing.defaultPhoneNumber?.phoneNumber, "leaves", (a, b) => digits(a) === digits(b));
+  text("First Name", existing.firstName, "clears");
+  text("Last Name", existing.lastName, "clears");
+  text("Note", existing.note, "clears");
+  text("Language", existing.locale, "leaves", caseless);
+
+  let taxExempt: boolean | undefined;
+  try {
+    taxExempt = parseBool(cell(top, "Tax Exempt"));
+  } catch {
+    taxExempt = undefined; // listed among the errors
+  }
+  if (taxExempt !== undefined && existing.taxExempt !== undefined && existing.taxExempt !== null && taxExempt !== existing.taxExempt) {
+    line("Tax Exempt", existing.taxExempt ? "yes" : "no", taxExempt ? "yes" : "no");
+    warnings.push(taxExempt ? "the customer becomes tax exempt: no tax is charged on their orders" : "the customer stops being tax exempt: tax is charged on their orders again");
+  }
+  const exemptions = cell(top, "Tax Exemptions");
+  if (exemptions !== undefined) {
+    const want = splitTags(exemptions).map((e) => e.toUpperCase().replace(/[-\s]+/g, "_")).sort();
+    const now = [...(existing.taxExemptions ?? [])].sort();
+    if (want.join(",") !== now.join(",")) {
+      line("Tax Exemptions", now.join(", ").toLowerCase(), want.join(", ").toLowerCase());
+      if (!want.length) clears.push("Tax Exemptions");
+      else warnings.push("the customer's tax exemptions change");
+    }
+  }
+
+  const tagsCell = cell(top, "Tags");
+  if (tagsCell !== undefined) {
+    let tagsCommand: "REPLACE" | "MERGE" | "DELETE" = "REPLACE";
+    try {
+      tagsCommand = parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE");
+    } catch {
+      // listed among the errors
+    }
+    const now = existing.tags ?? [];
+    const want = splitTags(tagsCell);
+    const low = (t: string) => t.normalize("NFC").toLowerCase();
+    const has = new Set(now.map(low));
+    const wanted = new Set(want.map(low));
+    const added = want.filter((t) => !has.has(low(t)));
+    const removedByReplace = now.filter((t) => !wanted.has(low(t)));
+    if (tagsCommand === "REPLACE" && (added.length || removedByReplace.length)) {
+      if (!want.length) {
+        changes.push(`Tags: ${joinTags(now)} → (cleared: all ${now.length} tags removed)`);
+        clears.push("Tags");
+      } else changes.push(`Tags: ${joinTags(now) || "(empty)"} → ${joinTags(want)}${removedByReplace.length ? ` (removes: ${joinTags(removedByReplace)})` : ""}${added.length ? ` (adds: ${joinTags(added)})` : ""}`);
+    } else if (tagsCommand === "MERGE" && added.length) changes.push(`Tags: ${joinTags(now) || "(empty)"} → adds ${joinTags(added)}`);
+    else if (tagsCommand === "DELETE") {
+      const removed = now.filter((t) => wanted.has(low(t)));
+      if (removed.length) {
+        changes.push(`Tags: ${joinTags(now)} → removes ${joinTags(removed)}`);
+        if (removed.length === now.length) clears.push("Tags");
+      }
+    }
+  }
+
+  // Marketing consent is the customer's own decision: any change is pointed out.
+  for (const kind of ["Email", "SMS"] as const) {
+    let spec: ConsentSpec | undefined;
+    try {
+      spec = consentFromRow(top, kind, false);
+    } catch {
+      spec = undefined; // listed among the errors
+    }
+    if (!spec) continue;
+    const cur =
+      kind === "Email"
+        ? { state: existing.defaultEmailAddress?.marketingState, level: existing.defaultEmailAddress?.marketingOptInLevel }
+        : { state: existing.defaultPhoneNumber?.smsMarketingConsent?.state, level: existing.defaultPhoneNumber?.smsMarketingConsent?.optInLevel };
+    if (!consentChanged(top, kind, spec, cur)) continue;
+    const words = (v: string | null | undefined) => (v ? smsState(v).toLowerCase().replace(/_/g, " ") : "not set");
+    const label = `${kind === "Email" ? "Email" : "SMS"} marketing`;
+    if (spec.marketingState !== smsState(cur.state ?? "")) line(label, words(cur.state), words(spec.marketingState));
+    else line(`${label} opt-in level`, words(cur.level), words(spec.marketingOptInLevel));
+    warnings.push(
+      spec.marketingState === "SUBSCRIBED" || spec.marketingState === "PENDING"
+        ? `the customer is set to receive ${kind === "Email" ? "email" : "text message"} marketing (now: ${words(cur.state)}). Only do this if they agreed to it: sending marketing without consent can break the law`
+        : `the customer's ${kind === "Email" ? "email" : "text message"} marketing consent changes (${words(cur.state)} → ${words(spec.marketingState)})`,
+    );
+  }
+
+  // Addresses, matched the way the import matches them.
+  let specs: AddressSpec[] = [];
+  try {
+    specs = parseAddresses(rows);
+  } catch (e) {
+    if (!(e instanceof ImportError)) throw e;
+    errors.push(e.message);
+  }
+  const addresses = existing.addressesV2?.nodes ?? [];
+  const matched = new Set<string>();
+  for (const s of specs) {
+    const ex = s.id ? addresses.find((a) => a.id === s.id) : addresses.find((a) => !matched.has(a.id) && sameAddress(a, s.input));
+    if (s.id && !ex && s.command !== "DELETE") {
+      errors.push(`Address ID ${gidToId(s.id)} not found on this customer`);
+      continue;
+    }
+    if (s.command === "DELETE") {
+      if (ex) {
+        changes.push(`Deletes the address ${addressLine(ex)}`);
+        deletes++;
+        matched.add(ex.id);
+      }
+      continue;
+    }
+    if (!ex) {
+      changes.push(`New address: ${addressLine(s.input)}${s.isDefault ? " (becomes the default)" : ""}`);
+      continue;
+    }
+    matched.add(ex.id);
+    for (const [k, v] of Object.entries(s.input)) {
+      const cur = (ex as any)[k === "countryCode" ? "countryCodeV2" : k] ?? "";
+      if (norm(cur) !== norm(v)) line(`Address (${addressLine(ex)}) ${Object.entries(ADDRESS_FIELDS).find(([, f]) => f === k)?.[0].replace(/^Address /, "") ?? k}`, String(cur), v);
+    }
+    if (s.isDefault && ex.id !== existing.defaultAddress?.id) changes.push(`Default address: becomes ${addressLine(ex)}`);
+  }
+  if (specs.some((s) => s.command === "REPLACE")) {
+    const gone = addresses.filter((a) => !matched.has(a.id));
+    if (gone.length) {
+      changes.push(`Deletes ${gone.length} other address${gone.length === 1 ? "" : "es"} not in the file: ${gone.slice(0, 3).map(addressLine).join("; ")}${gone.length > 3 ? "…" : ""}`);
+      deletes += gone.length;
+    }
+  }
+
+  // Metafields against their current values.
+  const keys = Object.keys(top).map((h) => parseMetafieldColumn(h, "Metafield")).filter(Boolean).map((c) => `${c!.namespace}.${c!.key}`);
+  if (keys.length) {
+    let now: MetafieldsNow | null = null;
+    try {
+      const nodes: any[] = (await ctx.gql(CUSTOMER_METAFIELDS_NOW, { id: existing.id, keys }))?.customer?.metafields?.nodes ?? [];
+      now = new Map(nodes.map((n) => [n.key.includes(".") && n.key.startsWith(`${n.namespace}.`) ? n.key : `${n.namespace}.${n.key}`, { type: n.type, value: n.value }]));
+    } catch {
+      now = null;
+    }
+    const cmp: RowComparison = { changes: [], seen: {}, changed: new Set(), old: {}, errors: [] };
+    compareMetafields(top, "Metafield", now, "", cmp);
+    for (const c of cmp.changes) {
+      changes.push(`${c.label}: ${c.old} → ${c.next}`);
+      if (c.clears) clears.push(c.label);
+    }
+  }
+
+  const title = who(existing);
+  if (errors.length) return { status: "Failed", command, id: existing.id, title, message: errors.join("; "), errors };
+  return {
+    status: "OK",
+    command,
+    id: existing.id,
+    title,
+    preview: { action: changes.length ? "update" : "none", changes, warnings, ...(clears.length ? { clears } : {}), ...(deletes ? { deletes } : {}) },
+  };
+}
+
+/** What a row would create, checked in full without writing anything. */
+function previewCreate(rows: Row[], top: Row, command: Command, replacing?: ExistingCustomer): ItemResult {
+  const errors = customerProblems(top, true);
+  let prepared: PreparedCustomer | null = null;
+  try {
+    prepared = prepareCreate(rows, top);
+  } catch (e) {
+    if (!(e instanceof ImportError)) throw e;
+    if (!errors.includes(e.message)) errors.push(e.message);
+  }
+  const title = [cell(top, "First Name"), cell(top, "Last Name")].filter(Boolean).join(" ") || cell(top, "Email") || undefined;
+  if (errors.length || !prepared) return { status: "Failed", command, title, message: errors.join("; "), errors };
+  const i = prepared.input;
+  const changes = [
+    ...(replacing ? [`Deletes the customer ${who(replacing)} and creates them again from this file. Their order history stays, but anything not in the file is lost.`] : []),
+    `New customer: ${[[i.firstName, i.lastName].filter(Boolean).join(" "), i.email, i.phone].filter(Boolean).join(", ")}`,
+    ...(i.tags?.length ? [`Tags: ${joinTags(i.tags)}`] : []),
+    ...(i.taxExempt ? ["Tax Exempt: yes"] : []),
+    ...(prepared.addresses.length ? [`${prepared.addresses.length} address${prepared.addresses.length === 1 ? "" : "es"}`] : []),
+    ...(i.metafields?.length ? [`${i.metafields.length} metafield${i.metafields.length === 1 ? "" : "s"}`] : []),
+  ];
+  const warnings: string[] = [];
+  if (i.emailMarketingConsent?.marketingState === "SUBSCRIBED") warnings.push("the new customer is set to receive email marketing. Only do this if they agreed to it");
+  if (i.smsMarketingConsent?.marketingState === "SUBSCRIBED") warnings.push("the new customer is set to receive text message marketing. Only do this if they agreed to it");
+  if (i.taxExempt) warnings.push("the new customer is tax exempt: no tax is charged on their orders");
+  return { status: "OK", command, title, preview: { action: replacing ? "replace" : "create", changes, warnings, creates: 1, ...(replacing ? { deletes: 1 } : {}) } };
+}
+
 export async function importCustomer(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const top = rows[0];
   const id = toGid("Customer", cell(top, "ID"));
   const email = cell(top, "Email");
   const phone = cell(top, "Phone");
   const existing = id || email || phone ? await fetchCustomer(ctx.gql, { id, email, phone }) : null;
+  const dry = !!ctx.options.dryRun;
+  const notFound = `Customer not found${id ? ` (ID ${gidToId(id)})` : email ? ` (${email})` : ""}. ${command === "UPDATE" ? "Rows only update customers that exist; to create this customer, set Command to MERGE or NEW" : ""}`.trim();
 
   switch (command) {
     case "DELETE": {
-      if (!existing) return { status: "Failed", command, message: "Customer not found" };
+      if (!existing) return { status: "Failed", command, message: notFound };
+      if (dry) return { status: "OK", command, id: existing.id, title: who(existing), preview: { action: "delete", changes: [`Deletes the customer ${who(existing)}. This cannot be undone.`], warnings: [], deletes: 1 } };
       await deleteCustomer(ctx.gql, existing.id);
       return { status: "OK", command, id: existing.id, message: "Deleted" };
     }
     case "NEW": {
       if (existing) return { status: "Failed", command, id: existing.id, message: "Customer already exists" };
+      if (dry) return previewCreate(rows, top, command);
+      const problems = customerProblems(top, true);
+      if (problems.length) return { status: "Failed", command, message: problems.join("; "), errors: problems };
       const r = await createCustomer(ctx, rows, top);
       return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }
     case "REPLACE": {
+      if (dry) return previewCreate(rows, top, command, existing ?? undefined);
+      const problems = customerProblems(top, true);
+      if (problems.length) return { status: "Failed", command, message: problems.join("; "), errors: problems };
       // Validate everything before deleting anything.
       const prepared = prepareCreate(rows, top);
       if (existing) await deleteCustomer(ctx.gql, existing.id);
@@ -644,10 +910,16 @@ export async function importCustomer(ctx: ImportContext, rows: Row[], command: C
     case "UPDATE":
     case "MERGE": {
       if (!existing) {
-        if (command === "UPDATE") return { status: "Failed", command, message: "Customer not found" };
+        if (command === "UPDATE") return { status: "Failed", command, message: notFound };
+        if (dry) return previewCreate(rows, top, command);
+        const problems = customerProblems(top, true);
+        if (problems.length) return { status: "Failed", command, message: problems.join("; "), errors: problems };
         const r = await createCustomer(ctx, rows, top);
         return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; "), rowPatches: r.rowPatches };
       }
+      if (dry) return previewUpdate(ctx, existing, rows, top, command);
+      const problems = customerProblems(top, false);
+      if (problems.length) return { status: "Failed", command, id: existing.id, message: problems.join("; "), errors: problems };
       const r = await updateCustomer(ctx, existing, rows, top);
       return { status: "OK", command, id: existing.id, message: ["Updated", ...r.notes].join("; "), rowPatches: r.rowPatches };
     }

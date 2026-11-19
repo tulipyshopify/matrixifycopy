@@ -704,8 +704,13 @@ export interface PreviewSheet {
 export async function readPreview(shop: string, id: string): Promise<PreviewSheet[]> {
   try {
     const sheets = JSON.parse(await fs.promises.readFile(path.join(jobDir(shop, id), PREVIEW_FILE), "utf8")) as Array<PreviewSheet & { seen?: unknown }>;
-    // `seen` is for the import that follows, not for the page.
-    return sheets.map(({ seen: _seen, ...s }) => s);
+    // `seen` is for the import that follows, not for the page. A very long list of changes on one
+    // item is cut for the page (the results file has everything), so the page stays quick to open.
+    const MAX_LINES = 60;
+    return sheets.map(({ seen: _seen, ...s }) => ({
+      ...s,
+      ...(s.items ? { items: s.items.map((i) => (i.changes.length > MAX_LINES ? { ...i, changes: [...i.changes.slice(0, MAX_LINES), `…and ${(i.changes.length - MAX_LINES).toLocaleString("en-GB")} more changes on this item`] } : i)) } : {}),
+    }));
   } catch {
     return [];
   }

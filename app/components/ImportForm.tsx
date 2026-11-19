@@ -167,7 +167,7 @@ export function ImportForm({
             <>
           <s-drop-zone
             label={`Add an Excel, CSV or ZIP file, up to ${maxUploadMb} MB`}
-            accept=".xlsx,.csv,.zip"
+            accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip"
             onInput={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
             onChange={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
           />

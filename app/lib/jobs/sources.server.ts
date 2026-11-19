@@ -42,7 +42,7 @@ function fileNameFor(url: string, contentType: string | null, disposition: strin
   const fromDisposition = disposition && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
   if (fromDisposition) return safeName(decodeURIComponent(fromDisposition));
   const fromPath = safeName(decodeURIComponent(new URL(url).pathname.split("/").pop() || "import"));
-  if (/\.(xlsx|csv|zip|txt)$/i.test(fromPath)) return fromPath;
+  if (/\.(xlsx|xlsm|csv|tsv|zip|txt)$/i.test(fromPath)) return fromPath;
   if (contentType?.includes("spreadsheetml")) return `${fromPath}.xlsx`;
   if (contentType?.includes("zip")) return `${fromPath}.zip`;
   return `${fromPath}.csv`;
@@ -63,7 +63,7 @@ async function assertSafeHost(url: URL) {
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const addrs = net.isIP(host) ? [{ address: host }] : await dns.promises.lookup(host, { all: true });
   for (const a of addrs) {
-    if (isPrivateAddress(a.address)) throw new Error(`Refusing to connect to private address ${url.hostname}`);
+    if (isPrivateAddress(a.address)) throw new Error(`The link points to a private or internal network address (${url.hostname}), which this app never connects to. Use a link that is reachable from the public internet.`);
   }
 }
 
@@ -83,6 +83,16 @@ async function safeFetch(url: string, hops = 5, init: RequestInit = {}): Promise
     return res;
   }
   throw new Error("Too many redirects");
+}
+
+/** Why a download link didn't give a file, in words that say what to do. */
+function downloadProblem(status: number): string {
+  if (status === 401 || status === 403) return `The link refused the download (HTTP ${status}): it needs a sign-in, or it doesn't allow downloads from this server. Use a link that anyone with the link can download.`;
+  if (status === 404 || status === 410) return `There is no file at this link (HTTP ${status}). Check the address, or share the file again and use the new link.`;
+  if (status === 429) return "The server behind the link says it is being asked too often (HTTP 429). Try again in a few minutes.";
+  if (status >= 500) return `The server behind the link had a problem (HTTP ${status}). Try again later.`;
+  if (status >= 300 && status < 400) return `The link redirects without saying where to (HTTP ${status}). Use the file's direct download link.`;
+  return `The download did not work (HTTP ${status}). Check that the link downloads the file when opened in a private browser window.`;
 }
 
 /** Protocols an import can be read from, and an export result uploaded to. */
@@ -111,7 +121,11 @@ export async function downloadSource(source: string, dir: string): Promise<{ fil
   const url = new URL(source);
   if (url.protocol === "http:" || url.protocol === "https:") {
     const res = await safeFetch(directDownloadUrl(source));
-    if (!res.ok || !res.body) throw new Error(`Download failed: HTTP ${res.status}`);
+    if (!res.ok || !res.body) throw new Error(downloadProblem(res.status));
+    // A page instead of a file (a login screen, a "not found" page served as OK): none of it is read.
+    if (/^text\/html\b/i.test(res.headers.get("content-type") ?? "") && !res.headers.get("content-disposition")) {
+      throw new Error("The link opened a web page, not a spreadsheet file (perhaps a login or a preview page). Use a link that downloads the file directly.");
+    }
     const name = fileNameFor(url.toString(), res.headers.get("content-type"), res.headers.get("content-disposition"));
     const file = path.join(dir, `input-${name}`);
     await pipeline(Readable.fromWeb(res.body as any), fs.createWriteStream(file));

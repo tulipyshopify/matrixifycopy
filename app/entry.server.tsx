@@ -6,10 +6,21 @@ import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { startWorker } from "./lib/jobs/worker.server";
+import { addSecurityHeaders } from "./lib/security";
 
 if (process.env.WORKER_ENABLED !== "false") startWorker();
 
 export const streamTimeout = 5000;
+
+/** Loader and action answers (data requests) carry the same security headers as pages. */
+export function handleDataRequest(response: Response): Response {
+  try {
+    addSecurityHeaders(response.headers, { frame: false });
+  } catch {
+    // headers of a redirect made elsewhere can be read-only: leave them
+  }
+  return response;
+}
 
 export default async function handleRequest(
   request: Request,
@@ -18,6 +29,7 @@ export default async function handleRequest(
   reactRouterContext: EntryContext
 ) {
   addDocumentResponseHeaders(request, responseHeaders);
+  addSecurityHeaders(responseHeaders);
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? '')
     ? "onAllReady"

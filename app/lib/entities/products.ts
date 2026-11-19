@@ -12,7 +12,7 @@ import { ImportError, ImportErrors } from "../core/types";
 import type { ItemMeta } from "../core/types";
 import { CHECK_GROUPS, RULES, toProductRows } from "../check/rules";
 import type { FieldChange, MetafieldsNow } from "./product_compare";
-import { compareProduct, compareVariant, priceWarnings } from "./product_compare";
+import { compareProduct, compareVariant, handleWarnings, priceWarnings, validCalendarDate } from "./product_compare";
 import {
   assertNoUserErrors,
   boolCell,
@@ -36,6 +36,8 @@ import {
 import {
   addTags,
   getLocations,
+  narrowToLimit,
+  type LocationInfo,
   locationByName,
   onlineStorePublicationId,
   removeTags,
@@ -347,7 +349,9 @@ async function exportProducts(
     ctx.options.groups ??
       productsEntity.groups!.filter((g) => g.default).map((g) => g.key),
   );
-  const search = buildSearchQuery(ctx.options);
+  // A small "first N" export reads only those N (not when products are picked by a check rule, which is tested here).
+  const picking = (ctx.options.filters ?? []).some((f) => f.field === "problem");
+  const search = picking ? buildSearchQuery(ctx.options) : await narrowToLimit(ctx, "products", buildSearchQuery(ctx.options));
   // Pre-pass: variant ID -> metafields (only variants that have any are kept).
   const variantMetafields = new Map<string, any[]>();
   if (splitVariantMetafields(groups)) {
@@ -560,6 +564,54 @@ export function parseMoney(v: string, col: string): number {
   return n;
 }
 
+const MONEY_COLUMNS = ["Variant Price", "Variant Compare At Price", "Variant Cost"];
+
+/**
+ * Decides once for the whole sheet whether its prices use a decimal comma
+ * ("69,99"), instead of guessing cell by cell: in such a file "39,990" is
+ * 39.99, not thirty-nine thousand. The cells are rewritten with a decimal
+ * point, and the sheet's notes say so.
+ */
+export function settleDecimalMark(rows: Row[], warn?: (message: string) => void): "comma" | "point" | null {
+  let comma = 0;
+  let point = 0;
+  const unsure: Array<{ row: Row; col: string }> = [];
+  const bare = (v: string) => v.trim().replace(/^[£$€¥]\s*|\s*[£$€¥]$/g, "").replace(/\s+/g, "");
+  for (const row of rows) {
+    for (const col of MONEY_COLUMNS) {
+      const raw = row[col];
+      if (!raw) continue;
+      const t = bare(raw);
+      if (/^-?\d+,\d{1,2}$/.test(t) || /^-?\d{1,3}(\.\d{3})+,\d+$/.test(t)) comma++;
+      else if (/^-?\d+\.\d{1,2}$/.test(t) || /^-?\d{1,3}(,\d{3})+\.\d+$/.test(t)) point++;
+      else if (/^-?\d{1,3},\d{3}$/.test(t)) unsure.push({ row, col });
+    }
+  }
+  if (!comma || point) return point ? "point" : null;
+  // A decimal-comma file: every price cell is read that way.
+  let rewritten = "";
+  for (const row of rows) {
+    for (const col of MONEY_COLUMNS) {
+      const raw = row[col];
+      if (!raw) continue;
+      const t = bare(raw);
+      if (/^-?\d{1,3}(\.\d{3})*,\d+$/.test(t) || /^-?\d+,\d+$/.test(t)) {
+        const next = t.replace(/\./g, "").replace(",", ".");
+        if (!rewritten && unsure.some((u) => u.row === row && u.col === col)) rewritten = `"${raw}" was read as ${Number(next)}`;
+        row[col] = next;
+      }
+    }
+  }
+  warn?.(`The prices in this sheet use a comma as the decimal mark (69,99 means 69.99), so every price was read that way${rewritten ? `: ${rewritten}, not as thousands` : ""}. If the commas are thousands separators instead, write prices with a decimal point (1299.00) and import again.`);
+  return "comma";
+}
+
+async function prepareProducts(ctx: ImportContext, items: Array<{ rows: Row[]; rowIndexes: number[] }>): Promise<Map<number, string[]>> {
+  const rows = items.flatMap((i) => i.rows);
+  if (rows.length && MONEY_COLUMNS.some((c) => c in rows[0])) settleDecimalMark(rows, ctx.warn);
+  return new Map();
+}
+
 function money(v: string | undefined, col: string): string | null | undefined {
   if (v === undefined) return undefined;
   if (v === "") return null;
@@ -729,6 +781,9 @@ function parseImages(rows: Row[]): ImageSpec[] {
   rows.forEach((row, rowIndex) => {
     const src = cell(row, "Image Src");
     if (!src) return;
+    // Videos and 3D models are exported with their preview picture for reference; that picture is not an image of the product.
+    const type = (cell(row, "Image Type") ?? "").toLowerCase();
+    if (type && type !== "image") return;
     images.push({
       rowIndex,
       src,
@@ -1114,6 +1169,10 @@ async function prepareCreate(
   if (!fields.title) fail(0, "Title is required to create a product");
   else if (fields.title.length > 255) fail(0, `Title is ${fields.title.length} characters long; Shopify allows 255`);
   if (/<script\b/i.test(fields.descriptionHtml ?? "")) warnings.push(`Row ${rowNo(0)}: the description contains a <script> tag, which would run code on the product page`);
+  if (/<\/?[a-z][^>]*>/i.test(fields.title ?? "")) warnings.push(`Row ${rowNo(0)}: the title contains HTML tags; titles are shown as plain text, so the tags would appear as they are typed`);
+  for (const w of handleWarnings(fields.handle ?? "")) warnings.push(`Row ${rowNo(0)}: ${w}`);
+  const publishedAt = cell(top, "Published At");
+  if (publishedAt && /^\d{4}-\d{2}-\d{2}/.test(publishedAt) && (Number.isNaN(Date.parse(publishedAt)) || !validCalendarDate(publishedAt))) fail(0, `Published At "${publishedAt}" is not a date. Write it as 2026-11-19 or 2026-11-19T09:00:00Z`);
   // A new product starts as a draft unless the file says otherwise, so a
   // mistyped handle can't put a half-filled product on sale.
   const statusDefaulted = !fields.status;
@@ -1465,6 +1524,8 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   metafieldsFromRow(top, "Metafield", plan.errors);
   const title = cell(top, "Title");
   if (title && title.length > 255) fail(0, `Title is ${title.length} characters long; Shopify allows 255`);
+  for (const w of pc.warnings ?? []) plan.warnings.push(`Row ${rowNo(0)}: ${w}`);
+  for (const n of pc.notes ?? []) ctx.warn?.(n);
   if (pc.changed.has("Body HTML") && /<script\b/i.test(cell(top, "Body HTML") ?? "")) plan.warnings.push(`Row ${rowNo(0)}: the description contains a <script> tag, which would run code on the product page`);
   // Drop the cells that match the store, so only real changes are sent.
   for (const col of [...PRODUCT_COMPARED, ...Object.keys(top).filter((h) => parseMetafieldColumn(h, "Metafield"))]) {
@@ -1718,7 +1779,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       } catch {
         continue; // reported by parseVariants
       }
-      let loc: { id: string; name: string } | null = null;
+      let loc: LocationInfo | null = null;
       try {
         loc = await locationByName(ctx.gql, ctx.cache, col.location);
       } catch (e: any) {
@@ -1727,6 +1788,12 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       }
       const kind = col.adjust && col.name === "on_hand" ? "available" : col.name;
       const now = levels?.get(loc.id)?.quantities[kind];
+      // Stock held by a fulfilment app can only be changed by that app: unchanged values are fine, changes are not.
+      const managed = loc.service?.managed ? loc.service.name : null;
+      if (managed && (col.adjust ? n !== 0 : now !== undefined && n !== now)) {
+        fail(i, `${k}: stock at "${loc.name}" is managed by the fulfilment app "${managed}", so an import can't change it. Leave this column as exported, or remove it from the file`);
+        continue;
+      }
       const label = `${col.label} stock at ${loc.name} (${ident})`;
       if (now !== undefined) plan.seen[label] = String(now);
       if (col.adjust) {
@@ -1809,6 +1876,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       }
     }
 
+    for (const w of vc.warnings ?? []) plan.warnings.push(`Row ${rowNo(i)}: ${w}`);
     plan.warnings.push(
       ...priceWarnings(
         `Row ${rowNo(i)} (${ident})`,
@@ -2342,7 +2410,7 @@ export const productsEntity: Entity = {
   ],
   export: exportProducts,
   // Variant ID / SKU come last: they only identify rows that have no product ID or Handle.
-  import: { keyColumns: ["ID", "Handle", "Variant ID", "Variant SKU"], apply: importProduct },
+  import: { keyColumns: ["ID", "Handle", "Variant ID", "Variant SKU"], apply: importProduct, prepare: prepareProducts },
 };
 
 // Exported for tests.

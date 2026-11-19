@@ -211,11 +211,11 @@ export async function importRedirect(ctx: ImportContext, rows: Row[], command: C
   if (ctx.options.dryRun) {
     const creates = !existing && command !== "UPDATE" && command !== "DELETE";
     if (command === "DELETE") {
-      if (!existing) return { status: "Failed", command, message: "Redirect not found" };
+      if (!existing) return { status: "Failed", command, message: "Redirect not found: no redirect in the store has this path (or ID), so there is nothing to delete" };
       return { status: "OK", command, preview: { action: "delete", changes: [`Deletes the redirect ${existing.path} → ${existing.target}`], warnings: [], deletes: 1 }, seen: { target: existing.target } };
     }
     if (command === "NEW" && existing) return { status: "Failed", command, message: "Redirect already exists" };
-    if (!existing && command === "UPDATE") return { status: "Failed", command, message: "Redirect not found" };
+    if (!existing && command === "UPDATE") return { status: "Failed", command, message: "Redirect not found: no redirect in the store has this path (or ID). Rows only update redirects that exist; to create this one, set Command to MERGE or NEW" };
     if (creates && (!input.path || !input.target)) return { status: "Failed", command, message: "Path and Target are required to create a redirect" };
     const dead = input.target ? await deadTarget(ctx, input.target) : null;
     const warnings = dead ? [dead[0].toUpperCase() + dead.slice(1)] : [];

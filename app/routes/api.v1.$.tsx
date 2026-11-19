@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { ApiError, bearerKey, checkKey } from "../lib/api/keys.server";
+import { ApiError, bearerKey, callerAddress, checkKey } from "../lib/api/keys.server";
 import {
   MAX_API_UPLOAD_MB,
   applyPreview,
@@ -38,7 +38,7 @@ const TYPES: Record<string, string> = {
 };
 
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+  new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Strict-Transport-Security": "max-age=31536000; includeSubDomains", "X-Content-Type-Options": "nosniff" } });
 
 function fail(e: any) {
   if (e instanceof ApiError) return json({ error: e.message }, e.status);
@@ -51,7 +51,7 @@ const parts = (params: { "*"?: string }) => (params["*"] ?? "").split("/").filte
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
-    const auth = await checkKey(bearerKey(request));
+    const auth = await checkKey(bearerKey(request), Date.now(), callerAddress(request));
     const [a, b, c] = parts(params);
     const url = new URL(request.url);
     if (a === "sheets" && !c) return json(b ? sheetList(decodeURIComponent(b)) : { sheets: sheetList() });
@@ -65,6 +65,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         headers: {
           "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream",
           "Content-Length": String(stat.size),
+      "X-Content-Type-Options": "nosniff",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
           "Content-Disposition": `attachment; filename="${name.replace(/"/g, "")}"`,
           "Cache-Control": "private, no-store",
         },
@@ -78,7 +80,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
   try {
-    const auth = await checkKey(bearerKey(request));
+    const auth = await checkKey(bearerKey(request), Date.now(), callerAddress(request));
     if (request.method !== "POST") throw new ApiError(405, "Use POST");
     const [a, b, c] = parts(params);
     const type = request.headers.get("content-type") ?? "";

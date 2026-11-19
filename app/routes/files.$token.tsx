@@ -37,6 +37,8 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
     headers: {
       "Content-Type": TYPES[ext] ?? "application/octet-stream",
       "Content-Length": String(stat.size),
+      "X-Content-Type-Options": "nosniff",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
       "Content-Disposition": `attachment; filename="${name}"`,
       "Last-Modified": stat.mtime.toUTCString(),
       "Cache-Control": "no-store",

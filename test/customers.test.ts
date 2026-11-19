@@ -239,7 +239,8 @@ describe("customers import", () => {
     expect(r).toMatchObject({ status: "OK", message: "Deleted" });
     expect(m.of("ImportCustomerDelete")[0].vars).toEqual({ id: existing.id });
     const r2 = await customersEntity.import!.apply(m.ctx, [{ ID: "8", Phone: "+15550000" }], "UPDATE");
-    expect(r2).toMatchObject({ status: "Failed", message: "Customer not found" });
+    expect(r2).toMatchObject({ status: "Failed" });
+    expect(r2.message).toMatch(/Customer not found .*set Command to MERGE or NEW/);
     expect(m.of("ImportCustomerByIdentifier").at(-1)!.vars).toEqual({ identifier: { phoneNumber: "+15550000" } });
   });
 
@@ -257,9 +258,9 @@ describe("customers REPLACE validates before deleting", () => {
       ImportCustomerDelete: () => ({ customerDelete: { deletedCustomerId: existing.id, ...ok } }),
       ImportCustomerCreate: () => ({ customerCreate: { customer: { id: "gid://shopify/Customer/99" }, ...ok } }),
     });
-    await expect(
-      customersEntity.import!.apply(m.ctx, [{ ID: "7", Email: "ann@example.com", "Email Marketing: Level": "bogus", "Accepts Email Marketing": "TRUE" }], "REPLACE"),
-    ).rejects.toThrow(/Level/);
+    const bad = await customersEntity.import!.apply(m.ctx, [{ ID: "7", Email: "ann@example.com", "Email Marketing: Level": "bogus", "Accepts Email Marketing": "TRUE" }], "REPLACE");
+    expect(bad).toMatchObject({ status: "Failed" });
+    expect(bad.message).toMatch(/Level/);
     await expect(
       customersEntity.import!.apply(m.ctx, [{ ID: "7", Email: "ann@example.com", "Address Line 1": "1 Road", "Address Command": "WAT" }], "REPLACE"),
     ).rejects.toThrow(/Unknown command/);
@@ -341,7 +342,9 @@ describe("customers marketing consent round-trip", () => {
 
   it("still rejects an unknown marketing status", async () => {
     const m = mockGql({ ImportCustomerById: () => ({ customer: existing }) });
-    await expect(customersEntity.import!.apply(m.ctx, [exportedRow("subscribd", "")], "MERGE")).rejects.toThrow(/not valid/);
+    const r = await customersEntity.import!.apply(m.ctx, [exportedRow("subscribd", "")], "MERGE");
+    expect(r).toMatchObject({ status: "Failed" });
+    expect(r.message).toMatch(/not valid/);
   });
 });
 

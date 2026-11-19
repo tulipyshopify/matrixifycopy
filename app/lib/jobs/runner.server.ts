@@ -4,7 +4,7 @@ import v8 from "node:v8";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary } from "../core/importer";
-import { createWorkbookOut, readWorkbook, type OutputFormat } from "../core/sheets";
+import { createWorkbookOut, readWorkbook, unpackedSizes, type OutputFormat } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
@@ -171,12 +171,31 @@ const MEMORY_FACTOR: Record<string, number> = { ".csv": 12, ".txt": 12, ".tsv": 
  */
 export async function assertFitsInMemory(file: string, name: string, heap = v8.getHeapStatistics()) {
   const size = (await fs.promises.stat(file)).size;
-  const need = size * (MEMORY_FACTOR[path.extname(name).toLowerCase()] ?? 45);
+  const ext = path.extname(name).toLowerCase();
+  let need = size * (MEMORY_FACTOR[ext] ?? 45);
+  let unpacked = 0;
+  // Compressed files are judged by what they unpack to (their directory says, without unpacking):
+  // a small archive can hold a very large file.
+  if ((ext === ".zip" || ext === ".xlsx" || ext === ".xlsm") && size < 200 * 1024 * 1024) {
+    try {
+      const entries = unpackedSizes(new Uint8Array(await fs.promises.readFile(file)));
+      let byContent = 0;
+      for (const e of entries) {
+        const inner = path.extname(e.name).toLowerCase();
+        if (ext === ".zip") byContent += e.size * (MEMORY_FACTOR[inner] ?? 0);
+        else if (/^\/?xl\/(worksheets\/|sharedStrings)/i.test(e.name)) byContent += e.size * 4;
+        unpacked += e.size;
+      }
+      need = ext === ".zip" ? byContent : Math.max(need, byContent);
+    } catch {
+      // not a readable archive: the reader says so
+    }
+  }
   const free = heap.heap_size_limit - heap.used_heap_size;
   if (need > free * 0.9) {
     const mb = (n: number) => `${Math.max(1, Math.round(n / 1e6))} MB`;
     throw new Error(
-      `This file is too large to import in one go: it is ${mb(size)} and would need about ${mb(need)} of memory, with ${mb(free)} free on the server right now. Split it into smaller files (for example by product type or by 20,000 rows) and import them one after another.`,
+      `This file is too large to import in one go: it is ${mb(size)}${unpacked > size * 2 ? ` (${mb(unpacked)} once unpacked)` : ""} and would need about ${mb(need)} of memory, with ${mb(free)} free on the server right now. Split it into smaller files (for example by product type or by 20,000 rows) and import them one after another.`,
     );
   }
 }
@@ -295,7 +314,7 @@ export async function executeJob(
       if (!kept) throw new Error(`None of the chosen items is in this file (${config.onlyItems.slice(0, 5).join(", ")}${config.onlyItems.length > 5 ? "…" : ""}). Use the ID, handle, order name or email exactly as in the backup.`);
     }
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));
-    const resultFormat: OutputFormat = /\.(csv|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
+    const resultFormat: OutputFormat = /\.(csv|tsv|txt|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
     const cache = new Map<string, unknown>();
     if (config.onlyFields) {

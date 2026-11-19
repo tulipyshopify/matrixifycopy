@@ -101,10 +101,26 @@ export async function startAuthorization(q: URLSearchParams) {
 
 const fresh = (createdAt: Date, now = Date.now()) => now - createdAt.getTime() < REQUEST_MINUTES * 60_000;
 
+export const MAX_WRONG_CODES = 5;
+const CODE_LOCK_MS = 15 * 60_000;
+const wrongCodes = new Map<string, { start: number; n: number }>();
+
 /** The merchant, in the app's Settings, approves the code shown on the consent page. */
-export async function approveConnection(shop: string, code: string) {
+export async function approveConnection(shop: string, code: string, now = Date.now()) {
+  // A code is 8 characters: a store that keeps getting it wrong is made to wait, so codes can't be guessed.
+  const tries = wrongCodes.get(shop);
+  if (tries && now - tries.start < CODE_LOCK_MS && tries.n >= MAX_WRONG_CODES) {
+    throw new Error(`Too many wrong codes. Wait ${Math.max(1, Math.ceil((CODE_LOCK_MS - (now - tries.start)) / 60_000))} minutes, then start the connection again in the assistant and use the new code.`);
+  }
+  const wrong = () => {
+    const t = wrongCodes.get(shop);
+    if (!t || now - t.start >= CODE_LOCK_MS) wrongCodes.set(shop, { start: now, n: 1 });
+    else t.n++;
+  };
   const clean = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   const grant = clean.length === 8 ? await prisma.oAuthGrant.findUnique({ where: { userCode: `${clean.slice(0, 4)}-${clean.slice(4)}` } }) : null;
+  if (!grant || grant.approvedAt || !fresh(grant.createdAt)) wrong();
+  else wrongCodes.delete(shop);
   if (!grant || grant.approvedAt || !fresh(grant.createdAt)) throw new Error("That code isn't valid (or is older than 15 minutes). Start the connection again in the assistant and use the new code.");
   await prisma.oAuthGrant.update({ where: { id: grant.id }, data: { shop, approvedAt: new Date() } });
   return grant.clientName || "the assistant";
@@ -178,5 +194,5 @@ export async function clearStaleRequests(now = new Date()) {
 }
 
 export const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, Authorization, MCP-Protocol-Version", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" };
-export const oauthJson = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
+export const oauthJson = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Strict-Transport-Security": "max-age=31536000; includeSubDomains", "X-Content-Type-Options": "nosniff", ...CORS } });
 export const oauthFail = (e: unknown) => (e instanceof OAuthError ? oauthJson({ error: e.code, error_description: e.message }, e.status) : oauthJson({ error: "server_error" }, 500));

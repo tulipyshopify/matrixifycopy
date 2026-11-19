@@ -294,3 +294,70 @@ export async function detectEntityByHandles(
   if (found.size !== 1) return null;
   return candidates.find((c) => c.key === [...found][0]) ?? null;
 }
+
+// --- Column names from other layouts --------------------------------------------
+
+/** Column names of Shopify's own CSV exports, and the column here that holds the same thing. */
+const COLUMN_ALIASES: Record<string, Record<string, string>> = {
+  products: {
+    "body (html)": "Body HTML",
+    "cost per item": "Variant Cost",
+    "variant grams": "Variant Weight",
+    "seo title": "SEO Title",
+    "seo description": "SEO Description",
+  },
+  customers: {
+    "customer id": "ID",
+    "total orders": "Orders Count",
+    "default address company": "Address Company",
+    "default address address1": "Address Line 1",
+    "default address address2": "Address Line 2",
+    "default address city": "Address City",
+    "default address province code": "Address Province Code",
+    "default address country code": "Address Country Code",
+    "default address zip": "Address Zip",
+    "default address phone": "Address Phone",
+  },
+};
+
+/** Shopify export columns with no column here: what to use instead. */
+const COLUMN_HINTS: Record<string, Record<string, string>> = {
+  products: {
+    "product category": 'Use "Category: ID" (the category\'s ID from an export of this app) to set the category.',
+    "variant fulfillment service": "Fulfilment services are set in Shopify, not by import.",
+    "variant inventory qty": "",
+  },
+};
+
+/**
+ * Renames columns that use Shopify's own export names to the names used here,
+ * in place. Returns what was renamed, for the import's notes.
+ */
+export function applyColumnAliases(entity: Entity, sheet: { headers: string[]; rows: Array<Record<string, string>> }): string[] {
+  const aliases = COLUMN_ALIASES[entity.key];
+  if (!aliases) return [];
+  const have = new Set(sheet.headers);
+  const rename = new Map<string, string>();
+  for (const h of sheet.headers) {
+    const to = aliases[h.toLowerCase().replace(/\s+/g, " ").trim()];
+    if (to && to !== h && !have.has(to) && ![...rename.values()].includes(to)) rename.set(h, to);
+  }
+  if (!rename.size) return [];
+  // Shopify's product CSV gives weights in grams, with no unit column.
+  const grams = [...rename.entries()].some(([from, to]) => to === "Variant Weight" && /grams/i.test(from)) && !have.has("Variant Weight Unit");
+  const headers = sheet.headers.map((h) => rename.get(h) ?? h);
+  if (grams) headers.push("Variant Weight Unit");
+  sheet.rows = sheet.rows.map((r) => {
+    const out: Record<string, string> = {};
+    for (const h of sheet.headers) out[rename.get(h) ?? h] = r[h] ?? "";
+    if (grams) out["Variant Weight Unit"] = out["Variant Weight"] ? "g" : "";
+    return out;
+  });
+  sheet.headers = headers;
+  return [...rename.entries()].map(([from, to]) => `"${from}" is read as "${to}"${to === "Variant Weight" && grams ? " (in grams)" : ""}`);
+}
+
+/** What to say about a column that is ignored but known from Shopify's own exports. */
+export function columnHint(entity: Entity, header: string): string | null {
+  return COLUMN_HINTS[entity.key]?.[header.toLowerCase().replace(/\s+/g, " ").trim()] || null;
+}

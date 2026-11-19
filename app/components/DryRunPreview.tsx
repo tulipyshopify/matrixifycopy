@@ -38,7 +38,9 @@ const FILTERS: Array<{ key: "all" | PreviewKind | "changes"; label: string }> = 
 type FilterKey = (typeof FILTERS)[number]["key"];
 const matches = (f: FilterKey, k: PreviewKind) => f === "all" || f === k || (f === "changes" && k !== "none" && k !== "failed");
 
-const PAGE = 100;
+const PAGE = 50;
+/** Change lines shown per item before "Show all". */
+const LINES = 12;
 const n = (x: number) => x.toLocaleString("en");
 const plural = (x: number, one: string, many = `${one}s`) => `${n(x)} ${x === 1 ? one : many}`;
 
@@ -125,6 +127,7 @@ export function ImportReview({
   const [included, setIncluded] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<FilterKey>(listed.failed ? "all" : "all");
   const [shown, setShown] = useState(PAGE);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState("");
   const [rest, setRest] = useState(false);
@@ -194,9 +197,10 @@ export function ImportReview({
       {sheetNotes.map((s) => (
         <s-banner key={s.sheet} tone={s.entity === null ? "critical" : "warning"} heading={s.entity === null ? `Sheet "${s.sheet}" is not imported` : `About sheet "${s.sheet}"`}>
           <s-stack direction="block" gap="small-300">
-            {s.warnings!.map((w, k) => (
+            {s.warnings!.slice(0, 12).map((w, k) => (
               <s-text key={k}>{w.replace(/^Not imported: /, "It was ")}</s-text>
             ))}
+            {s.warnings!.length > 12 ? <s-text color="subdued">…and {n(s.warnings!.length - 12)} more notes, listed in the job log.</s-text> : null}
           </s-stack>
         </s-banner>
       ))}
@@ -273,7 +277,10 @@ export function ImportReview({
                               ✕ {e}
                             </s-text>
                           ))}
-                          {kind === "failed" ? null : i.changes.map((c, k) => <ChangeLine key={k} text={c} />)}
+                          {kind === "failed" ? null : (open[id] ? i.changes : i.changes.slice(0, LINES)).map((c, k) => <ChangeLine key={k} text={c} />)}
+                          {kind !== "failed" && i.changes.length > LINES && !open[id] ? (
+                            <s-link onClick={() => setOpen((cur) => ({ ...cur, [id]: true }))}>Show all {n(i.changes.length)} changes</s-link>
+                          ) : null}
                           {(i.warnings ?? []).map((w, k) => (
                             <s-text key={`w${k}`} tone="caution">
                               ! {w}
@@ -321,7 +328,7 @@ export function ImportReview({
                 </s-text>
               ) : null}
               {firstStep ? (
-                <s-text color="subdued">For data types other than products and redirects, the details show the values the first step would send (an item can need more than one step); the real import makes all of them.</s-text>
+                <s-text color="subdued">Items marked "First step" belong to a data type that is not compared with the store field by field: the details show the values the first step would send (an item can need more than one step); the real import makes all of them.</s-text>
               ) : null}
             </s-stack>
           </s-box>

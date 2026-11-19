@@ -59,6 +59,9 @@ export function jobHealth(job: { type: string; status: string; error?: string | 
   if (!problems) {
     // Nothing failed, but something in the file was left out or not applied: not a plain green.
     const notes = (Array.isArray(stats) ? stats : []).flatMap((s) => ((s as { warnings?: string[] }).warnings ?? []).filter((w) => !w.startsWith("Not imported: ")));
+    // A file with column names and nothing under them: say so, rather than "ready".
+    const rows = (Array.isArray(stats) ? stats : []).reduce((n, s) => n + (Number((s as { items?: number }).items) || 0) + (Number((s as { skipped?: number }).skipped) || 0), 0);
+    if (!rows && Array.isArray(stats) && stats.length && stats.every((s) => typeof (s as { items?: unknown }).items === "number")) return { level: "warning", label: "Nothing to import", problems: 0, summary: "The file has no rows under its column names, so there is nothing to import." };
     if (notes.length && !job.dryRun) return { level: "warning", label: "Finished with warnings", problems: 0, summary: `${notes[0]}${notes.length > 1 ? ` (and ${notes.length - 1} more, see the log)` : ""}` };
     return { level: "ok", label: job.dryRun ? "Preview ready" : "Finished", problems: 0, summary: "" };
   }

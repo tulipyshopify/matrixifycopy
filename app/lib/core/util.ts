@@ -75,10 +75,12 @@ export function parseInt10(v: string | undefined): number | undefined {
 
 export function splitTags(v: string | undefined): string[] {
   if (!v) return [];
+  // The same tag typed two ways that look identical (é as one character or as e + accent) is one tag.
+  const seen = new Set<string>();
   return v
     .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+    .map((t) => t.trim().normalize("NFC"))
+    .filter((t) => t && !seen.has(t) && !!seen.add(t));
 }
 
 export function joinTags(tags: string[] | null | undefined): string {

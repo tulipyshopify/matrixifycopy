@@ -206,7 +206,9 @@ export default function JobDetail() {
           <s-text>
             {active
               ? "Every row is checked against the store as a real import would, without changing anything."
-              : "Every item was compared with what is in the store right now. Risky rows start as Skip: choose what to include, then review and apply."}
+              : preview.some((s: any) => (s.items ?? []).some((i: any) => !i.compared && i.action !== "failed" && i.action !== "skipped" && i.changes?.length))
+                ? "Every row was checked against the store. For some data types in this file the preview shows what the first step would send rather than a field-by-field comparison; those items are marked. Risky rows start as Skip: choose what to include, then review and apply."
+                : "Every item was compared with what is in the store right now. Risky rows start as Skip: choose what to include, then review and apply."}
           </s-text>
         </s-banner>
       ) : null}

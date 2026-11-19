@@ -101,4 +101,14 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("sign-in for assistants (OA
     await prisma.apiKey.deleteMany({ where: { shop } });
     await prisma.oAuthClient.deleteMany({ where: { id: client.client_id } });
   });
+
+  it("R30: the approval code locks after a few wrong tries", async () => {
+    const store = "locked-shop.myshopify.com";
+    const t = Date.now() + 60 * 60_000;
+    for (let i = 0; i < oauth.MAX_WRONG_CODES; i++) await expect(oauth.approveConnection(store, `WRONG-${i}AAA`, t)).rejects.toThrow(/isn't valid/);
+    await expect(oauth.approveConnection(store, "WRONG-ZZZZ", t)).rejects.toThrow(/Too many wrong codes. Wait 15 minutes/);
+    // Another store is not affected, and the lock lifts by itself.
+    await expect(oauth.approveConnection("other-shop.myshopify.com", "WRONG-ZZZZ", t)).rejects.toThrow(/isn't valid/);
+    await expect(oauth.approveConnection(store, "WRONG-ZZZZ", t + 16 * 60_000)).rejects.toThrow(/isn't valid/);
+  });
 });

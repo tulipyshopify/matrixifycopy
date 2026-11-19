@@ -117,7 +117,12 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
       await entity.export(ctx, async (rows) => {
         // Stop promptly when the job is cancelled while rows are being written.
         if (++batches % 100 === 0 && args.isCancelled && (await args.isCancelled())) throw new Error("Cancelled");
-        for (const r of rows) await spool.push(r);
+        for (const r of rows) {
+          // The Command column is left for the person to fill in: a pre-filled MERGE would
+          // override the import's safer default and create a new item from a mistyped handle.
+          if (r.Command === "MERGE") r.Command = "";
+          await spool.push(r);
+        }
       });
       await spool.finish();
       const columns = selectColumns(entity, options, spool.headers(entity.columns));

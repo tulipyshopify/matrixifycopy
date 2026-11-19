@@ -2,8 +2,8 @@ import type { Command, Entity, ImportContext, ItemResult, Logger, Row } from "./
 import { ImportError, ImportErrors } from "./types";
 import { cell, gidToId, mapLimit, parseCommand } from "./util";
 import type { Sheet, WorkbookOut } from "./sheets";
-import { NO_VALUE_MARK } from "./sheets";
-import { detectEntity, detectEntityByHandles, detectEntityByIds, detectEntityByMetafields, unknownColumns } from "./registry";
+import { EXCEL_ERROR, NO_VALUE_MARK } from "./sheets";
+import { applyColumnAliases, columnHint, detectEntity, detectEntityByHandles, detectEntityByIds, detectEntityByMetafields, unknownColumns } from "./registry";
 import type { BatchIo } from "./batch";
 import { planBatch, runBatch } from "./batch";
 
@@ -247,6 +247,11 @@ export interface RunImportArgs {
   expectedFailed?: Record<string, number>;
 }
 
+/** Columns that hold codes, where a number in scientific notation is always damage. */
+const CODE_COLUMN = /(Barcode|SKU|(^|\s)ID|Phone|Zip|HS Code)$/i;
+
+const shortName = (h: string) => (h.length > 60 ? `${h.slice(0, 57)}…` : h);
+
 /** A row that must not be imported as it stands, whatever the data type. */
 function unreadableCell(rows: Row[]): string | null {
   for (const row of rows) {
@@ -254,6 +259,14 @@ function unreadableCell(rows: Row[]): string | null {
       if (!v) continue;
       if (v.startsWith(NO_VALUE_MARK)) {
         return `"${col}" holds a formula with no saved result (${v.slice(NO_VALUE_MARK.length, NO_VALUE_MARK.length + 40)}). Open the file in Excel and save it, or paste the values in, then import again.`;
+      }
+      const first = v.charCodeAt(0);
+      if (first === 35 && v.length < 14 && EXCEL_ERROR.test(v)) {
+        return `"${col}" holds an Excel error (${v}) instead of a value: a formula in the file is broken. Fix the formula or type the value in, then import again.`;
+      }
+      // What Excel shows for a long number it has shortened: the real digits are gone.
+      if (first >= 48 && first <= 57 && v.length < 16 && /^\d(?:[.,]\d+)?E\+?\d+$/i.test(v) && CODE_COLUMN.test(col)) {
+        return `"${col}" holds ${v}, which is how Excel writes a long number it has shortened: the real digits are lost. In Excel, format that column as Text (or as Number with no decimals) and put the full value back, then import again.`;
       }
       if (v.includes("\uFFFD")) {
         return `"${col}" has characters that could not be read (shown as \uFFFD). The file's text encoding is damaged; save it as "CSV UTF-8" and import again.`;
@@ -290,16 +303,19 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
   }
   plan.sort((a, b) => entities.indexOf(a.entity!) - entities.indexOf(b.entity!));
 
-  const grouped = plan.map((p) => ({
-    ...p,
-    items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [],
-  }));
+  const grouped = plan.map((p) => {
+    // Column names from Shopify's own exports are read as the columns they mean.
+    const renamed = p.entity?.import ? applyColumnAliases(p.entity, p.sheet) : [];
+    return { ...p, renamed, items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [] };
+  });
   const total = grouped.reduce((n, g) => n + g.items.length, 0);
   if (ctx.options.dryRun) log("Dry run: the file is checked against the store, but nothing is changed.");
   let done = 0;
   const summaries: ImportSummary[] = [];
 
-  for (const { sheet, entity, items } of grouped) {
+  for (const { sheet: read, entity, items, renamed } of grouped) {
+    // Sheets of several workbooks in one ZIP carry their file's name, so each can be told apart.
+    const sheet = read.label ? { ...read, name: read.label } : read;
     const summary: ImportSummary = {
       sheet: sheet.name,
       entity: entity?.key ?? null,
@@ -334,8 +350,20 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     log(`Sheet "${sheet.name}": importing ${items.length} ${entity.sheet.toLowerCase()} (${sheet.rows.length} rows)`);
 
     // Columns the data type doesn't have are ignored: say so, with the likely intended name.
-    for (const u of unknownColumns(entity, sheet.headers)) {
-      sheetWarnings.push(`Column "${u.header}" is not a ${entity.sheet} column and is ignored.${u.suggestion ? ` Did you mean "${u.suggestion}"?` : ""}`);
+    if (renamed.length) sheetWarnings.push(`Column names from Shopify's own export were recognised: ${renamed.join("; ")}.`);
+    const unknown = unknownColumns(entity, sheet.headers);
+    // Near-misses and known Shopify columns are worth a line each; a long tail of unrelated columns is one line.
+    const specific = unknown.filter((u) => u.suggestion || columnHint(entity, u.header));
+    const plain = unknown.filter((u) => !specific.includes(u));
+    for (const u of specific.slice(0, 15)) {
+      const hint = columnHint(entity, u.header);
+      sheetWarnings.push(`Column "${shortName(u.header)}" is not a ${entity.sheet} column and is ignored.${hint ? ` ${hint}` : ` Did you mean "${u.suggestion}"?`}`);
+    }
+    const rest = [...specific.slice(15), ...plain];
+    if (rest.length && rest.length <= 5) {
+      for (const u of rest) sheetWarnings.push(`Column "${shortName(u.header)}" is not a ${entity.sheet} column and is ignored.`);
+    } else if (rest.length) {
+      sheetWarnings.push(`${rest.length.toLocaleString("en-GB")} columns are not ${entity.sheet} columns and are ignored: ${rest.slice(0, 6).map((u) => `"${shortName(u.header)}"`).join(", ")} … "${shortName(rest[rest.length - 1].header)}".`);
     }
     for (const w of sheetWarnings) log(`Sheet "${sheet.name}": ${w}`);
     // Importers add to these as they go (each message once).

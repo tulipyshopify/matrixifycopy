@@ -71,6 +71,17 @@ export async function startExport(auth: KeyAuth, input: ExportRequest) {
     config = parseExportConfig({
       entities: input.sheets.map(({ sheet, ...options }) => {
         const e = findSheet(sheet);
+        // A column the sheet doesn't have is refused by name, the same as an unknown filter.
+        if (options.columns?.length) {
+          const known = new Set(e.columns.map((c) => c.toLowerCase()));
+          const unknown = options.columns.filter((c) => !known.has(String(c).toLowerCase()) && !/^((Variant )?Metafield: \S|Inventory [A-Za-z ]+: \S)/.test(String(c)));
+          if (unknown.length) {
+            throw new ApiError(400, `${e.sheet} has no column${unknown.length === 1 ? "" : "s"} ${unknown.slice(0, 8).map((c) => `"${c}"`).join(", ")}. Call list_sheets with this sheet's name for its columns.`);
+          }
+          // Column names are matched whatever their capitals.
+          const proper = new Map(e.columns.map((c) => [c.toLowerCase(), c]));
+          options.columns = options.columns.map((c) => proper.get(String(c).toLowerCase()) ?? c);
+        }
         // Columns were named and no groups: fetch only the data those columns need,
         // so the file holds what was asked for and not every metafield and stock column too.
         if (options.columns?.length && !options.groups) {
@@ -117,7 +128,7 @@ export interface ImportRequest {
 
 export function assertCanImport(auth: KeyAuth) {
   if (!auth.canImport) {
-    throw new ApiError(403, 'This access key can only preview imports. Open the preview in the app and press "Import for real", or use a key that allows imports.');
+    throw new ApiError(403, 'This access key can only preview imports. Open the preview in the app and press "Review and apply", or use a key that allows imports.');
   }
 }
 
@@ -147,7 +158,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
     file = new File([input.csv], /\.csv$/i.test(name) ? name : `${name}.csv`, { type: "text/csv" });
   }
   if (!file || !file.size) throw new ApiError(400, "Send a file, the CSV text, or a link to import");
-  if (!/\.(xlsx|csv|zip)$/i.test(file.name)) throw new ApiError(400, "The file must be .xlsx, .csv or .zip");
+  if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new ApiError(400, "The file must be .xlsx, .csv, .tsv, .txt or .zip");
   if (file.size > MAX_API_UPLOAD_MB * 1024 * 1024) throw new ApiError(413, `The file is larger than ${MAX_API_UPLOAD_MB} MB`);
   const job = await createImportJob(auth.shop, file, options);
   return jobView(auth.shop, job.id);
@@ -170,7 +181,11 @@ export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = f
 }
 
 export async function cancel(auth: KeyAuth, id: string) {
-  await findJob(auth.shop, id);
+  const job = await findJob(auth.shop, id);
+  // Nothing to stop: say so, rather than answer as if it had been cancelled.
+  if (!["queued", "running", "uploading"].includes(job.status)) {
+    return { ...view(job), note: `This job had already ${job.status === "finished" ? "finished" : job.status === "failed" ? "failed" : "been cancelled"}; nothing was cancelled.` };
+  }
   await cancelJob(auth.shop, id);
   return jobView(auth.shop, id);
 }

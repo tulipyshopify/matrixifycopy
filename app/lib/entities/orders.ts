@@ -19,7 +19,7 @@ import {
   str,
   toGid,
 } from "../core/util";
-import { addTags, removeTags, writeMetafields } from "../core/lookups";
+import { addTags, narrowToLimit, removeTags, writeMetafields } from "../core/lookups";
 import {
   ADDRESS_SELECTION,
   addressColumns,
@@ -799,7 +799,7 @@ export function localOrderFilters(options: ExportContext["options"], now = new D
         break;
     }
   }
-  return { groups, extras, narrow, test: (o: any) => tests.every((t) => t(o)) };
+  return { groups, extras, narrow, local: tests.length > 0, test: (o: any) => tests.every((t) => t(o)) };
 }
 
 /**
@@ -845,7 +845,9 @@ async function exportOrders(ctx: ExportContext, emit: (rows: Row[]) => Promise<v
   const local = localOrderFilters(ctx.options);
   const queryGroups = new Set(groups);
   for (const g of local.groups) queryGroups.add(g);
-  const fullSearch = [search, ...local.narrow].filter(Boolean).join(" AND ");
+  let fullSearch = [search, ...local.narrow].filter(Boolean).join(" AND ");
+  // A small "first N" export reads only those N (not when a filter is checked here, order by order).
+  if (!local.local) fullSearch = await narrowToLimit(ctx, "orders", fullSearch);
   let seen = 0;
   for await (const o of ctx.bulk(ordersBulkQuery(fullSearch, queryGroups, local.extras))) {
     if (!local.test(o)) continue;

@@ -102,7 +102,7 @@ export function AskBox({ enabled }: { enabled: boolean }) {
                     >
                       Preview the change
                     </s-button>
-                    <s-text tone="neutral">Nothing changes until you check the preview and press "Import for real".</s-text>
+                    <s-text tone="neutral">Nothing changes until you check the preview and press "Review and apply".</s-text>
                   </>
                 )}
               </s-stack>

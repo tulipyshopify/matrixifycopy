@@ -16,7 +16,10 @@ import {
   str,
   toGid,
 } from "../core/util";
-import { setOnlineStorePublished, writeMetafields } from "../core/lookups";
+import { onlineStorePublicationId, setOnlineStorePublished, writeMetafields } from "../core/lookups";
+import { parseMetafieldColumn } from "../core/util";
+import type { MetafieldsNow, RowComparison } from "./product_compare";
+import { compareMetafields } from "./product_compare";
 import { paginate } from "../core/gql";
 import { imageKey } from "./products";
 
@@ -613,6 +616,174 @@ async function deleteCollection(gql: Gql, id: string) {
   assertNoUserErrors(d.collectionDelete, "Delete collection");
 }
 
+const COLLECTION_NOW = `#graphql
+  query ImportCollectionNow($id: ID!, $keys: [String!]) {
+    collection(id: $id) {
+      descriptionHtml templateSuffix
+      seo { title description }
+      metafields(first: 250, keys: $keys) { nodes { namespace key type value } }
+    }
+  }
+`;
+
+const COLLECTION_PUBLISHED_NOW = `#graphql
+  query ImportCollectionPublishedNow($id: ID!, $publication: ID!) {
+    collection(id: $id) { publishedOnPublication(publicationId: $publication) }
+  }
+`;
+
+const ruleText = (r: RuleInput) => `${r.column.toLowerCase().replace(/_/g, " ")} ${r.relation.toLowerCase().replace(/_/g, " ")} "${r.condition}"`;
+
+/**
+ * What the rows would change on a collection that exists, field by field,
+ * without writing anything: the file's cells against what the store holds now.
+ */
+async function previewUpdate(ctx: ImportContext, kind: Kind, existing: ExistingCollection, rows: Row[], top: Row, command: Command): Promise<ItemResult> {
+  const errors: string[] = [];
+  const changes: string[] = [];
+  const warnings: string[] = [];
+  const clears: string[] = [];
+  const attempt = <T>(fn: () => T): T | undefined => {
+    try {
+      return fn();
+    } catch (e) {
+      if (!(e instanceof ImportError)) throw e;
+      errors.push(e.message);
+      return undefined;
+    }
+  };
+  const keys = Object.keys(top).map((h) => parseMetafieldColumn(h, "Metafield")).filter(Boolean).map((c) => `${c!.namespace}.${c!.key}`);
+  let now: any = null;
+  try {
+    now = (await ctx.gql(COLLECTION_NOW, { id: existing.id, keys: keys.length ? keys : null }))?.collection ?? null;
+  } catch {
+    now = null;
+  }
+  const short = (v: string) => (v.length > 80 ? `${v.slice(0, 77)}…` : v);
+  const line = (label: string, old: string, next: string) => changes.push(`${label}: ${old === "" ? "(empty)" : short(old)} → ${next === "" ? "(cleared)" : short(next)}`);
+  const text = (col: string, cur: string | null | undefined, blank: "clears" | "leaves", same = (a: string, b: string) => a === b) => {
+    const v = cell(top, col);
+    if (v === undefined || cur === undefined) return;
+    const have = cur ?? "";
+    if (v === "") {
+      if (blank === "clears" && have !== "") {
+        line(col, have, "");
+        clears.push(col);
+      }
+      return;
+    }
+    if (!same(v, have)) line(col, have, v);
+  };
+  attempt(() => collectionFields(top));
+  text("Title", existing.title, "leaves");
+  text("Handle", existing.handle, "leaves");
+  text("Sort Order", existing.sortOrder, "leaves", (a, b) => a.trim().toUpperCase().replace(/[-\s]+/g, "_") === b);
+  text("Body HTML", now ? (now.descriptionHtml ?? "") : undefined, "clears", (a, b) => a.trim() === b.trim());
+  text("Template Suffix", now ? (now.templateSuffix ?? "") : undefined, "clears");
+  text("SEO Title", now ? (now.seo?.title ?? "") : undefined, "clears");
+  text("SEO Description", now ? (now.seo?.description ?? "") : undefined, "clears");
+
+  const src = cell(top, "Image Src");
+  const alt = cell(top, "Image Alt Text");
+  if (src) {
+    if (existing.image && imageKey(existing.image.url) === imageKey(src)) {
+      if (alt !== undefined && alt !== (existing.image.altText ?? "")) line("Image Alt Text", existing.image.altText ?? "", alt);
+    } else changes.push(`Image: ${existing.image ? "replaced" : "(none)"} → ${src.split("/").pop()?.split("?")[0] ?? src}`);
+  }
+
+  const published = attempt(() => parseBool(cell(top, "Published")));
+  if (published !== undefined) {
+    let isNow: boolean | null = null;
+    try {
+      const publication = await onlineStorePublicationId(ctx.gql, ctx.cache);
+      if (publication) isNow = !!(await ctx.gql(COLLECTION_PUBLISHED_NOW, { id: existing.id, publication }))?.collection?.publishedOnPublication;
+    } catch {
+      isNow = null;
+    }
+    if (isNow === null) changes.push(`Published: set to ${published ? "yes" : "no"} (its current state could not be read)`);
+    else if (isNow !== published) {
+      line("Published", isNow ? "yes" : "no", published ? "yes" : "no");
+      if (!published) warnings.push("the collection is taken off the online store: its page stops working for shoppers");
+    }
+  }
+
+  if (kind === "smart") {
+    const rules = attempt(() => parseRules(rows)) ?? [];
+    const mm = rows.map((r) => cell(r, "Must Match")).find(Boolean);
+    const disjunctive = mm ? attempt(() => parseMustMatch(mm)) : undefined;
+    const current = existingRules(existing);
+    if (rules.length) {
+      const key = (r: RuleInput) => `${r.column}|${r.relation}|${r.condition}|${r.conditionObjectId ?? ""}`;
+      const have = new Set(current.map(key));
+      const want = new Set(rules.map(key));
+      const added = rules.filter((r) => !have.has(key(r)));
+      const removed = current.filter((r) => !want.has(key(r)));
+      for (const r of added) changes.push(`Rule added: ${ruleText(r)}`);
+      for (const r of removed) changes.push(`Rule removed: ${ruleText(r)}`);
+      if (added.length || removed.length) warnings.push("the rules change, so the products in this collection change with them");
+    }
+    if (disjunctive !== undefined && disjunctive !== !!existing.ruleSet?.appliedDisjunctively) {
+      line("Must Match", mustMatchCell(!!existing.ruleSet?.appliedDisjunctively), mustMatchCell(disjunctive));
+    }
+  } else {
+    const parsed = attempt(() => parseProducts(rows)) ?? [];
+    if (parsed.length) {
+      try {
+        const specs = await resolveProducts(ctx, parsed);
+        const current = new Set(await fetchProductIds(ctx.gql, existing.id));
+        const keep = specs.filter((s) => s.command !== "DELETE");
+        const toAdd = [...new Set(keep.filter((s) => !current.has(s.gid)).map((s) => s.handle ?? gidToId(s.gid)))];
+        const toRemove = new Set(specs.filter((s) => s.command === "DELETE" && current.has(s.gid)).map((s) => s.gid));
+        if (specs.some((s) => s.command === "REPLACE")) {
+          const wanted = new Set(keep.map((s) => s.gid));
+          for (const g of current) if (!wanted.has(g)) toRemove.add(g);
+        }
+        if (toAdd.length) changes.push(`Products: adds ${toAdd.length} (${toAdd.slice(0, 5).join(", ")}${toAdd.length > 5 ? "…" : ""})`);
+        if (toRemove.size) {
+          changes.push(`Products: removes ${toRemove.size} of the ${current.size} in the collection`);
+          if (toRemove.size === current.size && !toAdd.length) clears.push("Products");
+          else if (toRemove.size > 1) warnings.push(`${toRemove.size} products are taken out of the collection`);
+        }
+      } catch (e) {
+        if (!(e instanceof ImportError)) throw e;
+        errors.push(e.message);
+      }
+    }
+  }
+
+  if (keys.length) {
+    const map: MetafieldsNow | null = now ? new Map((now.metafields?.nodes ?? []).map((n: any) => [String(n.key).startsWith(`${n.namespace}.`) ? n.key : `${n.namespace}.${n.key}`, { type: n.type, value: n.value }])) : null;
+    const cmp: RowComparison = { changes: [], seen: {}, changed: new Set(), old: {}, errors: [] };
+    compareMetafields(top, "Metafield", map, "", cmp);
+    for (const c of cmp.changes) {
+      changes.push(`${c.label}: ${c.old} → ${c.next}`);
+      if (c.clears) clears.push(c.label);
+    }
+  }
+  metafieldsFromRow(top, "Metafield", errors);
+
+  if (errors.length) return { status: "Failed", command, id: existing.id, title: existing.title, message: errors.join("; "), errors };
+  return { status: "OK", command, id: existing.id, title: existing.title, preview: { action: changes.length ? "update" : "none", changes, warnings, ...(clears.length ? { clears } : {}) } };
+}
+
+async function previewCreate(ctx: ImportContext, kind: Kind, rows: Row[], top: Row, command: Command, replacing?: ExistingCollection): Promise<ItemResult> {
+  const title = cell(top, "Title") || undefined;
+  try {
+    const p = await prepareCreate(ctx, kind, rows, top);
+    const changes = [
+      ...(replacing ? [`Deletes the collection "${replacing.title}" and creates it again from this file. Anything not in the file is lost.`] : []),
+      `New ${kind === "smart" ? "smart" : "manual"} collection: ${p.input.title}`,
+      ...(p.input.ruleSet ? (p.input.ruleSet.rules as RuleInput[]).map((r) => `Rule: ${ruleText(r)}`) : []),
+      ...(p.input.products?.length ? [`${p.input.products.length} products`] : []),
+      `Published: ${p.published ? "yes" : "no"}`,
+    ];
+    return { status: "OK", command, title, preview: { action: replacing ? "replace" : "create", changes, warnings: [], creates: 1, ...(replacing ? { deletes: 1 } : {}) } };
+  } catch (e) {
+    if (!(e instanceof ImportError)) throw e;
+    return { status: "Failed", command, title, message: e.message, errors: [e.message] };
+  }
+}
+
 function importer(kind: Kind) {
   const label = kind === "smart" ? "Smart collection" : "Custom collection";
   return async function importCollection(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
@@ -622,20 +793,25 @@ function importer(kind: Kind) {
     const existing = id || handle ? await fetchCollection(ctx.gql, { id, handle }) : null;
     const existingKind: Kind | null = existing ? (existing.ruleSet ? "smart" : "custom") : null;
     const wrongKind = existing && existingKind !== kind;
+    const dry = !!ctx.options.dryRun;
+    const notFound = `${label} not found${handle ? ` (handle "${handle}")` : ""}. ${command === "UPDATE" ? "Rows only update collections that exist; to create this one, set Command to MERGE or NEW" : ""}`.trim();
 
     switch (command) {
       case "DELETE": {
-        if (!existing) return { status: "Failed", command, message: `${label} not found` };
+        if (!existing) return { status: "Failed", command, message: notFound };
         if (wrongKind) return { status: "Failed", command, id: existing.id, message: `Collection is a ${existingKind} collection` };
+        if (dry) return { status: "OK", command, id: existing.id, title: existing.title, preview: { action: "delete", changes: [`Deletes the collection "${existing.title}". Its products are not deleted. This cannot be undone.`], warnings: [], deletes: 1 } };
         await deleteCollection(ctx.gql, existing.id);
         return { status: "OK", command, id: existing.id, message: "Deleted" };
       }
       case "NEW": {
         if (existing) return { status: "Failed", command, id: existing.id, message: `Collection with handle "${existing.handle}" already exists` };
+        if (dry) return previewCreate(ctx, kind, rows, top, command);
         const r = await createCollection(ctx, kind, rows, top);
         return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; ") };
       }
       case "REPLACE": {
+        if (dry) return previewCreate(ctx, kind, rows, top, command, existing ?? undefined);
         // Validate everything (incl. product lookups) before deleting anything.
         const prepared = await prepareCreate(ctx, kind, rows, top);
         if (existing) await deleteCollection(ctx.gql, existing.id);
@@ -645,7 +821,8 @@ function importer(kind: Kind) {
       case "UPDATE":
       case "MERGE": {
         if (!existing) {
-          if (command === "UPDATE") return { status: "Failed", command, message: `${label} not found` };
+          if (command === "UPDATE") return { status: "Failed", command, message: notFound };
+          if (dry) return previewCreate(ctx, kind, rows, top, command);
           const r = await createCollection(ctx, kind, rows, top);
           return { status: "OK", command, id: r.id, message: ["Created", ...r.notes].join("; ") };
         }
@@ -657,6 +834,7 @@ function importer(kind: Kind) {
             message: `Collection is a ${existingKind} collection; use command REPLACE to convert it`,
           };
         }
+        if (dry) return previewUpdate(ctx, kind, existing, rows, top, command);
         const notes = await updateCollection(ctx, kind, existing, rows, top);
         return { status: "OK", command, id: existing.id, message: ["Updated", ...notes].join("; ") };
       }

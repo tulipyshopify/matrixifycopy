@@ -27,6 +27,10 @@ export interface RowComparison {
   /** For each changed column, the cell that puts the store's current value back (for undo). */
   old: Record<string, string>;
   errors: string[];
+  /** Allowed, but worth a second look before importing. */
+  warnings?: string[];
+  /** About the sheet as a whole (said once, not per item). */
+  notes?: string[];
 }
 
 type Kind = "text" | "money" | "bool" | "caseless" | "number" | "id";
@@ -194,6 +198,20 @@ export function compareMetafields(row: Row, prefix: string, now: MetafieldsNow |
   }
 }
 
+/** 2026-13-01 and 2026-02-30 parse in some engines; they are not dates. */
+export function validCalendarDate(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]);
+}
+
+/** Shopify rewrites handles it doesn't accept as typed: say so before the next import can't find the product. */
+export function handleWarnings(handle: string): string[] {
+  if (!handle || /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(handle)) return [];
+  return [`the handle "${handle}" has characters Shopify may change or remove (capitals, spaces, symbols, emoji or accented letters). The product may end up with a different handle than the one in the file; check it after importing, and use the product's ID to match it in later imports`];
+}
+
 const sameTags = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
 export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNow | null): RowComparison {
@@ -219,14 +237,14 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
     }
     const now = p.tags ?? [];
     const want = splitTags(tagsCell);
-    const lower = new Set(now.map((t) => t.toLowerCase()));
+    const lower = new Set(now.map((t) => t.normalize("NFC").toLowerCase()));
     out.seen.Tags = joinTags([...now].sort());
     if (command === "REPLACE") {
-      if (!sameTags(now.map((t) => t.toLowerCase()), [...new Set(want.map((t) => t.toLowerCase()))])) {
+      if (!sameTags(now.map((t) => t.normalize("NFC").toLowerCase()), [...new Set(want.map((t) => t.normalize("NFC").toLowerCase()))])) {
         out.changed.add("Tags");
         out.changed.add("Tags Command");
-        const removed = now.filter((t) => !want.some((w) => w.toLowerCase() === t.toLowerCase()));
-        const added = want.filter((w) => !lower.has(w.toLowerCase()));
+        const removed = now.filter((t) => !want.some((w) => w.normalize("NFC").toLowerCase() === t.normalize("NFC").toLowerCase()));
+        const added = want.filter((w) => !lower.has(w.normalize("NFC").toLowerCase()));
         if (!want.length) out.changes.push({ label: "Tags", old: shown(joinTags(now)), next: `(cleared: all ${now.length} tags removed)`, clears: true });
         else {
           out.changes.push({
@@ -237,14 +255,14 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
         }
       }
     } else if (command === "MERGE") {
-      const added = want.filter((w) => !lower.has(w.toLowerCase()));
+      const added = want.filter((w) => !lower.has(w.normalize("NFC").toLowerCase()));
       if (added.length) {
         out.changed.add("Tags");
         out.changed.add("Tags Command");
         out.changes.push({ label: "Tags", old: shown(joinTags(now)), next: `adds ${shown(joinTags(added))}` });
       }
     } else {
-      const removed = now.filter((t) => want.some((w) => w.toLowerCase() === t.toLowerCase()));
+      const removed = now.filter((t) => want.some((w) => w.normalize("NFC").toLowerCase() === t.normalize("NFC").toLowerCase()));
       if (removed.length) {
         out.changed.add("Tags");
         out.changed.add("Tags Command");
@@ -258,7 +276,21 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
     out.old["Tags Command"] = "REPLACE";
   }
   compareMetafields(top, "Metafield", metafields, "", out);
-  // "Published At" only matters together with a change of Published.
+  out.warnings = [];
+  const title = cell(top, "Title") ?? "";
+  if (out.changed.has("Title") && /<\/?[a-z][^>]*>/i.test(title)) out.warnings.push("the new title contains HTML tags; titles are shown as plain text, so the tags would appear as they are typed");
+  if (out.changed.has("Handle")) out.warnings.push(...handleWarnings(handle ?? ""));
+  // "Published At" is a date, and only matters together with a change of Published.
+  const publishedAt = cell(top, "Published At");
+  if (publishedAt) {
+    const iso = /^\d{4}-\d{2}-\d{2}/.test(publishedAt);
+    const valid = iso && validCalendarDate(publishedAt) && !Number.isNaN(Date.parse(publishedAt));
+    if (!valid && (iso || out.changed.has("Published"))) {
+      out.errors.push(`Published At "${publishedAt}" is not a date. Write it as 2026-11-19 or 2026-11-19T09:00:00Z`);
+    } else if (!out.changed.has("Published") && (!valid || Math.abs(Date.parse(publishedAt) - (p.publishedAt ? Date.parse(p.publishedAt) : NaN)) > 1000 || !p.publishedAt)) {
+      out.notes = [`"Published At" is only used when "Published" changes in the same row. On its own it is not imported: the publish dates in this file that differ from the store are ignored.`];
+    }
+  }
   if (out.changed.has("Published")) out.changed.add("Published At");
   return out;
 }
@@ -348,6 +380,13 @@ export function compareVariant(row: Row, v: VariantNow, ident: string, metafield
   }
 
   compareMetafields(row, "Variant Metafield", metafields, ` (${ident})`, out);
+  out.warnings = [];
+  if (out.changed.has("Variant Barcode") && v.barcode && cell(row, "Variant Barcode")) {
+    out.warnings.push(`the barcode of ${ident} is replaced (${v.barcode} → ${cell(row, "Variant Barcode")}). Barcodes rarely change: check this is meant`);
+  }
+  if (out.changed.has("Variant Inventory Tracker") && v.inventoryItem.tracked) {
+    out.warnings.push(`stock tracking for ${ident} is switched off. Without tracking it keeps selling after it runs out, and its stock count is no longer kept`);
+  }
   return out;
 }
 

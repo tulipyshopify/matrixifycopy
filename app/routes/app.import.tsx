@@ -87,7 +87,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     const file = form.get("file");
     if (!(file instanceof File) || !file.size) throw new Error("Choose a file to import");
-    if (!/\.(xlsx|csv|zip)$/i.test(file.name)) throw new Error("Upload an .xlsx, .csv or .zip file");
+    // Other spreadsheet formats are let through to the reader, which says how to save each as one that is read.
+    if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new Error("Upload an Excel file (.xlsx), a CSV or tab-separated file (.csv, .tsv, .txt), or a ZIP of those");
     const job = await createImportJob(session.shop, file, options);
     return redirect(`/app/jobs/${job.id}`);
   } catch (e: any) {
