@@ -43,6 +43,17 @@ function cellText(v: any): string {
   return String(v);
 }
 
+/**
+ * Builds rows as one object literal with every column, so all rows of a sheet
+ * share one compact layout. Filling an empty object column by column makes
+ * the engine store each wide row as its own hash table, several times larger.
+ */
+function rowFactory(headers: string[]): (cells: string[], share: (v: string) => string) => Row {
+  const fields = headers.map((h, j) => (h ? `${JSON.stringify(h)}: share(cells[${j}] ?? "")` : "")).filter(Boolean);
+  // Header names only ever appear as JSON string literals: nothing from the file runs as code.
+  return new Function("cells", "share", `return { ${fields.join(", ")} };`) as (cells: string[], share: (v: string) => string) => Row;
+}
+
 function rowsFromMatrix(matrix: string[][]): { headers: string[]; rows: Row[] } {
   const headerIdx = matrix.findIndex((r) => r.some((c) => c.trim() !== ""));
   if (headerIdx < 0) return { headers: [], rows: [] };
@@ -55,14 +66,26 @@ function rowsFromMatrix(matrix: string[][]): { headers: string[]; rows: Row[] } 
     return n === 1 ? h : `${h} (${n})`;
   });
   const rows: Row[] = [];
+  const make = rowFactory(headers);
+  // The same short values repeat down a column (handles, "MERGE", "TRUE"…):
+  // keeping one copy of each roughly halves the memory of a large sheet.
+  const pool = new Map<string, string>();
+  const share = (v: string): string => {
+    if (v.length === 0) return "";
+    if (v.length > 40) return v;
+    const known = pool.get(v);
+    if (known !== undefined) return known;
+    // Detach from the file's text, so that text can be freed.
+    const own = v.length < 13 ? v : (" " + v).slice(1);
+    if (pool.size < 200_000) pool.set(own, own);
+    return own;
+  };
   for (let i = headerIdx + 1; i < matrix.length; i++) {
     const r = matrix[i];
+    // Converted rows are dropped from the matrix straight away, so both are never held in full.
+    (matrix as Array<string[] | undefined>)[i] = undefined;
     if (!r || r.every((c) => (c ?? "").trim() === "")) continue;
-    const row: Row = {};
-    headers.forEach((h, j) => {
-      if (h) row[h] = r[j] ?? "";
-    });
-    rows.push(row);
+    rows.push(make(r, share));
   }
   return { headers: headers.filter(Boolean), rows };
 }

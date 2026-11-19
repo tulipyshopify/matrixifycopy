@@ -562,3 +562,40 @@ describe("audit: redirects (H8, H10, M19)", () => {
     expect(store.mutations()).toEqual([]);
   });
 });
+
+describe("audit: large files (M15)", () => {
+  it("keeps a 40,000-row sheet small in memory and refuses a file that cannot fit, instead of crashing the server", async () => {
+    const { parseCsv } = await import("../app/lib/core/sheets");
+    const { assertFitsInMemory } = await import("../app/lib/jobs/runner.server");
+    const cols = Array.from({ length: 100 }, (_, i) => `Column ${i}`);
+    const text = [cols.join(","), ...Array.from({ length: 40_000 }, (_, r) => cols.map((_, c) => (c < 2 ? `handle-${r >> 3}` : c < 20 && r % 8 === 0 ? `value ${c}` : c % 7 ? "" : "MERGE")).join(","))].join("\n");
+    const before = process.memoryUsage().heapUsed;
+    const { rows } = parseCsv(text);
+    const used = (process.memoryUsage().heapUsed - before) / 1e6;
+    expect(rows).toHaveLength(40_000);
+    expect(Object.keys(rows[5])).toEqual(cols);
+    expect(rows[5]["Column 0"]).toBe("handle-0");
+    expect(rows[5]["Column 3"]).toBe("");
+    // 4 million cells: a hash table per row took ~300 MB; a shared layout stays far under.
+    expect(used).toBeLessThan(170);
+    // Rows still take new columns (ID, Import Result…).
+    rows[5]["Import Result"] = "OK";
+    expect(rows[5]["Import Result"]).toBe("OK");
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bulkport-big-"));
+    const f = path.join(dir, "big.csv");
+    fs.writeFileSync(f, text);
+    await expect(assertFitsInMemory(f, "big.csv", { heap_size_limit: 1500e6, used_heap_size: 200e6 } as any)).resolves.toBeUndefined();
+    await expect(assertFitsInMemory(f, "big.zip", { heap_size_limit: 300e6, used_heap_size: 200e6 } as any)).rejects.toThrow(/too large to import in one go.*Split it into smaller files/);
+  });
+
+  it("reads odd header names safely", async () => {
+    const { parseCsv } = await import("../app/lib/core/sheets");
+    const { headers, rows } = parseCsv('ID,"a ""quoted"" name",__proto__,"x`${1}`","back\\\\slash"\n1,2,3,4,5\n');
+    expect(headers).toEqual(["ID", 'a "quoted" name', "__proto__", "x`${1}`", "back\\\\slash"]);
+    expect(rows[0].ID).toBe("1");
+    expect(rows[0]['a "quoted" name']).toBe("2");
+    expect(rows[0]["x`${1}`"]).toBe("4");
+    expect(Object.getPrototypeOf(rows[0])).toBe(Object.prototype);
+  });
+});

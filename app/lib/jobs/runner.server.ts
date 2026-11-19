@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import v8 from "node:v8";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary } from "../core/importer";
@@ -66,6 +67,29 @@ export interface RunnerDeps {
 
 /** Share of an export's time spent while Shopify prepares the data (the rest is writing the file). */
 const PREPARE_WEIGHT = 0.8;
+
+/**
+ * Rough memory a file needs once read into rows, as a multiple of its size on
+ * disk (compressed formats unpack to several times that first).
+ */
+const MEMORY_FACTOR: Record<string, number> = { ".csv": 12, ".txt": 12, ".tsv": 12, ".xlsx": 45, ".xlsm": 45, ".zip": 45 };
+
+/**
+ * Refuses a file that would not fit in the server's memory, with a reason,
+ * instead of letting it take the whole server down mid-import (which would
+ * also interrupt every other job that is running).
+ */
+export async function assertFitsInMemory(file: string, name: string, heap = v8.getHeapStatistics()) {
+  const size = (await fs.promises.stat(file)).size;
+  const need = size * (MEMORY_FACTOR[path.extname(name).toLowerCase()] ?? 45);
+  const free = heap.heap_size_limit - heap.used_heap_size;
+  if (need > free * 0.9) {
+    const mb = (n: number) => `${Math.max(1, Math.round(n / 1e6))} MB`;
+    throw new Error(
+      `This file is too large to import in one go: it is ${mb(size)} and would need about ${mb(need)} of memory, with ${mb(free)} free on the server right now. Split it into smaller files (for example by product type or by 20,000 rows) and import them one after another.`,
+    );
+  }
+}
 
 export function timestamp(d = new Date()): string {
   return d.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "_");
@@ -166,6 +190,7 @@ export async function executeJob(
     }
     if (!job.inputFile) throw new Error("No input file");
     deps.log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
+    await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
     const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
     deps.log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));

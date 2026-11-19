@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
+import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getCheckSchedule, latestChecks, markCheckSeen, setWeeklyCheck, startAiFix, startCheck } from "../lib/check/check.server";
@@ -21,7 +22,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     weekly: schedule?.enabled ? { nextRunAt: schedule.nextRunAt } : null,
     aiEnabled: assistantAllowed(session.shop),
     aiMax: MAX_AI_PRODUCTS,
-    active: active ? { progress: active.progress } : null,
+    active: active ? { progress: active.progress, status: active.status } : null,
     failed: failed ? (failed.error ?? "The check stopped with an error.") : null,
     previousScore: previous?.report?.score ?? null,
     latest: latest
@@ -66,14 +67,9 @@ export default function DataCheck() {
   const fetcher = useFetcher<{ error?: string }>();
   const intent = fetcher.state !== "idle" ? String(fetcher.formData?.get("intent") ?? "") : "";
   const aiRule = intent === "ai" ? String(fetcher.formData?.get("rule")) : "";
-  const revalidator = useRevalidator();
   const busy = !!active || intent === "run";
 
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => revalidator.state === "idle" && revalidator.revalidate(), 3000);
-    return () => clearInterval(t);
-  }, [active, revalidator]);
+  usePolling(!!active, 3000);
 
   const tone = (score: number) => (score >= 60 ? "brand" : "critical");
   const trend = latest && previousScore !== null ? latest.score - previousScore : 0;
@@ -116,7 +112,14 @@ export default function DataCheck() {
             checked={!!weekly}
             onChange={(ev: any) => fetcher.submit({ intent: "weekly", enabled: String(ev.currentTarget.checked), timezone: browserTimeZone() }, { method: "post" })}
           />
-          {active ? <s-text tone="neutral">Checking… {active.progress ? `${active.progress.toLocaleString("en")} products so far` : "starting"}</s-text> : null}
+          {active ? (
+            <s-stack direction="inline" gap="small" alignItems="center">
+              <s-spinner size="base" accessibilityLabel="Checking" />
+              <s-text tone="neutral">
+                Checking… {active.progress ? `${active.progress.toLocaleString("en")} products read so far.` : active.status === "queued" ? "waiting to start." : "Shopify is preparing the products."} This page updates by itself.
+              </s-text>
+            </s-stack>
+          ) : null}
         </s-stack>
       </s-section>
 

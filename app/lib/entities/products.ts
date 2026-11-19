@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   Command,
   Entity,
@@ -2021,13 +2022,40 @@ async function applyUpdate(ctx: ImportContext, existing: ExistingProduct, plan: 
 /** Words a plan as "old → new" lines. */
 const changeLines = (changes: FieldChange[]) => changes.map((c) => `${c.label}: ${c.old} → ${c.next}`);
 
+/**
+ * What a preview keeps of an item's store values, small enough to keep for
+ * every item of a large file: one fingerprint of everything the item touches,
+ * plus the readable values of just the fields that would change.
+ */
+function compactSeen(seen: Record<string, string>, changedLabels: string[]): Record<string, string> {
+  const out: Record<string, string> = { "#": fingerprint(seen) };
+  for (const label of changedLabels) {
+    const v = seen[label];
+    if (v !== undefined) out[label] = v.length > 60 ? `#${fingerprint({ v })}` : v;
+  }
+  if ("(product exists)" in seen) out["(product exists)"] = seen["(product exists)"];
+  return out;
+}
+
+function fingerprint(values: Record<string, string>): string {
+  const h = createHash("sha1");
+  for (const k of Object.keys(values).sort()) h.update(k).update("\u0000").update(values[k]).update("\u0001");
+  return h.digest("base64url").slice(0, 12);
+}
+
 /** What changed in the store between a preview and now, among the fields the preview looked at. */
 function staleFields(expected: Record<string, string> | undefined, now: Record<string, string>): string[] {
   if (!expected) return [];
   const out: string[] = [];
+  const show = (v: string) => (v === "" ? "(empty)" : v);
   for (const [label, was] of Object.entries(expected)) {
-    if (label in now && now[label] !== was) out.push(`${label} was ${was === "" ? "(empty)" : was} at the preview and is now ${now[label] === "" ? "(empty)" : now[label]}`);
+    if (label === "#" || !(label in now)) continue;
+    const current = was.startsWith("#") && now[label].length > 60 ? `#${fingerprint({ v: now[label] })}` : now[label];
+    if (current === was) continue;
+    out.push(was.startsWith("#") ? `${label} was edited` : `${label} was ${show(was)} at the preview and is now ${show(current)}`);
   }
+  // None of the fields it would change moved, but something else it looked at did.
+  if (!out.length && expected["#"] && expected["#"] !== fingerprint(now)) out.push("the item was edited (a field this file touches now has a different value)");
   return out;
 }
 
@@ -2102,8 +2130,10 @@ export async function importProduct(
     message: `Changed in the store since the preview, so nothing was imported for this item: ${lines.join("; ")}. Preview the file again.`,
   });
   if (!dry) {
-    const stale = staleFields(meta.expectedSeen, existence);
-    if (stale.length) return failStale([existing ? "the product now exists (it didn't at the preview)" : "the product no longer exists"]);
+    const was = meta.expectedSeen?.["(product exists)"];
+    if (was !== undefined && was !== existence["(product exists)"]) {
+      return failStale([existing ? "the product now exists (it didn't at the preview)" : "the product no longer exists"]);
+    }
   }
 
   const created = async (omitHandle = false): Promise<ItemResult> => {
@@ -2199,7 +2229,7 @@ export async function importProduct(
       const plan = await planUpdate(ctx, existing, rows, rowNo);
       const seen = { ...existence, ...plan.seen };
       if (plan.errors.length) {
-        return { status: "Failed", command, id: existing.id, message: plan.errors.join("; "), errors: plan.errors, seen };
+        return { status: "Failed", command, id: existing.id, message: plan.errors.join("; "), errors: plan.errors };
       }
       const changes = changeLines(plan.changes);
       const clears = plan.changes.filter((c) => c.clears).map((c) => c.label);
@@ -2211,7 +2241,7 @@ export async function importProduct(
         ...(plan.deletes ? { deletes: plan.deletes } : {}),
         ...(plan.creates ? { creates: plan.creates } : {}),
       };
-      if (dry) return { status: "OK", command, id: existing.id, message: plan.notes.join("; ") || undefined, seen, preview };
+      if (dry) return { status: "OK", command, id: existing.id, message: plan.notes.join("; ") || undefined, seen: compactSeen(seen, plan.changes.map((c) => c.label)), preview };
       const stale = staleFields(meta.expectedSeen, seen);
       if (stale.length) return failStale(stale);
       if (!changes.length) {

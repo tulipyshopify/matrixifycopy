@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
+import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob } from "../lib/jobs/jobs.server";
@@ -87,18 +88,11 @@ export default function JobDetail() {
   } catch {
     // unreadable config: just skip the details
   }
-  const revalidator = useRevalidator();
   const fetcher = useFetcher<{ error?: string }>();
   const applying = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "apply";
   const active = isActive(job.status);
 
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 2000);
-    return () => clearInterval(t);
-  }, [active, revalidator]);
+  usePolling(active, 2000);
 
   // Timing depends on the current time, so it is computed in the browser only
   // (rendering it on the server would not match) and refreshed every second.
