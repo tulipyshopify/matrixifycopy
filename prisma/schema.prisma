@@ -129,6 +129,11 @@ model ShopSetting {
   alertWebhook String?
   /// Imports stop when more than this share (percent) of rows fail unexpectedly; 0 = never.
   failStopPercent Int @default(5)
+  /// When an import is stopped for failing rows, put back what it had changed.
+  undoOnStop Boolean @default(false)
+  /// Google Drive, for backup copies: the sealed refresh token and the folder it uploads to.
+  driveToken String?
+  driveFolder String?
   /// Days exports stay in the job history.
   historyDays Int @default(90)
   /// Where alerts are also emailed (comma separated).
@@ -171,4 +176,38 @@ model ApiKey {
   revokedAt  DateTime?
 
   @@index([shop])
+}
+
+/// A connection an assistant (an MCP client) is asking for, or has been given, through OAuth.
+model OAuthGrant {
+  id            String    @id @default(cuid())
+  clientId      String
+  redirectUri   String
+  /// PKCE challenge (S256) of the request.
+  challenge     String
+  state         String    @default("")
+  /// The short code the merchant types in the app to approve it.
+  userCode      String    @unique
+  shop          String?
+  approvedAt    DateTime?
+  /// SHA-256 of the one-time authorization code, once issued.
+  codeHash      String?   @unique
+  codeUsedAt    DateTime?
+  /// SHA-256 of the current refresh token.
+  refreshHash   String?   @unique
+  /// The access key in use for this connection.
+  keyId         String?
+  clientName    String    @default("")
+  createdAt     DateTime  @default(now())
+
+  @@index([shop])
+}
+
+/// An MCP client that registered itself (OAuth dynamic client registration).
+model OAuthClient {
+  id           String   @id @default(cuid())
+  name         String   @default("")
+  /// JSON array of allowed redirect URIs.
+  redirectUris String
+  createdAt    DateTime @default(now())
 }

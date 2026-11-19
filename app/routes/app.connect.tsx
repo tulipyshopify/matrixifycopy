@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { EXPIRY_CHOICES, createKey, listKeys, revokeKey, type KeyScope } from "../lib/api/keys.server";
 import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
-import { HISTORY_CHOICES, failStopPercent, historyDays } from "../lib/jobs/jobs.server";
+import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
 
 /** SHA-256 of the command-line file as this server hands it out, to check a download against. */
@@ -32,6 +32,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     emails: (await alertEmails(session.shop)).join(", "),
     emailAvailable: emailAvailable(),
     failStop: await failStopPercent(session.shop),
+    undoOnStop: await undoOnStop(session.shop),
     history: await historyDays(session.shop),
     historyChoices: HISTORY_CHOICES,
     expiryChoices: EXPIRY_CHOICES,
@@ -58,7 +59,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (form.get("intent") === "defaults") {
       const failStopPercent = [0, 5, 10, 25].includes(Number(form.get("failStop"))) ? Number(form.get("failStop")) : 5;
       const days = HISTORY_CHOICES.includes(Number(form.get("history"))) ? Number(form.get("history")) : 90;
-      await prisma.shopSetting.upsert({ where: { shop: session.shop }, create: { shop: session.shop, failStopPercent, historyDays: days }, update: { failStopPercent, historyDays: days } });
+      await prisma.shopSetting.upsert({ where: { shop: session.shop }, create: { shop: session.shop, failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true" }, update: { failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true" } });
       return { saved: "Saved." };
     }
     if (form.get("intent") === "revoke") {
@@ -101,7 +102,8 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha } = useLoaderData<typeof loader>();
+  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved } = useLoaderData<typeof loader>();
+  const [undoStop, setUndoStop] = useState(undoSaved);
   const [emailList, setEmailList] = useState(emails);
   const [stopAt, setStopAt] = useState(String(failStop));
   const [days, setDays] = useState(String(history));
@@ -231,8 +233,15 @@ export default function Connect() {
               ))}
             </s-select>
           </s-grid>
+          <s-checkbox
+            label="When an import is stopped, also put back what it had changed"
+            details="Product imports only. Off: the import stops and you choose whether to undo it."
+            checked={undoStop}
+            disabled={stopAt === "0"}
+            onChange={(ev: any) => setUndoStop(!!ev.currentTarget.checked)}
+          />
           <s-stack direction="inline">
-            <s-button disabled={fetcher.state !== "idle" || (stopAt === String(failStop) && days === String(history))} onClick={() => fetcher.submit({ intent: "defaults", failStop: stopAt, history: days }, { method: "post" })}>
+            <s-button disabled={fetcher.state !== "idle" || (stopAt === String(failStop) && days === String(history) && undoStop === undoSaved)} onClick={() => fetcher.submit({ intent: "defaults", failStop: stopAt, history: days, undoOnStop: String(undoStop) }, { method: "post" })}>
               Save
             </s-button>
           </s-stack>

@@ -132,6 +132,11 @@ function operationText(op: string): string {
   return op.replace(/^Import/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
+/** Data types undone by re-importing a copy taken just before the import (products record theirs field by field). */
+const SNAPSHOT_TYPES = new Set(["customers", "companies", "smart_collections", "custom_collections", "orders", "draft_orders", "pages", "blog_posts", "redirects"]);
+/** Most items copied for undo before one sheet is imported. */
+const MAX_SNAPSHOT_ITEMS = 2000;
+
 /** Most undo rows kept for one sheet (a very large import can still be undone from a backup). */
 const MAX_UNDO_ROWS = 200_000;
 
@@ -232,6 +237,12 @@ export interface RunImportArgs {
    * through to the end. 0 or undefined = never stop.
    */
   stopAtFailedPercent?: number;
+  /**
+   * Reads items of a data type as they are now, by ID, in export layout.
+   * Called before a sheet is imported, for data types that don't record their
+   * own undo: the rows it returns are what "Undo" imports to put them back.
+   */
+  snapshot?: (entity: Entity, ids: string[]) => Promise<Row[]>;
   /** Failures a preview already announced, by sheet name: they don't count towards stopping. */
   expectedFailed?: Record<string, number>;
 }
@@ -349,6 +360,23 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     let stopped = false;
     const undo: Row[] = [];
     const undoNotes: string[] = [];
+    // Before anything is written: a copy of the items as they are, to undo with
+    // (data types that record their own undo row by row don't need it).
+    let before: Row[] = [];
+    if (args.snapshot && !ctx.options.dryRun && SNAPSHOT_TYPES.has(entity.key)) {
+      const ids = [...new Set(items.map((it) => gidToId(cell(it.rows[0], "ID") ?? "")).filter((v) => /^\d+$/.test(v)))];
+      if (ids.length > MAX_SNAPSHOT_ITEMS) {
+        log(`Sheet "${sheet.name}": too many items (${ids.length}) to record for undo. Take a backup first if you may need to put them back.`);
+      } else if (ids.length) {
+        try {
+          before = await args.snapshot(entity, ids);
+          const found = new Set(before.map((r) => r.ID).filter(Boolean));
+          log(`Sheet "${sheet.name}": recorded ${found.size} of ${ids.length} items as they are now, for undo.`);
+        } catch (e: any) {
+          log(`Sheet "${sheet.name}": could not record the items for undo (${e?.message ?? e}). The import goes ahead; take a backup if you may need to put them back.`);
+        }
+      }
+    }
     // Batch mode (opt-in, never for dry runs): the sheet goes to Shopify as one
     // bulk operation when it qualifies; otherwise it runs the normal way below.
     let batched = false;
@@ -413,6 +441,11 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
               const verb = dryRunVerb(command, e.operation);
               result = { status: "OK", command, message: `Dry run: would ${verb}` };
               const changes = describeChanges(e.variables);
+              // A new item's visibility is worth saying outright, whatever the first step happens to send.
+              if (verb === "create" && entity.columns.includes("Published")) {
+                const p = cell(item.rows[0], "Published");
+                changes.push(p === undefined || p === "" ? "Published: not set in the file (Shopify's default applies)" : `Published: ${/^(true|yes|y|1)$/i.test(p) ? "yes" : "no"}`);
+              }
               previews.set(item, {
                 action: command === "REPLACE" ? "replace" : (verb as PreviewItem["action"]),
                 changes: changes.length ? [`First step: ${operationText(e.operation)}`, ...changes] : [`First step: ${operationText(e.operation)}`],
@@ -468,6 +501,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    if (!undo.length && before.length && summary.ok > 0) undo.push(...before);
     if (undo.length) summary.undo = undo;
     if (undoNotes.length) summary.undoNotes = undoNotes;
     if (ctx.options.dryRun) {

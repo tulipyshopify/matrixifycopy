@@ -540,6 +540,11 @@ function expectedFailed(stats: string): Record<string, number> {
   }
 }
 
+export async function undoOnStop(shop: string): Promise<boolean> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { undoOnStop: true } });
+  return !!s?.undoOnStop;
+}
+
 /** The store's "stop when more than this share of rows fail" setting (0 = never). */
 export async function failStopPercent(shop: string): Promise<number> {
   const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { failStopPercent: true } });
@@ -551,7 +556,7 @@ export async function failStopPercent(shop: string): Promise<number> {
  * recorded, which puts back the values it changed. Like any preview, nothing
  * changes until it is applied.
  */
-export async function startUndo(shop: string, id: string) {
+export async function startUndo(shop: string, id: string, opts: { apply?: boolean } = {}) {
   const job = await getJob(shop, id);
   if (job.type !== "import" || isDryRunJob(job.config)) throw new Error("Only an import can be undone");
   const file = undoFileOf(jobDir(shop, id));
@@ -560,10 +565,12 @@ export async function startUndo(shop: string, id: string) {
     data: {
       shop,
       type: "import",
-      config: JSON.stringify({ options: { dryRun: true, defaultCommand: "UPDATE" }, undoOf: id } satisfies ImportConfig),
+      // `apply`: straight away, without a preview (used when an import is stopped and set to undo itself).
+      config: JSON.stringify({ options: { ...(opts.apply ? {} : { dryRun: true }), defaultCommand: "UPDATE" }, undoOf: id } satisfies ImportConfig),
       name: `Undo of ${job.name || job.inputName || "import"}`.slice(0, 100),
       inputFile: file,
-      inputName: path.extname(file) === ".csv" ? "Products.csv" : "Undo.zip",
+      // A single CSV is named after its data type inside the zip writer ("Undo_Customers.csv"…): the type is in the name.
+      inputName: path.basename(file),
     },
   });
 }

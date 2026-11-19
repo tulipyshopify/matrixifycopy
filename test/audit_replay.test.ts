@@ -882,3 +882,33 @@ describe("redesign: restoring chosen fields", () => {
     expect(bySku.headers).toEqual(["Handle", "Variant SKU", "Variant Price"]);
   });
 });
+
+describe("redesign: undo for other data types", () => {
+  it("copies the affected items before a sheet is imported, and offers the copy as the undo", async () => {
+    const customers = ENTITIES.find((e) => e.key === "customers")!;
+    const asked: string[][] = [];
+    const logs: string[] = [];
+    const fake = { ...customers, import: { keyColumns: ["ID"], apply: async (_c: any, rows: any[], command: any) => ({ status: rows[0].ID === "3" ? ("Failed" as const) : ("OK" as const), command }) } };
+    const stats = await runImport({
+      ctx: { gql: (async () => ({})) as any, options: { defaultCommand: "UPDATE" }, log: () => {}, cache: new Map() },
+      sheets: [{ name: "Customers", headers: ["ID", "Tags"], rows: [{ ID: "1", Tags: "vip" }, { ID: "2", Tags: "vip" }, { ID: "3", Tags: "vip" }, { ID: "", Tags: "new person" }] }],
+      entities: [fake as any],
+      log: (m) => logs.push(m),
+      snapshot: async (_e, ids) => {
+        asked.push(ids);
+        return [{ ID: "1", Command: "UPDATE", Tags: "old-a" }, { ID: "2", Command: "UPDATE", Tags: "" }];
+      },
+    });
+    expect(asked).toEqual([["1", "2", "3"]]);
+    expect(stats[0].undo).toEqual([{ ID: "1", Command: "UPDATE", Tags: "old-a" }, { ID: "2", Command: "UPDATE", Tags: "" }]);
+    expect(logs.join("\n")).toMatch(/recorded 2 of 3 items as they are now, for undo/);
+    // Never for a preview.
+    const dry = await runImport({ ctx: { gql: (async () => ({})) as any, options: { dryRun: true }, log: () => {}, cache: new Map() }, sheets: [{ name: "Customers", headers: ["ID"], rows: [{ ID: "1" }] }], entities: [fake as any], log: () => {}, snapshot: async () => { throw new Error("not for previews"); } });
+    expect(dry[0].undo).toBeUndefined();
+    // A copy that can't be taken doesn't stop the import; it says so.
+    const logs2: string[] = [];
+    const noCopy = await runImport({ ctx: { gql: (async () => ({})) as any, options: {}, log: () => {}, cache: new Map() }, sheets: [{ name: "Customers", headers: ["ID"], rows: [{ ID: "1" }] }], entities: [fake as any], log: (m) => logs2.push(m), snapshot: async () => { throw new Error("search unavailable"); } });
+    expect(noCopy[0]).toMatchObject({ ok: 1 });
+    expect(logs2.join("\n")).toMatch(/could not record the items for undo \(search unavailable\)/);
+  });
+});

@@ -321,7 +321,37 @@ export async function executeJob(
           return checked.get(url)!;
         }
       : undefined;
+    // A copy of the items a sheet is about to change, read with the type's own export (all its data groups).
+    const snapshot = async (entity: (typeof ENTITIES)[number], ids: string[]) => {
+      const wanted = new Set(ids);
+      const rows: Array<Record<string, string>> = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        const chunk = ids.slice(i, i + 200);
+        let keep = false;
+        await entity.export!(
+          {
+            gql: deps.gql,
+            bulk: deps.bulk,
+            rest: deps.rest,
+            // The limit stops a runaway read if the store's search were to ignore the IDs.
+            options: { query: chunk.map((id) => `id:${id}`).join(" OR "), groups: (entity.groups ?? []).map((g) => g.key).filter((g) => g !== "codes"), limit: chunk.length + 5 },
+            log: () => {},
+            cache,
+            progress: () => {},
+          },
+          async (out) => {
+            for (const row of out) {
+              // Rows of an item follow its first row; only the items asked for are kept.
+              if (row.ID) keep = wanted.has(row.ID);
+              if (keep) rows.push({ ...row, ...(row.ID ? { Command: "UPDATE" } : {}) });
+            }
+          },
+        );
+      }
+      return rows;
+    };
     const stats = await runImport({
+      snapshot,
       ctx: { gql: deps.gql, options: config.options ?? {}, log: deps.log, cache, checkImageUrl },
       sheets: chosen,
       entities: ENTITIES,
@@ -343,7 +373,9 @@ export async function executeJob(
     }
     if (undoByType.size) {
       await fs.promises.mkdir(path.join(dir, UNDO_DIR), { recursive: true });
-      const undoOut = createWorkbookOut("csv", path.join(dir, UNDO_DIR, "Undo"), deps.log);
+      // One data type: the file is named after it, so the undo import recognises it.
+      const undoName = undoByType.size === 1 ? `Undo_${[...undoByType.keys()][0].replace(/\s+/g, "_")}` : "Undo";
+      const undoOut = createWorkbookOut("csv", path.join(dir, UNDO_DIR, undoName), deps.log);
       for (const [sheetName, rows] of undoByType) {
         const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))];
         await undoOut.addSheet(sheetName, headers, rows.map((r) => Object.fromEntries(headers.filter((h) => h in r).map((h) => [h, r[h]]))));

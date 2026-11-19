@@ -12,7 +12,7 @@ import { checkExclusions } from "../check/check.server";
 import { alertText, sendAlert } from "./alerts.server";
 import { countItems } from "./counts.server";
 import { cleanupOldFiles, jobDir, openSecret } from "./storage.server";
-import { clearOldExports } from "./jobs.server";
+import { clearOldExports, rerunJob, startUndo, undoOnStop } from "./jobs.server";
 import { heldConfig, settleHeldPreview } from "./held.server";
 import { checkImageUrl, downloadSource, redactUrl, uploadResult } from "./sources.server";
 
@@ -204,6 +204,15 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
     } catch {
       autoApply = false;
     }
+    // Stopped for failing rows, and the store is set to put back what was changed.
+    if (job.type === "import" && (stats as any[]).some((x) => x?.stopped) && (await undoOnStop(job.shop))) {
+      try {
+        const undo = await startUndo(job.shop, job.id, { apply: true });
+        await prisma.job.update({ where: { id: job.id }, data: { log: { set: `${(await prisma.job.findUnique({ where: { id: job.id }, select: { log: true } }))?.log ?? ""}[${new Date().toISOString().slice(11, 19)}] The rows imported before the stop are being put back (job ${undo.id.slice(-6).toUpperCase()}).\n` } } });
+      } catch (e: any) {
+        log(`Could not start the undo: ${e?.message ?? e}`);
+      }
+    }
     if (autoApply && status === "finished") {
       const held = await settleHeldPreview(job.shop, job.id, stats);
       if (held) {
@@ -274,7 +283,7 @@ async function recoverInterrupted() {
   });
   await prisma.job.updateMany({ where: { status: "running", type: "export" }, data: { status: "queued" } });
   // A preview changes nothing, so it simply starts again (as often as an export may).
-  for (const j of await prisma.job.findMany({ where: { status: "running", type: "import" }, select: { id: true, config: true, attempts: true, log: true } })) {
+  for (const j of await prisma.job.findMany({ where: { status: "running", type: "import" }, select: { id: true, shop: true, config: true, attempts: true, log: true } })) {
     if (isDryRunConfig(j.config) && j.attempts < MAX_ATTEMPTS) {
       await prisma.job.update({ where: { id: j.id }, data: { status: "queued", progress: 0, log: `${j.log}[${new Date().toISOString().slice(11, 19)}] Interrupted by a server restart: starting again from the beginning.\n` } });
     } else {
@@ -284,10 +293,12 @@ async function recoverInterrupted() {
           status: "failed",
           error: isDryRunConfig(j.config)
             ? "Stopped: the server restarted while this preview was running, more than once. The file may be too large; split it and try again."
-            : "Interrupted by a server restart part-way through. The rows already imported stay imported (and can be undone below). Press Preview again: it lists only what is still left to do.",
+            : "Interrupted by a server restart part-way through. The rows already imported stay imported. A new preview of the same file has been started: it lists only what is still left to do.",
           finishedAt: new Date(),
         },
       });
+      // What is left, ready to look at: a preview of the same file (it changes nothing by itself).
+      if (!isDryRunConfig(j.config)) await rerunJob(j.shop, j.id).catch((e) => console.error("[worker] could not prepare a preview after an interrupted import", e));
     }
   }
 }
