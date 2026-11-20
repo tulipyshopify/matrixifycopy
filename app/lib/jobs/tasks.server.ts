@@ -38,6 +38,8 @@ export interface TaskInput {
   pick?: Array<{ field: string; value: string }>;
   /** Said outright when no condition is given: every product in the store. */
   all?: boolean;
+  /** With `all`: the word ALL, typed. A change to the whole catalogue is never one stray click. */
+  confirmAll?: string;
   direction?: "up" | "down";
   by?: "percent" | "amount";
   number?: string;
@@ -56,10 +58,11 @@ export interface TaskInput {
 const clean = (v: unknown, max = 500) => String(v ?? "").trim().slice(0, max);
 
 /** Checks a quick change and returns what it does, in words, and as a change to generate. */
-export function planTask(input: TaskInput): { name: string; filters: FilterCondition[]; changes: ChangeSpec[] } {
+export function planTask(input: TaskInput, opts: { counting?: boolean } = {}): { name: string; filters: FilterCondition[]; changes: ChangeSpec[] } {
   const products = getEntity("products")!;
   const picked = (input.pick ?? []).filter((p) => clean(p.value) !== "");
   if (!picked.length && !input.all) throw new Error('Choose which products to change, or tick "Every product in the store".');
+  if (!picked.length && !opts.counting && String(input.confirmAll ?? "").trim().toUpperCase() !== "ALL") throw new Error("This would change every product in the store. Type ALL in the box to confirm that is what you mean.");
   const filters = parseFilters(
     products,
     picked.map((p) => {

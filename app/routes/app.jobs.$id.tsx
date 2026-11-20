@@ -272,11 +272,13 @@ export default function JobDetail() {
       ) : null}
 
       {!job.error && job.status === "finished" && health.problems > 0 && !dryRun ? (
-        <s-banner tone={dryRun ? "warning" : "critical"} heading={dryRun ? "The preview found problems" : "Finished with errors"}>
+        <s-banner tone={dryRun || job.type === "export" ? "warning" : "critical"} heading={job.type === "export" ? "Some sheets are not in this export" : dryRun ? "The preview found problems" : "Finished with errors"}>
           <s-stack direction="block" gap="small">
             <s-text>{health.summary}.</s-text>
             <s-text>
-              {dryRun
+              {job.type === "export"
+                ? "For a sheet the app has no permission for, leave it out of the export; the developer can add the permission if you need that data."
+                : dryRun
                 ? "See the Problems filter in the preview below. Fix the file and preview it again; or confirm below to skip those items and import the rest."
                 : "The rest went through. The reason for each failed row is in the log below and in the results file (Import Comment column). Fix those rows and import them again."}
             </s-text>
@@ -303,6 +305,21 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
+      {dryRun && job.status === "finished" && job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => w.startsWith("Read with your saved column matching"))) ? (
+        <s-banner tone="warning" heading="This file was read with a column matching you saved earlier">
+          <s-stack direction="block" gap="small">
+            {job.stats.flatMap((x: any) => (x?.warnings ?? []).filter((w: string) => w.startsWith("Read with your saved column matching"))).slice(0, 3).map((w: string, k: number) => (
+              <s-text key={k}>{w}</s-text>
+            ))}
+            <s-text>Bulkport did not ask again because the columns are the same as before. Check the matches are still right for this file, prices above all, before you apply it.</s-text>
+            {links.input ? (
+              <div>
+                <s-button href={`/app/jobs/${job.id}/columns`}>Check or change the matching</s-button>
+              </div>
+            ) : null}
+          </s-stack>
+        </s-banner>
+      ) : null}
       {sameUpload ? (
         <s-banner tone="info" heading="This is the same file you uploaded a moment ago">
           <s-text>It was already here with the same settings, so no second job was started. This is the one that is running (or its finished preview).</s-text>

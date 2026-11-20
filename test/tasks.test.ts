@@ -100,7 +100,7 @@ describe("quick changes: the change file and its preview", () => {
       ["35.99", "39.99"],
     ]);
     expect(g.log).toMatch(/3 products match; 3 rows would change, 1 need no change/);
-    expect(g.log).toMatch(/1 variant has no price above zero/);
+    expect(g.log).toMatch(/1 variant has no price to work from, or the change would take the price to zero or below/);
     const items = await preview(g.sheets, g.s);
     expect(items.map((i) => i.action)).toEqual(["update", "update"]);
     const lines = items.flatMap((i) => i.changes).join("\n");
@@ -141,16 +141,18 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("quick changes: the form", 
     expect(p.name).toBe("Lower prices by 20%, ending in .99, old price shown as compare-at (vendor is Woven Wood)");
     expect(p.filters).toEqual([{ field: "vendor", op: "is", value: "Woven Wood" }]);
     expect(p.changes).toEqual([{ action: "adjust_price", value: "", percent: -20, ending: "99", compareAt: "old_price" }]);
-    expect(planTask({ task: "tags", all: true, tagAction: "remove", tags: "Sale, Winter" }).changes).toEqual([{ action: "remove_tags", value: "Sale" }, { action: "remove_tags", value: "Winter" }]);
-    expect(planTask({ task: "field", all: true, column: "Status", value: "Draft" })).toMatchObject({ name: "Set status to Draft (every product)", changes: [{ action: "set_column", column: "Status", value: "Draft" }] });
+    expect(planTask({ task: "tags", all: true, confirmAll: "all", tagAction: "remove", tags: "Sale, Winter" }).changes).toEqual([{ action: "remove_tags", value: "Sale" }, { action: "remove_tags", value: "Winter" }]);
+    expect(planTask({ task: "field", all: true, confirmAll: "all", column: "Status", value: "Draft" })).toMatchObject({ name: "Set status to Draft (every product)", changes: [{ action: "set_column", column: "Status", value: "Draft" }] });
   });
   it("refuses what would be a mistake", () => {
     expect(() => planTask({ task: "prices", number: "5" })).toThrow(/Choose which products/);
-    expect(() => planTask({ task: "prices", all: true, number: "0" })).toThrow(/number above zero/);
-    expect(() => planTask({ task: "prices", all: true, direction: "down", number: "100" })).toThrow(/100% or more/);
-    expect(() => planTask({ task: "replace", all: true, column: "Tags", find: "a" })).toThrow(/where to look/);
-    expect(() => planTask({ task: "replace", all: true, column: "Title", find: " " })).toThrow(/text to find/);
-    expect(() => planTask({ task: "field", all: true, column: "Status", value: "Deleted" })).toThrow(/Choose a value/);
+    // A3: the whole catalogue only with the word typed.
+    expect(() => planTask({ task: "field", all: true, column: "Status", value: "Archived" })).toThrow(/Type ALL in the box/);
+    expect(() => planTask({ task: "prices", all: true, confirmAll: "all", number: "0" })).toThrow(/number above zero/);
+    expect(() => planTask({ task: "prices", all: true, confirmAll: "all", direction: "down", number: "100" })).toThrow(/100% or more/);
+    expect(() => planTask({ task: "replace", all: true, confirmAll: "all", column: "Tags", find: "a" })).toThrow(/where to look/);
+    expect(() => planTask({ task: "replace", all: true, confirmAll: "all", column: "Title", find: " " })).toThrow(/text to find/);
+    expect(() => planTask({ task: "field", all: true, confirmAll: "all", column: "Status", value: "Deleted" })).toThrow(/Choose a value/);
     expect(() => planTask({ task: "prices", pick: [{ field: "collection_id", value: "abc" }], number: "5" })).toThrow(/not an ID/);
   });
 });

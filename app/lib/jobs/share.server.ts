@@ -18,6 +18,26 @@ const MAX_REPLIES = 20;
 /** Items of each sheet shown on the shared page. */
 const SHARED_ITEMS = 300;
 
+/** Data types that hold people's details. */
+const PERSONAL_TYPES = new Set(["customers", "orders", "draft_orders", "companies"]);
+/** Fields of a person that say who they are or how to reach them. */
+const PERSONAL_FIELD = /^(email(?! marketing)|phone|first name|last name|note|address|contact|company|name|billing|shipping|customer)/i;
+
+/** An email or phone number inside a sentence, hidden but still recognisable as one. */
+export function maskPersonal(text: string): string {
+  return text
+    .replace(/([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9-])[A-Za-z0-9.-]*(\.[A-Za-z]{2,})/g, "$1•••@$2•••$3")
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, (m) => `${m.slice(0, 3)}•••${m.slice(-2)}`);
+}
+
+/** A change line with a person's own details left out: the field is named, its values are not shown. */
+export function maskChange(line: string): string {
+  const m = /^(.*?): (.*) → (.*)$/s.exec(line);
+  if (!m) return maskPersonal(line);
+  if (PERSONAL_FIELD.test(m[1].trim())) return `${m[1]}: (hidden) → ${/^\(.*\)$/.test(m[3]) ? m[3] : "(hidden)"}`;
+  return `${m[1]}: ${maskPersonal(m[2])} → ${maskPersonal(m[3])}`;
+}
+
 export interface ShareReply {
   at: string;
   verdict: "approve" | "changes";
@@ -106,7 +126,10 @@ export async function sharedPreview(ref: string) {
     madeAt: job.finishedAt ?? job.createdAt,
     expiresAt: record.expiresAt,
     totals: { changes: needs.changes, creates: needs.creates, deletes: needs.deletes, unchanged: needs.unchanged, failing: needs.failing },
+    personal: sheets.some((s) => PERSONAL_TYPES.has(s.entity ?? "")),
     sheets: sheets.map((s) => {
+      // People's details are not shown on a page anyone with the link can open: the reviewer sees what kind of change it is, not whose.
+      const personal = PERSONAL_TYPES.has(s.entity ?? "");
       // What matters to a reviewer first: problems, deletions, creations and warnings, then the plain updates.
       const weight = (i: (typeof s.items)[number]) => (i.action === "failed" ? 0 : i.action === "delete" || i.action === "replace" || i.deletes ? 1 : i.action === "create" || i.warnings?.length || i.clears?.length ? 2 : i.action === "none" ? 4 : 3);
       const changing = s.items.filter((i) => i.action !== "none" && i.action !== "skipped");
@@ -117,7 +140,16 @@ export async function sharedPreview(ref: string) {
         items: [...changing]
           .sort((a, b) => weight(a) - weight(b) || a.row - b.row)
           .slice(0, SHARED_ITEMS)
-          .map((i) => ({ row: i.row, title: i.title || i.item, item: i.item, action: i.action, changes: i.changes.slice(0, 20), more: Math.max(0, i.changes.length - 20), warnings: i.warnings ?? [], errors: i.errors?.length ? i.errors : i.action === "failed" ? [i.message] : [] })),
+          .map((i) => ({
+            row: i.row,
+            title: personal ? `Row ${i.row}` : i.title || i.item,
+            item: personal ? maskPersonal(i.item) : i.item,
+            action: i.action,
+            changes: i.changes.slice(0, 20).map((c) => (personal ? maskChange(c) : c)),
+            more: Math.max(0, i.changes.length - 20),
+            warnings: (i.warnings ?? []).map((w) => (personal ? maskPersonal(w) : w)),
+            errors: (i.errors?.length ? i.errors : i.action === "failed" ? [i.message] : []).map((e) => (personal ? maskPersonal(e) : e)),
+          })),
         more: Math.max(0, changing.length - SHARED_ITEMS),
       };
     }),

@@ -57,6 +57,7 @@ export default function Shared() {
         <p>
           This is what an import <b>would</b> change. Nothing has been changed yet, and this page can't change anything: it is here for you to check and answer. Made {when(p.madeAt)}; the link works until {when(p.expiresAt)}.
         </p>
+        {p.personal ? <p className="bp-diff-label">People's names, emails, phone numbers and addresses are hidden on this page. It shows what kind of change each row makes; the store sees the details.</p> : null}
         <ul className="bp-share-totals">
           <li>
             <b>{p.totals.changes.toLocaleString("en")}</b> would change

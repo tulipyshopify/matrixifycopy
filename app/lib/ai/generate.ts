@@ -3,7 +3,7 @@ import path from "node:path";
 import Papa from "papaparse";
 import type { BulkRunner, ExportOptions, Gql, Logger } from "../core/types";
 import { getEntity } from "../entities";
-import { changeColumns, computedCells, isComputed, isPerVariant, type ChangeSpec } from "./changes";
+import { adjustedPrice, changeColumns, computedCells, isComputed, isPerVariant, type ChangeSpec } from "./changes";
 
 /** Most items one generated change may touch. */
 export const MAX_GENERATED_ITEMS = 20_000;
@@ -25,7 +25,7 @@ export async function generateChangeFile(
   spec: GenerateSpec,
   deps: { gql: Gql; bulk: BulkRunner; log: Logger; timezone?: string; isCancelled?: () => Promise<boolean> },
   dir: string,
-): Promise<{ file: string; name: string; items: number }> {
+): Promise<{ file: string; name: string; items: number; notes?: string[] }> {
   const entity = getEntity(spec.entity);
   if (!entity?.export || !entity.import) throw new Error(`${spec.entity} can't be changed in bulk`);
   const cells = changeColumns(spec.changes);
@@ -65,7 +65,7 @@ export async function generateChangeFile(
           if (ids.size > MAX_GENERATED_ITEMS) throw new Error(`More than ${MAX_GENERATED_ITEMS.toLocaleString("en")} ${entity.sheet.toLowerCase()} match; narrow the request`);
           top = { ...cells, ...Object.fromEntries(textColumns.map((c) => [c, computed[c] ?? r[c] ?? ""])) };
         }
-        if (r["Variant ID"] && spec.changes.some((c) => c.action === "adjust_price") && !("Variant Price" in computed) && !(Number(r["Variant Price"]) > 0)) unpriced++;
+        if (r["Variant ID"] && spec.changes.some((c) => c.action === "adjust_price" && adjustedPrice(r["Variant Price"] ?? "", c) === null)) unpriced++;
         const productChange = top !== null && (Object.keys(cells).length > 0 || textColumns.some((c) => c in computed));
         const variantChange = variantColumns.some((c) => c in computed);
         if (!productChange && !variantChange) {
@@ -82,10 +82,16 @@ export async function generateChangeFile(
       }
     });
     deps.log(`${ids.size.toLocaleString("en")} ${entity.sheet.toLowerCase()} match; ${out.length.toLocaleString("en")} row${out.length === 1 ? "" : "s"} would change${unchanged ? `, ${unchanged.toLocaleString("en")} need no change` : ""}`);
-    if (unpriced) deps.log(`${unpriced.toLocaleString("en")} variant${unpriced === 1 ? " has" : "s have"} no price above zero (or the change would take it to zero or below) and ${unpriced === 1 ? "is" : "are"} left as ${unpriced === 1 ? "it is" : "they are"}`);
+const notes: string[] = [];
+    if (unchanged) notes.push(`${unchanged.toLocaleString("en")} row${unchanged === 1 ? "" : "s"} of the products you chose need${unchanged === 1 ? "s" : ""} no change and ${unchanged === 1 ? "is" : "are"} not listed here.`);
+    if (unpriced) {
+      const note = `${unpriced.toLocaleString("en")} variant${unpriced === 1 ? " has" : "s have"} no price to work from, or the change would take the price to zero or below, and ${unpriced === 1 ? "is" : "are"} left as ${unpriced === 1 ? "it is" : "they are"}`;
+      deps.log(note);
+      notes.push(`${note[0].toUpperCase()}${note.slice(1)}.`);
+    }
     if (!out.length) throw new Error(ids.size ? `${ids.size.toLocaleString("en")} ${entity.sheet.toLowerCase()} match, but none of them needs this change (they already have these values, or the text to find is not in them).` : `No ${entity.sheet.toLowerCase()} match what you chose.`);
     await fs.promises.writeFile(file, "\ufeff" + Papa.unparse({ fields, data: out }, { newline: "\r\n" }));
-    return { file, name, items: ids.size };
+    return { file, name, items: ids.size, notes };
   }
   // Only the item rows are needed: no variants, line items or other extra data.
   const options: ExportOptions = { ...spec.options, columns: ["ID"], groups: [], timezone: deps.timezone };

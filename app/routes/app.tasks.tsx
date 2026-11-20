@@ -39,7 +39,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     if (form.get("intent") === "count") {
       // How many products the choice matches, before anything is started.
-      const plan = planTask({ ...input, all: true });
+      const plan = planTask({ ...input, all: true }, { counting: true });
       const gql = createGql(async (query, variables) => (await admin.graphql(query, { variables })).json());
       const r = await countItems(gql, "products", { filters: plan.filters });
       return { count: r && !r.unfiltered ? { n: r.count, exact: r.precision === "EXACT" } : null };
@@ -59,6 +59,7 @@ export default function Tasks() {
   const [task, setTask] = useState<TaskInput["task"]>(start ?? "prices");
   const [pick, setPick] = useState<Array<{ field: string; value: string }>>([{ field: "vendor", value: "" }]);
   const [all, setAll] = useState(false);
+  const [confirmAll, setConfirmAll] = useState("");
   const [direction, setDirection] = useState<"up" | "down">("up");
   const [by, setBy] = useState<"percent" | "amount">("percent");
   const [number, setNumber] = useState("");
@@ -81,6 +82,7 @@ export default function Tasks() {
     task,
     pick: all ? [] : chosen,
     all,
+    confirmAll,
     direction,
     by,
     number,
@@ -291,6 +293,14 @@ export default function Tasks() {
             </>
           )}
           <s-checkbox label="Every product in the store" checked={all} onChange={(ev: any) => setAll(!!ev.currentTarget.checked)} />
+          {all ? (
+            <s-text-field
+              label="Type ALL to confirm"
+              details="This change is for the whole catalogue. The preview still comes first, and risky rows there start on Skip."
+              value={confirmAll}
+              onInput={(ev: any) => setConfirmAll(String(ev.currentTarget.value))}
+            />
+          ) : null}
           {count ? (
             <s-text type="strong">
               {count.exact ? "" : "About "}
@@ -315,7 +325,7 @@ export default function Tasks() {
           <br />
           <s-text color="subdued">Bulkport reads the products, works out each new value and lists them. The store is not touched.</s-text>
         </div>
-        <s-button variant="primary" loading={busy} disabled={busy || (!all && !chosen.length) || count?.n === 0} onClick={() => fetcher.submit({ intent: "start", task: JSON.stringify(input) }, { method: "post" })}>
+        <s-button variant="primary" loading={busy} disabled={busy || (!all && !chosen.length) || (all && confirmAll.trim().toUpperCase() !== "ALL") || count?.n === 0} onClick={() => fetcher.submit({ intent: "start", task: JSON.stringify(input) }, { method: "post" })}>
           Preview changes
         </s-button>
       </div>

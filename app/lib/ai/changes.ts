@@ -71,7 +71,8 @@ export function computedCells(row: Record<string, string>, changes: ChangeSpec[]
     if (c.action === "replace_text" && c.column && c.find && row[c.column]) {
       const text = row[c.column];
       const pattern = new RegExp(c.find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), c.matchCase ? "g" : "gi");
-      const next = text.replace(pattern, () => c.value);
+      // In a description only the words a shopper reads are changed: tags, links and their addresses are left as they are.
+      const next = c.column === "Body HTML" ? text.split(/(<[^>]*>)/).map((part) => (part.startsWith("<") && part.endsWith(">") ? part : part.replace(pattern, () => c.value))).join("") : text.replace(pattern, () => c.value);
       if (next !== text) out[c.column] = next;
     }
     if (c.action === "set_column" && /^Variant /.test(c.column ?? "") && row["Variant ID"] && (row[c.column!] ?? "") !== c.value) out[c.column!] = c.value;

@@ -135,7 +135,18 @@ function operationText(op: string): string {
 }
 
 /** Data types undone by re-importing a copy taken just before the import (products record theirs field by field). */
-const SNAPSHOT_TYPES = new Set(["customers", "companies", "smart_collections", "custom_collections", "orders", "draft_orders", "pages", "blog_posts", "redirects"]);
+export const SNAPSHOT_TYPES = new Set(["customers", "companies", "smart_collections", "custom_collections", "orders", "draft_orders", "pages", "blog_posts", "redirects"]);
+/** Data types whose imports can be undone from the job's page. */
+export const UNDOABLE_TYPES = new Set(["products", ...SNAPSHOT_TYPES]);
+/** For rows without an ID: the column that names the item, and the store's search field for it. */
+const SNAPSHOT_KEYS: Record<string, { column: string; field: string }> = {
+  customers: { column: "Email", field: "email" },
+  smart_collections: { column: "Handle", field: "handle" },
+  custom_collections: { column: "Handle", field: "handle" },
+  pages: { column: "Handle", field: "handle" },
+  blog_posts: { column: "Handle", field: "handle" },
+  redirects: { column: "Path", field: "path" },
+};
 /** Most items copied for undo before one sheet is imported. */
 const MAX_SNAPSHOT_ITEMS = 2000;
 
@@ -249,7 +260,7 @@ export interface RunImportArgs {
    * Called before a sheet is imported, for data types that don't record their
    * own undo: the rows it returns are what "Undo" imports to put them back.
    */
-  snapshot?: (entity: Entity, ids: string[]) => Promise<Row[]>;
+  snapshot?: (entity: Entity, ids: string[], named?: { column: string; field: string; values: string[] }) => Promise<Row[]>;
   /** Failures a preview already announced, by sheet name: they don't count towards stopping. */
   expectedFailed?: Record<string, number>;
   /** Called with each sheet once its columns are settled and corrections applied, before its rows are grouped. */
@@ -451,15 +462,23 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     let before: Row[] = [];
     if (args.snapshot && !ctx.options.dryRun && SNAPSHOT_TYPES.has(entity.key)) {
       const ids = [...new Set(items.map((it) => gidToId(cell(it.rows[0], "ID") ?? "")).filter((v) => /^\d+$/.test(v)))];
-      if (ids.length > MAX_SNAPSHOT_ITEMS) {
-        log(`Sheet "${sheet.name}": too many items (${ids.length}) to record for undo. Take a backup first if you may need to put them back.`);
-      } else if (ids.length) {
+      // Rows that name their item another way (a customer by email, a page by handle) are recorded too.
+      const alt = SNAPSHOT_KEYS[entity.key];
+      const named = alt
+        ? [...new Set(items.filter((it) => !/^\d+$/.test(gidToId(cell(it.rows[0], "ID") ?? ""))).map((it) => (cell(it.rows[0], alt.column) ?? "").trim()).filter((v) => v && !/["\\]/.test(v)))]
+        : [];
+      const wanted = ids.length + named.length;
+      if (wanted > MAX_SNAPSHOT_ITEMS) {
+        log(`Sheet "${sheet.name}": too many items (${wanted}) to record for undo. Take a backup first if you may need to put them back.`);
+        undoNotes.push(`this sheet's ${wanted.toLocaleString("en")} items (more than the ${MAX_SNAPSHOT_ITEMS.toLocaleString("en")} recorded for undo at once)`);
+      } else if (wanted) {
         try {
-          before = await args.snapshot(entity, ids);
+          before = await args.snapshot(entity, ids, named.length && alt ? { ...alt, values: named } : undefined);
           const found = new Set(before.map((r) => r.ID).filter(Boolean));
-          log(`Sheet "${sheet.name}": recorded ${found.size} of ${ids.length} items as they are now, for undo.`);
+          log(`Sheet "${sheet.name}": recorded ${found.size} of ${wanted} items as they are now, for undo.`);
         } catch (e: any) {
           log(`Sheet "${sheet.name}": could not record the items for undo (${e?.message ?? e}). The import goes ahead; take a backup if you may need to put them back.`);
+          undoNotes.push(`this sheet (its items could not be recorded before the import)`);
         }
       }
     }

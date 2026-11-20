@@ -193,10 +193,10 @@ export function parkLocalImages(sheet: Sheet, files: UploadedFile[], into: Local
       const named = exact ? [exact] : (byBase.get(base(typed)) ?? (/\.[a-z0-9]{2,5}$/i.test(typed) ? [] : (byStem.get(stem(typed)) ?? [])));
       let problem: string | null = null;
       if (!named.length) {
-        problem = !files.length
-          ? "is a file name, not a link, and no image files came with the sheet. To upload images with it, select them together with the sheet (or put everything in one ZIP) and keep the file names in this column"
-          : OTHER_PICTURE.test(typed)
-            ? `is a ${typed.split(".").pop()!.toUpperCase()} file; Shopify product images must be JPEG, PNG, WebP, GIF or HEIC. Save it as one of those`
+        problem = OTHER_PICTURE.test(typed)
+          ? `is a ${typed.split(".").pop()!.toUpperCase()} file; Shopify product images must be JPEG, PNG, WebP, GIF or HEIC. Save it as one of those`
+          : !files.length
+            ? "is a file name, not a link, and no image files came with the sheet. To upload images with it, select them together with the sheet (or put everything in one ZIP) and keep the file names in this column"
             : `is not among the ${files.length.toLocaleString("en")} image files that came with the sheet. Check the spelling of the file name`;
       } else if (named.length > 1) {
         problem = `is in the upload ${named.length} times (${named.slice(0, 3).map((f) => f.name).join(", ")}). Write the folder too, for example ${named[0].name}`;

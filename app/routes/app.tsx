@@ -38,7 +38,28 @@ export default function App() {
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
 export function ErrorBoundary() {
-  return boundary.error(useRouteError());
+  const error = useRouteError() as any;
+  // The server not answering (a restart for an update, a dropped connection): say so plainly, and
+  // above all that nothing can be assumed to have started. Everything else keeps Shopify's handling.
+  const status = Number(error?.status ?? 0);
+  const unreachable = status === 502 || status === 503 || status === 504 || /failed to fetch|networkerror|load failed|turbo-stream|unable to decode/i.test(String(error?.message ?? error ?? ""));
+  if (unreachable) {
+    return (
+      <div style={{ maxWidth: 560, margin: "12vh auto", padding: "0 20px", font: "15px/1.5 Inter, system-ui, sans-serif", color: "#202223" }}>
+        <h1 style={{ fontSize: 20 }}>Bulkport didn't answer just now</h1>
+        <p>
+          The app was restarting, most likely for an update. <b>Your last click may not have gone through:</b> do not assume the import, export or delete was started.
+        </p>
+        <p>Wait a few seconds, then open the job list. If the job you wanted is not there, start it again; if it is, it is running as normal.</p>
+        <p>
+          <a href="/app/jobs" style={{ display: "inline-block", padding: "8px 14px", borderRadius: 8, background: "#202223", color: "#fff", textDecoration: "none", fontWeight: 600 }}>
+            Open the job list
+          </a>
+        </p>
+      </div>
+    );
+  }
+  return boundary.error(error);
 }
 
 export const headers: HeadersFunction = (headersArgs) => {

@@ -370,11 +370,14 @@ export async function executeJob(
 
   if (job.type === "import") {
     const config = JSON.parse(job.config) as ImportConfig;
+    // What a quick change left out and why, for the preview's notes.
+    let generatedNotes: string[] = [];
     if (!job.inputFile && config.generate) {
       const timezone = deps.timezone ? await deps.timezone() : "UTC";
       const made = await generateChangeFile(config.generate, { ...deps, timezone }, dir);
       job.inputFile = made.file;
       job.inputName = made.name;
+      generatedNotes = made.notes ?? [];
       await deps.onInput?.(made.file, made.name);
     }
     if (!job.inputFile && config.aiFix) {
@@ -385,6 +388,7 @@ export async function executeJob(
     }
     if (!job.inputFile) throw new Error("No input file");
     const chosen = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config, deps.log, (await deps.layouts?.()) ?? []);
+    if (generatedNotes.length && chosen[0]) (chosen[0].notes ??= []).push(...generatedNotes);
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));
     const resultFormat: OutputFormat = /\.(csv|tsv|txt|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
@@ -487,27 +491,30 @@ export async function executeJob(
       return outAdd(name, headers, rows);
     };
     // A copy of the items a sheet is about to change, read with the type's own export (all its data groups).
-    const snapshot = async (entity: (typeof ENTITIES)[number], ids: string[]) => {
-      const wanted = new Set(ids);
+    const snapshot = async (entity: (typeof ENTITIES)[number], ids: string[], named?: { column: string; field: string; values: string[] }) => {
+      const wantedIds = new Set(ids);
+      const wantedNames = new Set((named?.values ?? []).map((v) => v.toLowerCase()));
       const rows: Array<Record<string, string>> = [];
-      for (let i = 0; i < ids.length; i += 200) {
-        const chunk = ids.slice(i, i + 200);
+      // IDs and names are asked for in searches of a manageable length.
+      const terms = [...ids.map((id) => `id:${id}`), ...(named?.values ?? []).map((v) => `${named!.field}:"${v}"`)];
+      for (let i = 0; i < terms.length; i += 100) {
+        const chunk = terms.slice(i, i + 100);
         let keep = false;
         await entity.export!(
           {
             gql: deps.gql,
             bulk: deps.bulk,
             rest: deps.rest,
-            // The limit stops a runaway read if the store's search were to ignore the IDs.
-            options: { query: chunk.map((id) => `id:${id}`).join(" OR "), groups: (entity.groups ?? []).map((g) => g.key).filter((g) => g !== "codes"), limit: chunk.length + 5 },
+            // The limit stops a runaway read if the store's search were to ignore the terms.
+            options: { query: chunk.join(" OR "), groups: (entity.groups ?? []).map((g) => g.key).filter((g) => g !== "codes"), limit: chunk.length + 5 },
             log: () => {},
             cache,
             progress: () => {},
           },
           async (out) => {
             for (const row of out) {
-              // Rows of an item follow its first row; only the items asked for are kept.
-              if (row.ID) keep = wanted.has(row.ID);
+              // Rows of an item follow its first row; only the items asked for are kept (a search can match loosely).
+              if (row.ID) keep = wantedIds.has(row.ID) || (!!named && wantedNames.has((row[named.column] ?? "").toLowerCase()));
               if (keep) rows.push({ ...row, ...(row.ID ? { Command: "UPDATE" } : {}) });
             }
           },

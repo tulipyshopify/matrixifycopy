@@ -23,7 +23,11 @@ export function detectEntity(sheet: Pick<Sheet, "name"> & { headers?: string[] }
   const name = norm(sheet.name);
   const namesOf = (e: Entity) => [norm(e.sheet), norm(e.key), ...(e.aliases ?? []).map(norm)];
   for (const e of entities) if (namesOf(e).includes(name)) return e;
-  const byHeaders = scoreByHeaders(sheet.headers ?? [], entities);
+  // A guess from the columns only stands if the sheet has a column that says which item each row is
+  // (a supplier's "Item Description" is not a menu's "Item: Title").
+  const hasKey = (e: Entity | null | undefined) => !!e && (!e.import || e.import.keyColumns.some((k) => (sheet.headers ?? []).includes(k)));
+  const scored = scoreByHeaders(sheet.headers ?? [], entities);
+  const byHeaders = { confident: hasKey(scored.confident) ? scored.confident : null, guess: hasKey(scored.guess) ? scored.guess : null };
   if (byHeaders.confident) return byHeaders.confident;
   let best: { e: Entity; len: number } | null = null;
   for (const e of entities) {

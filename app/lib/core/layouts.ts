@@ -127,3 +127,19 @@ export function applyLayout(sheet: Sheet, layout: ColumnLayout): string {
   const shown = [...rename.entries()].slice(0, 8).map(([from, to]) => `"${from}" → ${to}`);
   return `Read with your saved column matching "${layout.name}"${shown.length ? `: ${shown.join(", ")}${rename.size > 8 ? `, and ${rename.size - 8} more` : ""}` : ""}.${ignored.length ? ` Not imported: ${ignored.slice(0, 8).map((h) => `"${h}"`).join(", ")}${ignored.length > 8 ? "…" : ""}.` : ""}`;
 }
+
+/**
+ * Matches that are probably a slip: a column of what the shop pays, read as
+ * what the shop charges (or the other way round). Each is a sentence to show.
+ */
+export function oddMatches(map: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const [from, to] of Object.entries(map)) {
+    const h = from.toLowerCase();
+    const pays = /\b(cost|trade|wholesale|buy|buying|purchase|net|landed|supplier price)\b/.test(h) && !/\b(rrp|retail|selling|sell)\b/.test(h);
+    const charges = /\b(rrp|retail|selling|sell|srp|msrp)\b/.test(h);
+    if (pays && (to === "Variant Price" || to === "Variant Compare At Price")) out.push(`"${from}" looks like what you pay the supplier, and is matched to ${to} (what shoppers pay). Prices in the shop would become cost prices`);
+    if (charges && to === "Variant Cost") out.push(`"${from}" looks like a selling price, and is matched to Variant Cost`);
+  }
+  return out;
+}

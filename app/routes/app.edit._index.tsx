@@ -20,7 +20,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const input = JSON.parse(String(form.get("input") ?? "{}"));
     if (form.get("intent") === "count") {
-      const plan = planTask({ task: "end_sale", pick: input.pick, all: true });
+      const plan = planTask({ task: "end_sale", pick: input.pick, all: true }, { counting: true });
       const gql = createGql(async (query, variables) => (await admin.graphql(query, { variables })).json());
       const r = await countItems(gql, "products", { filters: plan.filters });
       return { count: r && !r.unfiltered ? { n: r.count, exact: r.precision === "EXACT" } : null };

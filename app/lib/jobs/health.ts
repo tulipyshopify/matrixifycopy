@@ -53,7 +53,14 @@ export function jobHealth(job: { type: string; status: string; error?: string | 
   } catch {
     stats = [];
   }
-  if (job.type !== "import") return { level: "ok", label: "Finished", problems: 0, summary: "" };
+  if (job.type !== "import") {
+    // An export that had to leave a sheet out is not a plain "Finished".
+    const left = (Array.isArray(stats) ? stats : []).filter((s) => (s as { error?: string }).error) as Array<{ entity?: string | null; error?: string }>;
+    if (left.length) {
+      return { level: "warning", label: "Finished, sheets missing", problems: left.length, summary: `Not exported: ${left.map((s) => `${String(s.entity ?? "").replace(/_/g, " ")} (${s.error})`).join("; ")}. The other sheets are in the file` };
+    }
+    return { level: "ok", label: "Finished", problems: 0, summary: "" };
+  }
   const { failed, unimported, sheets } = countProblems(stats);
   const problems = failed + unimported;
   if (!problems) {

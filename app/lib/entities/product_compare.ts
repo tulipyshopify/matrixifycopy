@@ -110,7 +110,24 @@ function compareCell(
   if (want === now) return;
   out.changed.add(col);
   out.old[col] = current;
-  out.changes.push({ label, old: shown(now), next: want === "" ? "(cleared)" : shown(want), ...(want === "" && now !== "" ? { clears: true } : {}) });
+  const [was, will] = spec.kind === "text" ? aroundChange(now, want) : [shown(now), shown(want)];
+  out.changes.push({ label, old: was, next: want === "" ? "(cleared)" : will, ...(want === "" && now !== "" ? { clears: true } : {}) });
+}
+
+/**
+ * Two long texts, each cut to the part where they differ: a change deep inside
+ * a description is shown, not the identical opening lines of both.
+ */
+export function aroundChange(a: string, b: string, max = 70): [string, string] {
+  const x = a.replace(/\s+/g, " ").trim();
+  const y = b.replace(/\s+/g, " ").trim();
+  if (x === "" || y === "" || (x.length <= max && y.length <= max)) return [shown(a), shown(b)];
+  let start = 0;
+  while (start < x.length && start < y.length && x[start] === y[start]) start++;
+  // A little of what comes before, for context.
+  const from = Math.max(0, start - 18);
+  const cut = (t: string) => `${from > 0 ? "…" : ""}${t.slice(from, from + max)}${t.length > from + max ? "…" : ""}`;
+  return [cut(x) || "(empty)", cut(y) || "(empty)"];
 }
 
 // --- Product-level columns ------------------------------------------------------
@@ -277,6 +294,14 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
   }
   compareMetafields(top, "Metafield", metafields, "", out);
   out.warnings = [];
+  // Taking a product off sale is allowed, and worth a decision: one row is a choice, a whole sheet may be a mistake.
+  if (out.changed.has("Status") && (p.status ?? "").toUpperCase() === "ACTIVE") {
+    const to = (cell(top, "Status") ?? "").trim().toLowerCase();
+    if (to === "archived" || to === "draft") out.warnings.push(`the product is ${to === "archived" ? "archived" : "set back to draft"}: it comes off sale and its page stops working for shoppers`);
+  }
+  if (out.changed.has("Published") && p.publishedAt && /^(false|no|n|0|off)$/i.test((cell(top, "Published") ?? "").trim())) {
+    out.warnings.push("the product is taken off the online store: it can no longer be found or bought there");
+  }
   const title = cell(top, "Title") ?? "";
   if (out.changed.has("Title") && /<\/?[a-z][^>]*>/i.test(title)) out.warnings.push("the new title contains HTML tags; titles are shown as plain text, so the tags would appear as they are typed");
   if (out.changed.has("Handle")) {
@@ -387,6 +412,13 @@ export function compareVariant(row: Row, v: VariantNow, ident: string, metafield
   if (out.changed.has("Variant Barcode") && v.barcode && cell(row, "Variant Barcode")) {
     out.warnings.push(`the barcode of ${ident} is replaced (${v.barcode} → ${cell(row, "Variant Barcode")}). Barcodes rarely change: check this is meant`);
   }
+  if (out.changed.has("Variant Inventory Policy")) {
+    // In a shop's words, not the API's.
+    const words = (x: string) => (x.toLowerCase() === "continue" ? "keep selling" : x.toLowerCase() === "deny" ? "stop selling" : x || "(empty)");
+    const line = out.changes.find((c) => c.label === `Variant Inventory Policy (${ident})`);
+    if (line) Object.assign(line, { label: `When out of stock (${ident})`, old: words(v.inventoryPolicy ?? ""), next: words(cell(row, "Variant Inventory Policy") ?? "") });
+    if ((cell(row, "Variant Inventory Policy") ?? "").trim().toLowerCase() === "continue") out.warnings.push(`${ident} keeps selling when it is out of stock: orders can then be taken for stock you don't have`);
+  }
   if (out.changed.has("Variant Inventory Tracker") && v.inventoryItem.tracked) {
     out.warnings.push(`stock tracking for ${ident} is switched off. Without tracking it keeps selling after it runs out, and its stock count is no longer kept`);
   }
@@ -402,7 +434,8 @@ export function priceWarnings(ident: string, before: { price?: string | null; co
   const compareAt = num(after.compareAtPrice);
   const priceChanged = price !== oldPrice;
   if (priceChanged && price === 0) out.push(`${ident}: the price would be 0`);
-  if (priceChanged && price !== null && oldPrice && price > 0 && price < oldPrice * 0.5) {
+  // From a 40% cut on: big enough to be a cost price in the price column, or a slip of the decimal point.
+  if (priceChanged && price !== null && oldPrice && price > 0 && price <= oldPrice * 0.6) {
     out.push(`${ident}: the price drops ${Math.round((1 - price / oldPrice) * 100)}% (${oldPrice} → ${price})`);
   }
   if (priceChanged && price !== null && oldPrice && price > oldPrice * 3) {

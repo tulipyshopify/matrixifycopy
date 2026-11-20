@@ -40,6 +40,8 @@ const FILTERS: Array<{ key: "all" | PreviewKind | "changes"; label: string }> = 
 type FilterKey = (typeof FILTERS)[number]["key"];
 const matches = (f: FilterKey, k: PreviewKind) => f === "all" || f === k || (f === "changes" && k !== "none" && k !== "failed");
 
+/** Data types whose imports keep an undo record (the server's UNDOABLE_TYPES; kept here so the page needs no server code). */
+const UNDOABLE = new Set(["products", "customers", "companies", "smart_collections", "custom_collections", "orders", "draft_orders", "pages", "blog_posts", "redirects"]);
 const PAGE = 50;
 /** Change lines shown per item before "Show all". */
 const LINES = 12;
@@ -385,6 +387,9 @@ export function ImportReview({
     onImport({ exclude: group([...risky.filter((x) => !isOn(x)), ...updatesOff]), include: group(inc), deletes: typed, rest });
   };
 
+  // Sheets with something to apply, and those whose data type keeps no undo record.
+  const changingSheets = sheets.filter((sh) => sh.items.some((i) => i.action !== "none" && i.action !== "failed" && i.action !== "skipped"));
+  const noUndo = changingSheets.filter((sh) => !UNDOABLE.has(sh.entity ?? "")).map((sh) => sh.sheet);
   const compared = all.some((x) => x.item.compared);
   const firstStep = all.some((x) => !x.item.compared && x.item.changes.length && x.kind !== "failed");
   const sheetNotes = sheets.filter((s) => s.warnings?.length);
@@ -616,12 +621,19 @@ export function ImportReview({
                 </s-stack>
               </s-banner>
             ) : null}
+            {noUndo.length ? (
+              <s-banner tone="warning" heading={`No undo for ${noUndo.join(", ")}`}>
+                <s-text>Imports of {noUndo.join(", ")} are not recorded for undo: what they change can only be put back by hand, or from a backup that includes them. {noUndo.length < changingSheets.length ? "The other sheets in this file can be undone as described below." : ""}</s-text>
+              </s-banner>
+            ) : null}
+            {noUndo.length >= changingSheets.length && changingSheets.length ? null : (
             <s-banner tone={deletesIncluded && deletesIncluded >= applying ? "warning" : "success"} heading={deletesIncluded && deletesIncluded >= applying ? "Deletions can't be undone from here" : `You can undo this until ${undoUntil(undoDays)}`}>
               <s-text>
-                What each item looked like is recorded before it is changed, and kept on Bulkport's server for {undoDays} days. "Undo this import" on the job's page then opens a preview of putting it back.
+                What each item looked like is recorded before it is changed (undo removes new products; other new items, such as customers or pages, have to be removed by hand), and kept on Bulkport's server for {undoDays} days. "Undo this import" on the job's page then opens a preview of putting it back.
                 {deletesIncluded ? " A deleted product can't be undone that way: restore it from a backup." : ""}
               </s-text>
             </s-banner>
+            )}
             <s-text color="subdued">
               Each item is checked against the store once more as it is applied: anything changed since this preview is left alone and reported. Items that already match the store are not touched.
             </s-text>

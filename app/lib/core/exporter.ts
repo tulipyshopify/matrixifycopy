@@ -13,6 +13,8 @@ export interface ExportSummary {
   items: number;
   /** Columns in the file beyond the data type's fixed ones: metafields, stock per location… */
   dataColumns?: string[];
+  /** Set when this sheet could not be exported (the others still were): the reason. */
+  error?: string;
 }
 
 export interface RunExportArgs {
@@ -89,6 +91,7 @@ export function selectColumns(entity: Entity, options: ExportOptions, headers: s
 export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
   const { gql, bulk, requests, out, tmpDir, log } = args;
   const summaries: ExportSummary[] = [];
+  const failed: string[] = [];
   const cache = new Map<string, unknown>();
 
   for (const { entity, options } of requests) {
@@ -132,9 +135,21 @@ export async function runExport(args: RunExportArgs): Promise<ExportSummary[]> {
       const dynamic = columns.filter((c) => !fixed.has(c));
       summaries.push({ entity: entity.key, rows: spool.count, items, ...(dynamic.length ? { dataColumns: dynamic.slice(0, 500) } : {}) });
       log(`${entity.sheet}: exported ${items} items in ${spool.count} rows`);
+    } catch (e: any) {
+      // One sheet that can't be read (a permission the app doesn't have) doesn't cost the others:
+      // it is left out, by name, with the reason. A cancel, or the only sheet failing, still stops the job.
+      if (e?.message === "Cancelled" || requests.length === 1 || (args.isCancelled && (await args.isCancelled()))) throw e;
+      const denied = /access denied|read_\w+/i.test(String(e?.message ?? ""));
+      const reason = denied
+        ? `this app doesn't have Shopify's permission to read ${entity.sheet.toLowerCase()}${/read_\w+/.exec(String(e.message)) ? ` (${/read_\w+/.exec(String(e.message))![0]})` : ""}`
+        : String(e?.message ?? e).slice(0, 300);
+      failed.push(entity.sheet);
+      summaries.push({ entity: entity.key, rows: 0, items: 0, error: reason });
+      log(`${entity.sheet}: NOT exported: ${reason}. The other sheets are not affected.`);
     } finally {
       await spool.dispose();
     }
   }
+  if (failed.length && failed.length === requests.length) throw new Error(`None of the sheets could be exported (${failed.join(", ")}). See the log for the reason of each.`);
   return summaries;
 }

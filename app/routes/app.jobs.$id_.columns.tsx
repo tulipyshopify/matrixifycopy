@@ -3,7 +3,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { matchLayout, suggestColumn } from "../lib/core/layouts";
+import { matchLayout, oddMatches, suggestColumn } from "../lib/core/layouts";
 import { detectEntity } from "../lib/core/registry";
 import { ENTITIES, getEntity } from "../lib/entities";
 import { getJob, rerunJob } from "../lib/jobs/jobs.server";
@@ -61,7 +61,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);
   const form = await request.formData();
   try {
-    const sheets = JSON.parse(String(form.get("sheets") ?? "[]")) as Array<{ name: string; entity: string; map: Record<string, string> }>;
+    const sheets = JSON.parse(String(form.get("sheets") ?? "[]")) as Array<{ name: string; entity: string; map: Record<string, string>; confirmedOdd?: boolean }>;
     if (!sheets.length) throw new Error("Nothing to save");
     for (const s of sheets) await saveLayout(session.shop, s);
     const job = await rerunJob(session.shop, params.id!);
@@ -76,7 +76,7 @@ export default function MatchColumns() {
   const { job, sheets, error, entities } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ error?: string }>();
   const base = job.name.replace(/\.[a-z]+$/i, "").replace(/[_-]+/g, " ").trim() || "Supplier file";
-  const [state, setState] = useState(() => sheets.map((s) => ({ entity: s.entity, map: s.map, name: s.layout ?? (sheets.length > 1 ? `${base} (${s.sheet})` : base), on: true })));
+  const [state, setState] = useState(() => sheets.map((s) => ({ entity: s.entity, map: s.map, name: s.layout ?? (sheets.length > 1 ? `${base} (${s.sheet})` : base), on: true, confirmedOdd: false })));
   const busy = fetcher.state !== "idle";
   const patch = (i: number, p: Partial<(typeof state)[number]>) => setState((cur) => cur.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
@@ -129,6 +129,16 @@ export default function MatchColumns() {
                   {s.rows.toLocaleString("en")} rows · {matched} of {s.headers.length} columns matched
                   {s.layout ? ` · currently read with "${s.layout}"` : ""}
                 </s-text>
+                {oddMatches(st.map).length ? (
+                  <s-banner tone="warning" heading="Check this match">
+                    <s-stack direction="block" gap="small-300">
+                      {oddMatches(st.map).map((o) => (
+                        <s-text key={o}>{o}.</s-text>
+                      ))}
+                      <s-checkbox label="This is right: save it as it is" checked={st.confirmedOdd} onChange={(ev: any) => patch(i, { confirmedOdd: !!ev.currentTarget.checked })} />
+                    </s-stack>
+                  </s-banner>
+                ) : null}
                 {!hasKey ? (
                   <s-text tone="critical">
                     Match one column to {entity.keyColumns.join(", or ")}: it tells which {entity.sheet.toLowerCase().replace(/s$/, "")} each row is.
@@ -188,7 +198,7 @@ export default function MatchColumns() {
             variant="primary"
             loading={busy}
             disabled={busy || !state.some((x) => x.on)}
-            onClick={() => fetcher.submit({ sheets: JSON.stringify(state.filter((x) => x.on).map((x) => ({ name: x.name, entity: x.entity, map: x.map }))) }, { method: "post" })}
+            onClick={() => fetcher.submit({ sheets: JSON.stringify(state.filter((x) => x.on).map((x) => ({ name: x.name, entity: x.entity, map: x.map, confirmedOdd: x.confirmedOdd }))) }, { method: "post" })}
           >
             Save and preview again
           </s-button>

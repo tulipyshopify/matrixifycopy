@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createHash } from "node:crypto";
 import type {
   Command,
@@ -1041,25 +1042,33 @@ const VARIANTS_DELETE = `#graphql
   }
 `;
 
+/**
+ * Shopify requires a key of its own on every stock write (API 2026-04 on): the same
+ * key sent twice is carried out once, so a request repeated after a lost answer
+ * can't change stock twice. The request layer repeats a failed request with the
+ * same variables, and so with the same key.
+ */
+const idempotencyKey = () => crypto.randomUUID();
+
 const INVENTORY_SET = `#graphql
-  mutation ImportInventorySet($input: InventorySetQuantitiesInput!) {
-    inventorySetQuantities(input: $input) {
+  mutation ImportInventorySet($input: InventorySetQuantitiesInput!, $key: String!) {
+    inventorySetQuantities(input: $input) @idempotent(key: $key) {
       userErrors { field message code }
     }
   }
 `;
 
 const INVENTORY_ADJUST = `#graphql
-  mutation ImportInventoryAdjust($input: InventoryAdjustQuantitiesInput!) {
-    inventoryAdjustQuantities(input: $input) {
+  mutation ImportInventoryAdjust($input: InventoryAdjustQuantitiesInput!, $key: String!) {
+    inventoryAdjustQuantities(input: $input) @idempotent(key: $key) {
       userErrors { field message code }
     }
   }
 `;
 
 const INVENTORY_ACTIVATE = `#graphql
-  mutation ImportInventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
-    inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+  mutation ImportInventoryActivate($inventoryItemId: ID!, $locationId: ID!, $key: String!) {
+    inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) @idempotent(key: $key) {
       userErrors { field message }
     }
   }
@@ -1145,6 +1154,7 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
       const d = await ctx.gql(INVENTORY_ACTIVATE, {
         inventoryItemId: w.inventoryItemId,
         locationId,
+        key: idempotencyKey(),
       });
       const err = d.inventoryActivate.userErrors?.[0];
       if (err && !/already/i.test(err.message))
@@ -1166,6 +1176,7 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
     for (let i = 0; i < quantities.length; i += 250) {
       const d = await ctx.gql(INVENTORY_SET, {
         input: { name, reason: "correction", quantities: quantities.slice(i, i + 250) },
+        key: idempotencyKey(),
       });
       assertNoUserErrors(d.inventorySetQuantities, "Inventory");
     }
@@ -1174,6 +1185,7 @@ async function applyInventory(ctx: ImportContext, work: InventoryWork[]) {
     for (let i = 0; i < list.length; i += 250) {
       const d = await ctx.gql(INVENTORY_ADJUST, {
         input: { name, reason: "correction", changes: list.slice(i, i + 250) },
+        key: idempotencyKey(),
       });
       assertNoUserErrors(d.inventoryAdjustQuantities, "Inventory adjust");
     }
@@ -1557,6 +1569,7 @@ interface UpdatePlan {
  */
 export function stockWarnings(what: string, now: number, next: number, exported: { at: string; changedSince: boolean } | null): string[] {
   if (now === next) return [];
+  if (next < 0) return [`${what} would be ${next}: below zero. Shopify allows it, but it is almost always a slip`];
   if (exported) {
     const day = new Date(exported.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
     return [
@@ -1659,6 +1672,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       plan.undo.push({ ID: pid, Command: "UPDATE", "Image Src": m.image!.url, "Image Command": "MERGE", "Image Alt Text": m.alt ?? "" });
     }
     plan.images.deleteIds = [...toDelete];
+    if (toDelete.size) plan.warnings.push(`Row ${rowNo(0)}: ${toDelete.size} image${toDelete.size === 1 ? " is" : "s are"} removed from the product${existingMedia.length === toDelete.size ? " (all it has)" : ""}. A variant that shows one of them loses its picture`);
     const taken = new Set([...mediaByKey].filter(([, m]) => !toDelete.has(m.id)).map(([k]) => k));
     for (const im of wanted) {
       const key = imageKey(im.src);
@@ -1670,7 +1684,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
       plan.images.add.push(im);
       plan.undo.push({ ID: pid, Command: "UPDATE", "Image Src": im.src, "Image Command": "DELETE" });
       newImageUrls.set(im.src, im.rowIndex);
-      plan.changes.push({ label: "Image", old: "(none)", next: `adds ${fileName(im.src)}` });
+      plan.changes.push({ label: "Image", old: existingMedia.length ? `${existingMedia.length} now` : "(none)", next: `adds ${fileName(im.src)}` });
     }
   }
 
@@ -2489,11 +2503,30 @@ export async function importProduct(
         ...plan.undo,
         ...plan.toCreate.map((v) => plan.rowPatches[v.rowIndex]?.["Variant ID"]).filter(Boolean).map((vid) => ({ ID: gidToId(existing.id), Command: "UPDATE", "Variant ID": vid!, "Variant Command": "DELETE" })),
       ];
+      // Which steps were saved, so a row that stops half-way says exactly what it did and didn't do.
+      const saved: string[] = [];
+      const tracking: ImportContext = {
+        ...ctx,
+        gql: (async (query: string, variables?: Record<string, unknown>) => {
+          const d = await ctx.gql(query, variables);
+          const op = /^\s*(?:#graphql\s*)?mutation\s+(\w+)/.exec(query)?.[1];
+          if (op) {
+            const errors = Object.values(d ?? {}).some((x: any) => x?.userErrors?.length || x?.mediaUserErrors?.length);
+            const step = savedStep(op);
+            if (!errors && !saved.includes(step)) saved.push(step);
+          }
+          return d;
+        }) as ImportContext["gql"],
+      };
       try {
-        await applyUpdate(ctx, existing, plan);
+        await applyUpdate(tracking, existing, plan);
       } catch (e: any) {
-        // It may have been partly applied: the undo rows still put back whatever was.
-        return { status: "Failed", command, id: existing.id, title: existing.title, message: e instanceof ImportError ? e.message : `Error: ${e?.message ?? e}`, undo: undo() };
+        const reason = e instanceof ImportError ? e.message : `Error: ${e?.message ?? e}`;
+        // Partly applied: said outright (so the row isn't simply run again), and the undo rows still put back whatever was saved.
+        const message = saved.length
+          ? `Partly applied. Saved: ${saved.join(", ")}. Then it stopped, and the rest of this row was NOT saved: ${reason}. What was saved stays (it can be undone from this job's page). Fix the cause, then import the row again: values already saved show as no change.`
+          : reason;
+        return { status: "Failed", command, id: existing.id, title: existing.title, message, undo: undo() };
       }
       return {
         status: "OK",
@@ -2508,6 +2541,18 @@ export async function importProduct(
     default:
       return { status: "Skipped", command };
   }
+}
+
+/** What a write is, in a merchant's words (for "partly applied" rows). */
+function savedStep(operation: string): string {
+  if (/Inventory/i.test(operation)) return "stock";
+  if (/Media|Image/i.test(operation)) return "images";
+  if (/Metafield/i.test(operation)) return "metafields";
+  if (/Variant/i.test(operation)) return "variant details (prices, SKUs, options)";
+  if (/Publish/i.test(operation)) return "publishing";
+  if (/Tags/i.test(operation)) return "tags";
+  if (/ProductUpdate|ProductSet/i.test(operation)) return "product details";
+  return operation.replace(/^Import/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
 export const productsEntity: Entity = {
