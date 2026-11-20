@@ -167,6 +167,12 @@ export async function exchangeToken(form: URLSearchParams) {
   if (type === "refresh_token") {
     const grant = await prisma.oAuthGrant.findUnique({ where: { refreshHash: sha(form.get("refresh_token") ?? "") } });
     if (!grant) throw new OAuthError("invalid_grant", "The refresh token is not valid");
+    // A sign-in whose key a person revoked is over, however the revoke was done.
+    const key = grant.keyId ? await prisma.apiKey.findUnique({ where: { id: grant.keyId }, select: { revokedAt: true } }) : null;
+    if (grant.keyId && (!key || key.revokedAt)) {
+      await prisma.oAuthGrant.delete({ where: { id: grant.id } }).catch(() => {});
+      throw new OAuthError("invalid_grant", "This connection was revoked. Connect again from the assistant.");
+    }
     return issue(grant);
   }
   throw new OAuthError("unsupported_grant_type", "Use authorization_code or refresh_token");

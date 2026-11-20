@@ -391,7 +391,7 @@ async function exportProducts(
 const PRODUCT_FIELDS = `#graphql
   fragment ImportProduct on Product {
     id handle title hasOnlyDefaultVariant
-    descriptionHtml vendor productType status tags templateSuffix publishedAt
+    descriptionHtml vendor productType status tags templateSuffix publishedAt updatedAt
     seo { title description }
     category { id }
     options { id name position optionValues { id name } }
@@ -470,6 +470,7 @@ interface ExistingProduct {
   tags?: string[];
   templateSuffix?: string | null;
   publishedAt?: string | null;
+  updatedAt?: string | null;
   seo?: { title: string | null; description: string | null } | null;
   category?: { id: string } | null;
   options: Array<{
@@ -1281,13 +1282,23 @@ async function prepareCreate(
   }
   if (files.length) input.files = files;
 
+  // An image that can't be used is left out, with the reason; the product and its good images still go in.
   if (ctx.checkImageUrl) {
-    const problems: string[] = [];
+    const bad = new Set<string>();
     for (const f of files) {
       const problem = await ctx.checkImageUrl(f.originalSource);
-      if (problem) problems.push(`Image ${fileName(f.originalSource)} ${problem}`);
+      if (!problem) continue;
+      bad.add(f.originalSource);
+      warnings.push(`Row ${rowNo(images.find((im) => im.src === f.originalSource)?.rowIndex ?? 0)}: image ${fileName(f.originalSource)} ${problem}. It is skipped; the product is created without it`);
     }
-    if (problems.length) throw new ImportErrors(problems);
+    if (bad.size) {
+      const good = files.filter((f) => !bad.has(f.originalSource));
+      if (good.length) input.files = good;
+      else delete input.files;
+      for (const v of input.variants ?? []) if (v.file && bad.has(v.file.originalSource)) delete v.file;
+      files.length = 0;
+      files.push(...good);
+    }
   }
 
   if (published && !(await onlineStorePublicationId(ctx.gql, ctx.cache))) {
@@ -1472,8 +1483,29 @@ interface UpdatePlan {
  * created or deleted, and every problem in the rows. The preview shows it; the
  * real import carries out exactly this plan.
  */
+/**
+ * Stock set to a number (not adjusted) is worth a second look in two cases:
+ * the file is an earlier export, so its numbers are from then and would put
+ * back units sold since; or the number jumps far beyond what is there.
+ */
+export function stockWarnings(what: string, now: number, next: number, exported: { at: string; changedSince: boolean } | null): string[] {
+  if (now === next) return [];
+  if (exported) {
+    const day = new Date(exported.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    return [
+      `${what} would be set to ${next}; the store has ${now} now. This file was exported on ${day} UTC${exported.changedSince ? ", and the product has changed in the store since then" : ""}: units sold or received after that would be undone. To add or take away instead, use an "Inventory Available Adjust" column`,
+    ];
+  }
+  if ((now > 0 && next >= now * 10 && next - now >= 100) || (now <= 0 && next >= 1000)) return [`${what} jumps from ${now} to ${next}. Check the number`];
+  return [];
+}
+
 async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: Row[], rowNo: (i: number) => number): Promise<UpdatePlan> {
   const top = rows[0];
+  // An export of this app carries the time it was made ("Updated At"): its stock numbers are from then.
+  const fileStamp = Date.parse(cell(top, "Updated At") ?? "");
+  const storeStamp = Date.parse(existing.updatedAt ?? "");
+  const staleSince = Number.isFinite(fileStamp) ? { at: new Date(fileStamp).toISOString(), changedSince: Number.isFinite(storeStamp) && storeStamp > fileStamp + 2000 } : null;
   const plan: UpdatePlan = {
     errors: [],
     warnings: [],
@@ -1812,6 +1844,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
         plan.changes.push({ label, old: now === undefined ? (levels ? "not stocked here" : "?") : String(now), next: String(n) });
         plan.stockAfter.push({ inventoryItemId: ex.inventoryItem.id, locationId: loc.id, locationName: loc.name, kind, quantity: n!, ident });
         if (kind === "available" && now && n === 0) plan.warnings.push(`Row ${rowNo(i)}: stock of ${ident} at ${loc.name} goes from ${now} to 0`);
+        else if (kind === "available" && now !== undefined) plan.warnings.push(...stockWarnings(`Row ${rowNo(i)}: stock of ${ident} at ${loc.name}`, now, n!, staleSince));
       }
     }
     // "Variant Inventory Qty" is the total over all locations: it can only be
@@ -1837,6 +1870,7 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
         plan.changes.push({ label: `Available stock at ${loc.name} (${ident})`, old: String(now ?? total), next: String(spec.totalQty) });
         plan.stockAfter.push({ inventoryItemId: ex.inventoryItem.id, locationId: loc.id, locationName: loc.name, kind: "available", quantity: spec.totalQty, ident });
         if (total > 0 && spec.totalQty === 0) plan.warnings.push(`Row ${rowNo(i)}: stock of ${ident} goes from ${total} to 0`);
+        else plan.warnings.push(...stockWarnings(`Row ${rowNo(i)}: stock of ${ident}`, now ?? total, spec.totalQty, staleSince));
       }
     }
     if (spec.adjust) {
@@ -1937,10 +1971,22 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   }
 
   // New image links must load and be images, or Shopify attaches a broken placeholder.
+  // One that can't be used is left out with the reason (the rest of the row still applies), unless a variant points at it.
   if (ctx.checkImageUrl) {
     for (const [url, i] of newImageUrls) {
       const problem = await ctx.checkImageUrl(url);
-      if (problem) fail(i, `Image ${fileName(url)} ${problem}`);
+      if (!problem) continue;
+      const at = plan.images.add.findIndex((im) => im.src === url);
+      const variantUses = variants.some((v) => v.imageSrc === url);
+      if (at < 0 || variantUses) {
+        fail(i, `Image ${fileName(url)} ${problem}`);
+        continue;
+      }
+      plan.images.add.splice(at, 1);
+      plan.undo = plan.undo.filter((u) => !(u["Image Src"] === url && u["Image Command"] === "DELETE"));
+      const line = plan.changes.findIndex((c) => c.label === "Image" && c.next === `adds ${fileName(url)}`);
+      if (line >= 0) plan.changes.splice(line, 1);
+      plan.warnings.push(`Row ${rowNo(i)}: image ${fileName(url)} ${problem}. It is skipped; the other changes in this row still apply`);
     }
   }
 
@@ -1975,6 +2021,8 @@ async function applyUpdate(ctx: ImportContext, existing: ExistingProduct, plan: 
   // 1. Product fields.
   const fields = productFields(top);
   if (!has(top, "Handle") || fields.handle === existing.handle) delete fields.handle;
+  // A new handle changes the product's web address: Shopify is asked to send the old address on to the new one.
+  else if (fields.handle) fields.redirectNewHandle = true;
   const tagsCell = cell(top, "Tags");
   const tagsCommand = parseSubCommand(cell(top, "Tags Command"), ["REPLACE", "MERGE", "DELETE"] as const, "REPLACE");
   if (tagsCell !== undefined && tagsCommand === "REPLACE") fields.tags = splitTags(tagsCell);

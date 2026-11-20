@@ -165,7 +165,8 @@ export default function JobDetail() {
   } catch {
     // unreadable config: just skip the details
   }
-  const fetcher = useFetcher<{ error?: string }>();
+  // Keyed by the job: a refusal shown on one preview doesn't follow to the next ("Preview again").
+  const fetcher = useFetcher<{ error?: string }>({ key: `job-${job.id}` });
   const sharer = useFetcher<{ shareUrl?: string; error?: string }>();
   const [copied, setCopied] = useState(false);
   const applying = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "apply";
@@ -218,7 +219,7 @@ export default function JobDetail() {
 
       {job.type === "import" && job.kind === "job" ? <ImportSteps step={dryRun ? 2 : 3} /> : null}
 
-      {fetcher.data?.error ? (
+      {fetcher.data?.error && !(needs && dryRun) ? (
         <s-banner tone="critical" heading="Could not start the import">
           {fetcher.data.error}
         </s-banner>
@@ -317,6 +318,7 @@ export default function JobDetail() {
         <ImportReview
           jobId={job.id}
           editedRows={editedRows}
+          error={fetcher.state === "idle" ? fetcher.data?.error : undefined}
           sheets={preview}
           needs={needs}
           canApply={canApply}

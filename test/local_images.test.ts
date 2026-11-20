@@ -138,8 +138,11 @@ describe("a sheet uploaded with its image files", async () => {
     expect(barrel.changes.join("\n")).toMatch(/barrel-front\.png/);
     expect(barrel.changes.join("\n")).toMatch(/barrel-side\.jpg/);
     expect(JSON.stringify(barrel)).not.toContain("bulkport.invalid");
-    expect(hurdle.action).toBe("failed");
-    expect(hurdle.message).toMatch(/Image missing\.png is not among the 3 image files that came with the sheet/);
+    // A file that is missing is skipped with the reason; the product's other image still goes on.
+    expect(hurdle.action).toBe("update");
+    expect(hurdle.warnings.join("\n")).toMatch(/image missing\.png is not among the 3 image files that came with the sheet.*It is skipped/);
+    expect(hurdle.changes.join("\n")).toMatch(/adds h\.jpg/);
+    expect(hurdle.changes.join("\n")).not.toMatch(/missing/);
     expect(products.warnings.join("\n")).toMatch(/2 image files from the upload are used by this sheet\. They are checked now and sent to Shopify when the import is applied/);
     expect(products.warnings.join("\n")).toMatch(/1 image file in the upload is not named by any row and is not imported: photos\/unused\.png/);
     // The results file shows the names as typed.
@@ -158,9 +161,9 @@ describe("a sheet uploaded with its image files", async () => {
     ]);
     expect(r.uploads.map((u) => [u.filename, u.mimeType, u.key])).toEqual([["barrel-front.png", "image/png", "tmp/barrel-front.png"], ["barrel-side.jpg", "image/jpeg", "tmp/barrel-side.jpg"]]);
     expect(s.products[0].images).toEqual(["https://staged.example/barrel-front.png", "https://staged.example/barrel-side.jpg"]);
-    // The product whose file is missing fails as the preview said; nothing of it is sent.
-    expect(r.stats.find((x: any) => x.entity === "products")).toMatchObject({ ok: 1, failed: 1 });
-    expect(s.products[1].images).toEqual([]);
+    // The missing file is left out, as the preview said; the linked image of that product is still added.
+    expect(r.stats.find((x: any) => x.entity === "products")).toMatchObject({ ok: 2, failed: 0 });
+    expect(s.products[1].images).toEqual(["https://example.com/h.jpg"]);
   });
 
   it("files selected together are bundled into one upload the import reads the same way", async () => {

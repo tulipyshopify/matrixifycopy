@@ -212,16 +212,21 @@ export function parseCsv(text: string): { headers: string[]; rows: Row[]; notes:
     delimiter = sep[1] || undefined;
     clean = clean.slice(sep[0].length);
   }
-  let parsed = Papa.parse<string[]>(clean, { skipEmptyLines: false, ...(delimiter ? { delimiter } : {}) });
-  // A short file can leave the delimiter undecided: if the first row came out as one cell that
-  // holds tabs, semicolons or bars, that character is the delimiter.
+  // The delimiter is read from the first line with text in it: whichever of comma, semicolon,
+  // tab and bar splits it most, outside quotes. (Guessing from the whole file goes wrong when
+  // the cells hold long text full of commas, such as HTML.)
   if (!delimiter) {
-    const first = (parsed.data as string[][]).find((r) => r.some((c) => c.trim() !== ""));
-    if (first && first.length === 1) {
-      const found = ["\t", ";", "|"].map((d) => ({ d, n: first[0].split(d).length - 1 })).sort((a, b) => b.n - a.n)[0];
-      if (found.n > 0) parsed = Papa.parse<string[]>(clean, { skipEmptyLines: false, delimiter: found.d });
+    const firstLine = /^[\s\uFEFF]*([^\r\n]+)/.exec(clean.slice(0, 200_000))?.[1] ?? "";
+    const counts = new Map<string, number>([[",", 0], [";", 0], ["\t", 0], ["|", 0]]);
+    let quoted = false;
+    for (const ch of firstLine) {
+      if (ch === '"') quoted = !quoted;
+      else if (!quoted && counts.has(ch)) counts.set(ch, counts.get(ch)! + 1);
     }
+    const best = [...counts.entries()].sort((x, y) => y[1] - x[1])[0];
+    if (best[1] > 0) delimiter = best[0];
   }
+  const parsed = Papa.parse<string[]>(clean, { skipEmptyLines: false, ...(delimiter ? { delimiter } : {}) });
   const quote = parsed.errors.find((e) => e.type === "Quotes");
   if (quote) {
     const at = (quote.row ?? 0) + 1 + (sep ? 1 : 0);

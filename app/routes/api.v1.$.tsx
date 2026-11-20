@@ -113,7 +113,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       const b2 = (await body()) as any;
       return json(await startImport(auth, { csv: b2.csv, fileName: b2.file_name, url: b2.url, command: b2.command, apply: b2.apply === true, batch: b2.batch === true, concurrency: b2.concurrency }), 201);
     }
-    if (a === "jobs" && b && c === "apply") return json(await applyPreview(auth, b, ((await body()) as any).confirm_deletes === true), 201);
+    if (a === "jobs" && b && c === "apply") {
+      const given = (await body()) as any;
+      return json(await applyPreview(auth, b, given.confirm_deletes === true, given.confirm_warnings === true ? "confirm" : given.skip_warnings === true ? "skip" : null), 201);
+    }
     if (a === "jobs" && b && c === "cancel") return json(await cancel(auth, b));
     throw new ApiError(404, "No such address");
   } catch (e) {

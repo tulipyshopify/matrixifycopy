@@ -318,7 +318,10 @@ export function ImportReview({
   undoDays = 90,
   onImport,
   editedRows = 0,
+  error,
 }: {
+  /** Why the last try to apply was refused: shown where the button is. */
+  error?: string;
   /** The preview's job (rows are corrected against it). */
   jobId?: string;
   /** Rows of the file carrying corrections made on this page. */
@@ -585,7 +588,14 @@ export function ImportReview({
               <div><b>{n(updating)}</b><s-badge tone="info">Update</s-badge><span>items changed as shown in the preview</span></div>
               {count("look") ? <div><b>{n(count("look"))}</b><s-badge tone="warning">Accepted warning</s-badge><span>{inc.filter((x) => x.kind === "look").slice(0, 3).map((x) => x.item.title || x.item.item).join("; ")}{count("look") > 3 ? "…" : ""}</span></div> : null}
               {totals.create ? <div><b>{n(count("create"))}</b><s-badge tone="warning">Create</s-badge><span>{count("create") ? "new items, as drafts unless the file says otherwise" : `${plural(totals.create, "possible new item")} not included`}</span></div> : null}
-              {totals.delete ? <div><b>{n(count("delete"))}</b><s-badge tone="critical">Delete</s-badge><span>{count("delete") ? inc.filter((x) => x.kind === "delete").slice(0, 3).map((x) => x.item.title || x.item.item).join("; ") : `${plural(totals.delete, "deletion")} not included`}</span></div> : null}
+              {totals.delete ? <div><b>{n(count("delete"))}</b><s-badge tone="critical">Delete</s-badge><span>{count("delete")
+                ? inc
+                    .filter((x) => x.kind === "delete")
+                    .slice(0, 3)
+                    // A row that removes part of an item (a variant) keeps the item: say what goes, not the item's name alone.
+                    .map((x) => (x.item.action === "delete" || x.item.action === "replace" ? x.item.title || x.item.item : `${x.item.deletes} ${x.sheet === "Products" || /products/i.test(x.sheet) ? (x.item.deletes === 1 ? "variant" : "variants") : x.item.deletes === 1 ? "part" : "parts"} of ${x.item.title || x.item.item} (the item itself stays)`))
+                    .join("; ")
+                : `${plural(totals.delete, "deletion")} not included`}</span></div> : null}
               <div><b>{n(totals.failed + skipped)}</b><s-badge>Skipped</s-badge><span>{[totals.failed ? `${n(totals.failed)} can't be applied` : "", skipped ? `${n(skipped)} you skipped` : ""].filter(Boolean).join(", ") || "nothing"}</span></div>
             </div>
             {unlistedRisky ? (
@@ -606,7 +616,7 @@ export function ImportReview({
                 </s-stack>
               </s-banner>
             ) : null}
-            <s-banner tone="success" heading={`You can undo this until ${undoUntil(undoDays)}`}>
+            <s-banner tone={deletesIncluded && deletesIncluded >= applying ? "warning" : "success"} heading={deletesIncluded && deletesIncluded >= applying ? "Deletions can't be undone from here" : `You can undo this until ${undoUntil(undoDays)}`}>
               <s-text>
                 What each item looked like is recorded before it is changed, and kept on Bulkport's server for {undoDays} days. "Undo this import" on the job's page then opens a preview of putting it back.
                 {deletesIncluded ? " A deleted product can't be undone that way: restore it from a backup." : ""}
@@ -615,6 +625,11 @@ export function ImportReview({
             <s-text color="subdued">
               Each item is checked against the store once more as it is applied: anything changed since this preview is left alone and reported. Items that already match the store are not touched.
             </s-text>
+            {error ? (
+              <s-banner tone="critical" heading="Not applied">
+                {error}
+              </s-banner>
+            ) : null}
             <s-stack direction="inline" gap="small" justifyContent="end">
               <s-button onClick={() => setConfirming(false)}>Back to preview</s-button>
               <s-button variant="primary" tone={deletesIncluded ? "critical" : undefined} loading={busy} disabled={busy || applying <= 0 || (deletesIncluded > 0 && typed.trim().toUpperCase() !== "DELETE")} onClick={submit}>

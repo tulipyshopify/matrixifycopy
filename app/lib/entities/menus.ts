@@ -355,6 +355,55 @@ export async function importMenu(ctx: ImportContext, rows: Row[], command: Comma
     };
   };
 
+  // A preview of an update: menuUpdate replaces the whole list of links, so what would go is said outright.
+  if (ctx.options.dryRun && existing && (command === "UPDATE" || command === "MERGE" || (command === "REPLACE" && existing.isDefault))) {
+    const flat = (items: MenuItemNode[] | undefined, out: MenuItemNode[] = []) => {
+      for (const it of items ?? []) {
+        out.push(it);
+        flat(it.items, out);
+      }
+      return out;
+    };
+    const flatSpecs = (items: ItemSpec[], out: ItemSpec[] = []) => {
+      for (const it of items) {
+        out.push(it);
+        flatSpecs(it.children, out);
+      }
+      return out;
+    };
+    const now = flat(existing.items);
+    const changes: string[] = [];
+    const warnings: string[] = [];
+    const clears: string[] = [];
+    if (title && title !== existing.title) changes.push(`Title: ${existing.title} → ${title}`);
+    if (handle && handle !== existing.handle) changes.push(`Handle: ${existing.handle} → ${handle}`);
+    if (withItems) {
+      const wanted = flatSpecs(specs);
+      const key = (t: unknown, u: unknown) => `${String(t ?? "").trim().toLowerCase()}|${String(u ?? "").trim().toLowerCase()}`;
+      const keptIds = new Set(wanted.map((w) => w.id).filter(Boolean));
+      const keptLooks = new Set(wanted.filter((w) => !w.id).map((w) => key(w.input.title, w.input.url)));
+      const removed = now.filter((it) => !keptIds.has(it.id) && !keptLooks.has(key(it.title, it.url)));
+      const nowIds = new Set(now.map((it) => it.id));
+      const nowLooks = new Set(now.map((it) => key(it.title, it.url)));
+      const added = wanted.filter((w) => (w.id ? !nowIds.has(w.id) : !nowLooks.has(key(w.input.title, w.input.url))));
+      const renamed = wanted.filter((w) => w.id && nowIds.has(w.id) && now.find((it) => it.id === w.id)!.title !== w.input.title);
+      for (const w of renamed) changes.push(`Link: ${now.find((it) => it.id === w.id)!.title} → ${w.input.title}`);
+      if (added.length) changes.push(`Adds ${added.length} link${added.length === 1 ? "" : "s"}: ${added.slice(0, 6).map((w) => w.input.title).join(", ")}${added.length > 6 ? "…" : ""}`);
+      if (removed.length) {
+        changes.push(`Removes ${removed.length} of the ${now.length} links in the menu: ${removed.slice(0, 8).map((it) => it.title).join(", ")}${removed.length > 8 ? "…" : ""}`);
+        warnings.push(`the file lists ${wanted.length} link${wanted.length === 1 ? "" : "s"} and the menu "${existing.title}" has ${now.length}: a menu import replaces the whole list, so the ${removed.length} not in the file would be removed from the shop's navigation. To change one link, export the menu and keep every row`);
+        if (removed.length === now.length) clears.push("Menu links");
+      }
+    }
+    try {
+      if (withItems) updateInputs(specs, itemIds(existing.items));
+    } catch (e) {
+      if (!(e instanceof ImportError)) throw e;
+      return { status: "Failed", command, id: existing.id, title: existing.title, message: e.message, errors: [e.message] };
+    }
+    return { status: "OK", command, id: existing.id, title: existing.title, preview: { action: changes.length ? "update" : "none", changes, warnings, ...(clears.length ? { clears } : {}) } };
+  }
+
   return runCommand(command, existing, {
     what: "Menu",
     idOf: (m) => m.id,

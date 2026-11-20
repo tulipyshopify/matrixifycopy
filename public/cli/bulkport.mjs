@@ -50,6 +50,8 @@ Import:
     --no-wait
   bulkport apply <job>            run a finished preview for real
     --confirm-deletes             needed when the preview deletes anything
+    --confirm-warnings            apply rows the preview flagged (warnings, emptied fields) too
+    --skip-warnings               apply the rest and leave flagged rows out
   bulkport preview <job>          show a preview again
 
 Other:
@@ -279,7 +281,7 @@ async function main() {
 
   if (cmd === "apply") {
     if (!a) fail("Usage: bulkport apply <job>");
-    let job = await api("POST", `jobs/${a}/apply`, { confirm_deletes: !!flags["confirm-deletes"] });
+    let job = await api("POST", `jobs/${a}/apply`, { confirm_deletes: !!flags["confirm-deletes"], confirm_warnings: !!flags["confirm-warnings"], skip_warnings: !!flags["skip-warnings"] });
     if (flags["no-wait"]) return print(job, job.id);
     job = await waitFor(job, flags.json);
     print(job, describe(job));

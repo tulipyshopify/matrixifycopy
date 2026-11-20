@@ -622,13 +622,14 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       if (ctx.options.dryRun && result.status === "OK") {
         const p = result.preview ?? previews.get(item);
         const action = p?.action ?? "none";
+        // An update that removes part of the item (a variant) is one change, counted with the deletions.
+        const removesPart = !!result.preview?.deletes && action !== "delete" && action !== "replace";
         if (action === "create") risk.creates++;
-        else if (action === "delete" || action === "replace") risk.deletes++;
+        else if (action === "delete" || action === "replace" || removesPart) risk.deletes++;
         else if (action === "none") risk.unchanged++;
         else risk.updates++;
         if (result.preview?.clears?.length) risk.clearing++;
         if (result.preview?.warnings?.length) risk.warned++;
-        if (result.preview?.deletes && action !== "delete" && action !== "replace") risk.deletes++;
       }
       done++;
       args.progress?.(done, total);

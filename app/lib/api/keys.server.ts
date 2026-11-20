@@ -42,6 +42,16 @@ export async function revokeKey(shop: string, id: string) {
   await prisma.apiKey.updateMany({ where: { id, shop, revokedAt: null }, data: { revokedAt: new Date() } });
 }
 
+/**
+ * A person revokes a key in Settings. For the key of a signed-in assistant
+ * this ends the sign-in too: without that, the assistant would quietly get a
+ * new key the next time it asked.
+ */
+export async function revokeKeyAndSignIn(shop: string, id: string) {
+  await revokeKey(shop, id);
+  await prisma.oAuthGrant.deleteMany({ where: { shop, keyId: id } });
+}
+
 export interface KeyAuth {
   shop: string;
   keyId: string;

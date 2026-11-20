@@ -163,15 +163,21 @@ export function collectionsBulkQuery(kind: Kind, search: string, groups: Set<str
   }`;
 }
 
-function onlineStorePublication(c: any): any | undefined {
-  return (c.publications ?? []).find((p: any) => p.publication?.catalog?.title === "Online Store");
+/**
+ * The collection's entry for the Online Store channel. The channel is known by
+ * its ID where that could be looked up (on some stores it has no catalogue to
+ * name it by), else by its catalogue's title.
+ */
+function onlineStorePublication(c: any, onlineStoreId?: string | null): any | undefined {
+  const list: any[] = c.publications ?? [];
+  return (onlineStoreId ? list.find((p) => p.publication?.id === onlineStoreId) : undefined) ?? list.find((p) => p.publication?.catalog?.title === "Online Store");
 }
 
-export function collectionToRows(c: any, kind: Kind, groups: Set<string>): Row[] {
+export function collectionToRows(c: any, kind: Kind, groups: Set<string>, onlineStoreId?: string | null): Row[] {
   const rules: any[] = kind === "smart" ? (c.ruleSet?.rules ?? []) : [];
   const products: any[] = kind === "custom" ? (c.products ?? []) : [];
   const count = Math.max(1, rules.length, products.length);
-  const pub = onlineStorePublication(c);
+  const pub = onlineStorePublication(c, onlineStoreId);
   const rows: Row[] = [];
   for (let i = 0; i < count; i++) {
     const row: Row = { ID: gidToId(c.id), Handle: c.handle };
@@ -227,8 +233,9 @@ function exporter(kind: Kind) {
     const groups = new Set(ctx.options.groups ?? entity.groups!.filter((g) => g.default).map((g) => g.key));
     const search = buildSearchQuery(ctx.options);
     let n = 0;
+    const onlineStoreId = await onlineStorePublicationId(ctx.gql, ctx.cache).catch(() => null);
     for await (const c of ctx.bulk(collectionsBulkQuery(kind, search, groups))) {
-      await emit(collectionToRows(c, kind, groups));
+      await emit(collectionToRows(c, kind, groups, onlineStoreId));
       ctx.progress(++n);
       if (ctx.options.limit && n >= ctx.options.limit) break;
     }

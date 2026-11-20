@@ -15,6 +15,7 @@ import {
   entityCatalog,
   parseExportConfig,
   parseImportOptions,
+  previewKind,
   readPreview,
 } from "../jobs/jobs.server";
 import { SOURCE_PROTOCOLS } from "../jobs/sources.server";
@@ -164,15 +165,45 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   return jobView(auth.shop, job.id);
 }
 
-/** Runs a finished preview for real. Deletions need their own explicit yes. */
-export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = false) {
+/**
+ * Runs a finished preview for real. Deletions need their own explicit yes, and
+ * so do rows the preview flagged (a warning or an emptied field):
+ * in the app those start on Skip, and a script gets no quieter way round.
+ * `warnings: "skip"` applies the rest and leaves the flagged rows out.
+ */
+export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = false, warnings: "confirm" | "skip" | null = null) {
   assertCanImport(auth);
   const preview = await findJob(auth.shop, id);
   const needs = applyNeeds(preview.stats);
   if (needs.deletes && !confirmDeletes) {
     throw new ApiError(409, `This preview would permanently delete ${needs.deletes} item${needs.deletes === 1 ? "" : "s"}. To go ahead, confirm the deletions (API: "confirm_deletes": true; command line: --confirm-deletes).`);
   }
+  // Flagged rows, as listed by the preview (a very large file may hold more than it lists).
+  const sheets = await readPreview(auth.shop, id);
+  const flagged: Record<string, string[]> = {};
+  let listed = 0;
+  const examples: string[] = [];
+  for (const s of sheets) {
+    for (const i of s.items) {
+      if (previewKind(i) === "failed" || !(i.warnings?.length || i.clears?.length)) continue;
+      listed++;
+      if (i.key) (flagged[s.sheet] ??= []).push(i.key);
+      if (examples.length < 3) examples.push(`row ${i.row}: ${(i.warnings?.[0] ?? `empties ${(i.clears ?? []).join(", ")}`).slice(0, 160)}`);
+    }
+  }
+  const total = Math.max(listed, needs.warned, needs.clearing);
+  if (total && !warnings) {
+    throw new ApiError(
+      409,
+      `This preview flags ${total} row${total === 1 ? "" : "s"} that need a decision (${examples.join("; ")}${total > examples.length ? "; …" : ""}). Look at them with the preview, then either apply everything (API: "confirm_warnings": true; command line: --confirm-warnings) or apply the rest and leave those rows out (API: "skip_warnings": true; command line: --skip-warnings).`,
+    );
+  }
   try {
+    if (total && warnings === "skip") {
+      if (total > listed) throw new Error(`This file is too large for the preview to list every flagged row (${listed} of ${total} listed), so they can't be left out one by one. Split the file, or confirm the warnings.`);
+      const job = await applyDryRun(auth.shop, id, "trusted", flagged);
+      return jobView(auth.shop, job.id);
+    }
     const job = await applyDryRun(auth.shop, id, "trusted");
     return jobView(auth.shop, job.id);
   } catch (e: any) {

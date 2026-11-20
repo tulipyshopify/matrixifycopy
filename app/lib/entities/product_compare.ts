@@ -279,7 +279,10 @@ export function compareProduct(top: Row, p: ProductNow, metafields: MetafieldsNo
   out.warnings = [];
   const title = cell(top, "Title") ?? "";
   if (out.changed.has("Title") && /<\/?[a-z][^>]*>/i.test(title)) out.warnings.push("the new title contains HTML tags; titles are shown as plain text, so the tags would appear as they are typed");
-  if (out.changed.has("Handle")) out.warnings.push(...handleWarnings(handle ?? ""));
+  if (out.changed.has("Handle")) {
+    out.warnings.push(`the handle changes, which changes the product's web address (…/products/${p.handle} becomes …/products/${handle}). A redirect from the old address is created with it, so old links keep working; search engines still need time to pick up the new one`);
+    out.warnings.push(...handleWarnings(handle ?? ""));
+  }
   // "Published At" is a date, and only matters together with a change of Published.
   const publishedAt = cell(top, "Published At");
   if (publishedAt) {

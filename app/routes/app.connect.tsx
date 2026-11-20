@@ -5,7 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { EXPIRY_CHOICES, createKey, listKeys, revokeKey, type KeyScope } from "../lib/api/keys.server";
+import { EXPIRY_CHOICES, createKey, listKeys, revokeKeyAndSignIn, type KeyScope } from "../lib/api/keys.server";
 import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
 import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
@@ -79,7 +79,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { saved: "Saved." };
     }
     if (form.get("intent") === "revoke") {
-      await revokeKey(session.shop, String(form.get("id")));
+      await revokeKeyAndSignIn(session.shop, String(form.get("id")));
       return { ok: true as const };
     }
     const scope = (["read", "preview", "full"].includes(String(form.get("scope"))) ? String(form.get("scope")) : "preview") as KeyScope;

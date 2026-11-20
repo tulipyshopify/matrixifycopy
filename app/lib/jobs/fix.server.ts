@@ -107,13 +107,13 @@ function contribution(i: PreviewItem): { ok: number; failed: number; skipped: nu
   const risk: ImportRisk = { creates: 0, updates: 0, deletes: 0, unchanged: 0, clearing: 0, warned: 0 };
   if (i.action === "failed") return { ok: 0, failed: 1, skipped: 0, risk };
   if (i.action === "skipped") return { ok: 0, failed: 0, skipped: 1, risk };
+  const removesPart = !!i.deletes && i.action !== "delete" && i.action !== "replace";
   if (i.action === "create") risk.creates++;
-  else if (i.action === "delete" || i.action === "replace") risk.deletes++;
+  else if (i.action === "delete" || i.action === "replace" || removesPart) risk.deletes++;
   else if (i.action === "none") risk.unchanged++;
   else risk.updates++;
   if (i.clears?.length) risk.clearing++;
   if (i.warnings?.length) risk.warned++;
-  if (i.deletes && i.action !== "delete" && i.action !== "replace") risk.deletes++;
   return { ok: 1, failed: 0, skipped: 0, risk };
 }
 

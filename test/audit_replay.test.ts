@@ -441,18 +441,18 @@ describe("audit: real imports, rounds B and C", () => {
     expect(r.comment(sheets[0].name)).toMatch(/Stock was written but did not take: SKU ZZBPT-10-A at Warehouse is 0, expected 2/);
   });
 
-  it("H11/M17: broken and non-image links fail before anything is attached; a repeated image is added once", async () => {
+  it("H11/M17: broken and non-image links are never attached; a repeated image is added once", async () => {
     const store = zzStore();
     const sheets = await sheetsOf("zz_bulkport_round_C.zip", /^rC1_/);
     const checkImageUrl = async (url: string) => (url.includes("does-not-exist") ? `can't be loaded: the link answers "not found" (HTTP 404)` : url === "https://example.com/" ? "is not an image: the link returns text/html" : null);
     const p = await preview(sheets, store, { defaultCommand: "UPDATE" }, { checkImageUrl });
-    expect(p.items[0].errors).toEqual([
-      `Row 4: Image zz-bulkport-test-does-not-exist.jpg can't be loaded: the link answers "not found" (HTTP 404)`,
-      "Row 5: Image https://example.com/ is not an image: the link returns text/html",
-    ]);
-    const r = await real(sheets, store, {}, { ctx: { checkImageUrl } });
-    expect(r.result(sheets[0].name)).toBe("Failed");
-    expect(store.byHandle("zz-bulkport-test-07-images")!.images).toEqual([]);
+    // N9 (20 Nov retest): a bad image no longer blocks the product. It is skipped with the reason; the good one goes on.
+    expect(p.items[0].action).toBe("update");
+    expect(p.items[0].changes).toEqual(["Image: (none) → adds range-100-120cm-silver-trough-planter-2-3d534482.jpg"]);
+    expect(p.items[0].warnings!.join("\n")).toMatch(/Row 4: image zz-bulkport-test-does-not-exist\.jpg can't be loaded: the link answers "not found" \(HTTP 404\)\. It is skipped/);
+    expect(p.items[0].warnings!.join("\n")).toMatch(/Row 5: image https:\/\/example\.com\/ is not an image: the link returns text\/html\. It is skipped/);
+    const r = await real(sheets, zzStore(), {}, { ctx: { checkImageUrl } });
+    expect(r.result(sheets[0].name)).toBe("OK");
     // Without the two bad rows: one image added, the duplicate noted.
     const good = [{ ...sheets[0], rows: sheets[0].rows.slice(0, 2) }];
     const p2 = await preview(good, store, { defaultCommand: "UPDATE" }, { checkImageUrl });

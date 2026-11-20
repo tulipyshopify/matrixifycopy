@@ -629,7 +629,7 @@ export interface ApplyConfirm {
  * deletions need the typed word DELETE. The check is made here as well as on
  * the page, so no route can skip it.
  */
-export async function applyDryRun(shop: string, id: string, confirm: ApplyConfirm | "trusted" = {}) {
+export async function applyDryRun(shop: string, id: string, confirm: ApplyConfirm | "trusted" = {}, leaveOut?: Record<string, string[]>) {
   const job = await getJob(shop, id);
   let config: ImportConfig;
   try {
@@ -642,7 +642,7 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
   if (!job.inputFile) throw new Error("The previewed file is no longer available. Import it again.");
   const needs = applyNeeds(job.stats);
   if (!needs.changes) throw new Error("There is nothing to import: the preview found no changes to make.");
-  let exclude: Record<string, string[]> | undefined;
+  let exclude: Record<string, string[]> | undefined = leaveOut && Object.keys(leaveOut).length ? leaveOut : undefined;
   if (confirm !== "trusted") {
     const sheets = await readPreview(shop, id);
     const out = new Map<string, Set<string>>(Object.entries(confirm.exclude ?? {}).map(([k, v]) => [k, new Set(v)]));
@@ -650,12 +650,14 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
     let changes = needs.changes;
     let deletes = needs.deletes;
     let undecided = 0;
-    const listed = { delete: 0, create: 0, look: 0 };
+    // `flags` counts as the totals do: one for an item's warnings, one for its emptied fields, whatever else it is.
+    const listed = { delete: 0, create: 0, look: 0, flags: 0 };
     for (const s of sheets) {
       for (const i of s.items) {
         const kind = previewKind(i);
         if (kind === "failed" || kind === "none") continue;
         const skipped = !!i.key && out.get(s.sheet)?.has(i.key);
+        listed.flags += (i.warnings?.length ? 1 : 0) + (i.clears?.length ? 1 : 0);
         if (isRisky(kind)) {
           listed[kind as "delete"]++;
           if (!skipped && !(i.key && inc.get(s.sheet)?.has(i.key))) undecided++;
@@ -668,7 +670,7 @@ export async function applyDryRun(shop: string, id: string, confirm: ApplyConfir
     }
     if (undecided) throw new Error(`Before importing: choose Include or Skip for ${undecided} item${undecided === 1 ? "" : "s"} that need a decision (new items, deletions, warnings or emptied fields).`);
     // Risky items of a very large file beyond what the preview lists.
-    const unlisted = Math.max(0, needs.deletes - listed.delete) + Math.max(0, needs.creates - listed.create) + Math.max(0, needs.clearing + needs.warned - listed.look);
+    const unlisted = Math.max(0, needs.deletes - listed.delete) + Math.max(0, needs.creates - listed.create) + Math.max(0, needs.clearing + needs.warned - listed.flags);
     if (unlisted && !confirm.rest) throw new Error(`Before importing: ${unlisted} more item${unlisted === 1 ? "" : "s"} would create, delete or empty something and are not listed one by one. Confirm them, or split the file.`);
     if (deletes > 0 && (confirm.deletes ?? "").trim().toUpperCase() !== "DELETE") throw new Error(`Before importing: type DELETE to confirm ${deletes} deletion${deletes === 1 ? "" : "s"}.`);
     if (changes <= 0) throw new Error("Every change is set to Skip, so there is nothing to import. Include at least one.");
