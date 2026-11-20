@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { bundleUpload } from "../lib/jobs/bundle";
 import {
   createImportJob,
   createSchedule,
@@ -89,6 +90,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!(file instanceof File) || !file.size) throw new Error("Choose a file to import");
     // Other spreadsheet formats are let through to the reader, which says how to save each as one that is read.
     if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new Error("Upload an Excel file (.xlsx), a CSV or tab-separated file (.csv, .tsv, .txt), or a ZIP of those");
+    // Image files selected with the sheet travel with it as one ZIP, which the import reads like any other.
+    const pictures = form.getAll("image").filter((p): p is File => p instanceof File && p.size > 0);
+    if (pictures.length) {
+      if (/\.zip$/i.test(file.name)) throw new Error("Put the image files inside the ZIP, or select the sheet itself together with the images.");
+      const job = await createImportJob(session.shop, await bundleUpload(file, pictures), options);
+      return redirect(`/app/jobs/${job.id}`);
+    }
     const job = await createImportJob(session.shop, file, options);
     return redirect(`/app/jobs/${job.id}`);
   } catch (e: any) {

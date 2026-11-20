@@ -4,7 +4,9 @@ import v8 from "node:v8";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary, type SheetEdits } from "../core/importer";
-import { createWorkbookOut, readWorkbook, unpackedSizes, type OutputFormat, type Sheet } from "../core/sheets";
+import { createWorkbookOut, readWorkbook, readZipEntry, readZipEntryHead, unpackedSizes, zipEntries, type OutputFormat, type Sheet } from "../core/sheets";
+import { IMAGE_FILE, MAX_IMAGE_BYTES, MIME, imageInfo, isLocalRef, judgeImage, localName, parkLocalImages, sendLocalImages, unparkRow, type LocalImages } from "../core/images";
+import { ImportError } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { applyLayout, matchLayout, type ColumnLayout } from "../core/layouts";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
@@ -13,6 +15,23 @@ import { runCheck } from "../check/run";
 import { generateAiFixFile, type AiFixSpec } from "../check/aifix";
 
 /** Dry-run preview of an import, in the job's folder. */
+const STAGE_IMAGE = `#graphql
+  mutation ImportStageImage($input: [StagedUploadInput!]!) {
+    stagedUploadsCreate(input: $input) {
+      stagedTargets { url resourceUrl parameters { name value } }
+      userErrors { field message }
+    }
+  }
+`;
+
+async function httpUploadFile(url: string, parameters: Array<{ name: string; value: string }>, data: Uint8Array, filename: string, mimeType: string) {
+  const form = new FormData();
+  for (const p of parameters) form.set(p.name, p.value);
+  form.set("file", new Blob([data as BlobPart], { type: mimeType }), filename);
+  const res = await fetch(url, { method: "POST", body: form, signal: AbortSignal.timeout(120_000) });
+  if (!res.ok) throw new ImportError(`Image ${filename} could not be sent to Shopify (HTTP ${res.status}). Try the import again.`);
+}
+
 export const PREVIEW_FILE = "preview.json";
 /** While a preview runs: its first items and running totals, for a first look. */
 export const PARTIAL_FILE = "preview-partial.json";
@@ -209,6 +228,8 @@ export interface RunnerDeps {
   bulkEvents?: { onRoots: (n: number) => void };
   /** Data check: tags whose products are left out. */
   checkExclusions?: () => Promise<string[]>;
+  /** Sends one uploaded file to the address Shopify staged for it (tests replace this). */
+  uploadFile?: (url: string, parameters: Array<{ name: string; value: string }>, data: Uint8Array, filename: string, mimeType: string) => Promise<void>;
   /** Records what a real import changed, item by item (the change history). */
   onChanges?: (entries: ChangeEntry[]) => Promise<void>;
   /** The store's saved column layouts, for files in someone else's layout. */
@@ -382,14 +403,80 @@ export async function executeJob(
         deps.log("The preview's record is no longer kept, so this import can't check for changes made since the preview.");
       }
     }
+    // Image files that came with the sheet (in the same ZIP): cells naming one are checked here and uploaded as part of the import.
+    const isZip = /\.zip$/i.test(job.inputName ?? job.inputFile);
+    const uploaded = isZip ? ((await zipEntries(job.inputFile).catch(() => null)) ?? []).filter((e) => IMAGE_FILE.test(e.name) && !e.name.startsWith("__MACOSX") && !path.basename(e.name).startsWith(".")) : [];
+    const images: LocalImages = { refs: new Map(), unused: [] };
+    const judged = new Map<string, Promise<{ problem: string | null; warning: string | null }>>();
+    const judge = (address: string) => {
+      if (!judged.has(address)) {
+        judged.set(
+          address,
+          (async () => {
+            const ref = images.refs.get(address);
+            if (!ref) return { problem: "is not a file of this upload", warning: null };
+            if (ref.problem || !ref.file) return { problem: ref.problem ?? "is not a file of this upload", warning: null };
+            const head = ref.file.size <= MAX_IMAGE_BYTES ? await readZipEntryHead(job.inputFile!, ref.file.name).catch(() => null) : null;
+            return judgeImage(ref.typed, ref.file.size, head);
+          })(),
+        );
+      }
+      return judged.get(address)!;
+    };
     // The same image link is often on many rows: check each once.
     const checked = new Map<string, Promise<string | null>>();
-    const checkImageUrl = deps.checkImageUrl
-      ? (url: string) => {
-          if (!checked.has(url)) checked.set(url, deps.checkImageUrl!(url));
-          return checked.get(url)!;
-        }
-      : undefined;
+    const checkImageUrl = (url: string): Promise<string | null> => {
+      if (isLocalRef(url)) return judge(url).then((j) => j.problem);
+      if (!deps.checkImageUrl) return Promise.resolve(null);
+      if (!checked.has(url)) checked.set(url, deps.checkImageUrl(url));
+      return checked.get(url)!;
+    };
+    // A real import: the moment a row is sent, its uploaded files go to Shopify and the row carries the address Shopify gives.
+    const sent = new Map<string, Promise<string>>();
+    const sendImage = (address: string) => {
+      if (!sent.has(address)) {
+        sent.set(
+          address,
+          (async () => {
+            const ref = images.refs.get(address);
+            const j = await judge(address);
+            if (!ref?.file || j.problem) throw new ImportError(`Image ${ref?.typed ?? localName(address)} ${j.problem ?? "is not a file of this upload"}`);
+            const data = await readZipEntry(job.inputFile!, ref.file.name);
+            if (!data) throw new ImportError(`Image ${ref.typed} could not be read from the upload`);
+            const filename = path.basename(ref.file.name);
+            const mimeType = MIME[imageInfo(data.subarray(0, 262_144)).type ?? "jpeg"];
+            const staged = (await deps.gql(STAGE_IMAGE, { input: [{ resource: "IMAGE", filename, mimeType, httpMethod: "POST", fileSize: String(data.length) }] })).stagedUploadsCreate;
+            const target = staged?.stagedTargets?.[0];
+            if (staged?.userErrors?.length || !target?.url || !target.resourceUrl) throw new ImportError(`Image ${ref.typed} was refused by Shopify: ${(staged?.userErrors ?? []).map((e: any) => e.message).join("; ") || "no upload address was given"}`);
+            await (deps.uploadFile ?? httpUploadFile)(target.url, target.parameters ?? [], data, filename, mimeType);
+            return target.resourceUrl as string;
+          })(),
+        );
+      }
+      return sent.get(address)!;
+    };
+    const importGql: Gql = ((query: string, variables?: Record<string, unknown>) =>
+      images.refs.size && variables && /^\s*(?:#graphql\s*)?mutation\b/.test(query) ? sendLocalImages(variables, sendImage).then((v) => deps.gql(query, v)) : deps.gql(query, variables)) as Gql;
+    const imageNotes: string[] = [];
+    const prepareSheet = async (sheet: Sheet) => {
+      const before = images.refs.size;
+      if (!parkLocalImages(sheet, uploaded, images)) return;
+      const fresh = [...images.refs.keys()].slice(before);
+      const warnings: string[] = [];
+      for (const address of fresh) {
+        const w = (await judge(address)).warning;
+        if (w) warnings.push(w);
+      }
+      const found = fresh.filter((a) => images.refs.get(a)!.file).length;
+      if (found) (sheet.notes ??= []).push(`${found.toLocaleString("en")} image file${found === 1 ? "" : "s"} from the upload ${found === 1 ? "is" : "are"} used by this sheet. ${config.options?.dryRun ? "They are checked now and sent to Shopify when the import is applied." : "Each is sent to Shopify with its row."}`);
+      if (warnings.length) (sheet.notes ??= []).push(`About the images: ${warnings.slice(0, 8).join("; ")}${warnings.length > 8 ? `; and ${warnings.length - 8} more` : ""}.`);
+    };
+    // The results file shows the file names as they were typed.
+    const outAdd = out.addSheet.bind(out);
+    out.addSheet = async (name, headers, rows) => {
+      if (images.refs.size && Array.isArray(rows)) for (const row of rows) unparkRow(row, images);
+      return outAdd(name, headers, rows);
+    };
     // A copy of the items a sheet is about to change, read with the type's own export (all its data groups).
     const snapshot = async (entity: (typeof ENTITIES)[number], ids: string[]) => {
       const wanted = new Set(ids);
@@ -421,7 +508,8 @@ export async function executeJob(
     };
     const stats = await runImport({
       snapshot,
-      ctx: { gql: deps.gql, options: config.options ?? {}, log: deps.log, cache, checkImageUrl },
+      ctx: { gql: importGql, options: config.options ?? {}, log: deps.log, cache, checkImageUrl },
+      prepareSheet,
       sheets: chosen,
       entities: ENTITIES,
       out,
@@ -444,11 +532,23 @@ export async function executeJob(
           }
         : undefined,
     });
+    if (uploaded.length) {
+      const used = new Set([...images.refs.values()].map((r) => r.file?.name).filter(Boolean));
+      const unused = uploaded.filter((f) => !used.has(f.name)).map((f) => f.name);
+      if (unused.length) {
+        const note = `${unused.length.toLocaleString("en")} image file${unused.length === 1 ? "" : "s"} in the upload ${unused.length === 1 ? "is" : "are"} not named by any row and ${unused.length === 1 ? "is" : "are"} not imported: ${unused.slice(0, 6).join(", ")}${unused.length > 6 ? "…" : ""}. Write a file's name in the Image Src column of the row it belongs to.`;
+        deps.log(note);
+        imageNotes.push(note);
+        const first = stats.find((s) => s.entity);
+        if (first) first.warnings = [...(first.warnings ?? []), note];
+      }
+    }
     const resultFile = await out.close();
     // What puts this import back, as a file that can itself be imported.
     const undoByType = new Map<string, Array<Record<string, string>>>();
     for (const st of stats) {
       const sheetName = ENTITIES.find((e) => e.key === st.entity)?.sheet;
+      if (images.refs.size) for (const row of st.undo ?? []) unparkRow(row, images);
       if (st.undo?.length && sheetName) undoByType.set(sheetName, [...(undoByType.get(sheetName) ?? []), ...st.undo]);
     }
     if (undoByType.size) {

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
 import fs from "node:fs";
+import { MAX_IMAGE_BYTES } from "../core/images";
 import net from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -400,6 +401,9 @@ export async function checkImageUrl(url: string): Promise<string | null> {
     if (type && !type.startsWith("image/") && !type.startsWith("application/octet-stream") && !type.startsWith("binary/")) {
       return `is not an image: the link returns ${type.split(";")[0]}`;
     }
+    // Shopify refuses images over 20 MB: say so now, not after the import.
+    const length = Number(res.headers.get("content-range")?.split("/")[1] ?? res.headers.get("content-length"));
+    if (Number.isFinite(length) && length > MAX_IMAGE_BYTES) return `is ${Math.round(length / 1e6)} MB; Shopify accepts images up to ${Math.round(MAX_IMAGE_BYTES / 1e6)} MB`;
     return null;
   } catch (e: any) {
     if (/private address/i.test(e?.message ?? "")) return "points to a private address, which Shopify can't reach";

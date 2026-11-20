@@ -49,6 +49,18 @@ export function ImportForm({
   const fetcher = useFetcher<{ error?: string }>();
   const [source, setSource] = useState<"file" | "url" | null>(editing ? "url" : null);
   const [file, setFile] = useState<File | null>(null);
+  /** Image files selected together with the sheet: uploaded with it, named in its Image Src column. */
+  const [pictures, setPictures] = useState<File[]>([]);
+  const [pickNote, setPickNote] = useState("");
+  const pickFiles = (list: FileList | File[] | null | undefined) => {
+    const all = Array.from(list ?? []);
+    const isPicture = (f: File) => /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(f.name);
+    const sheets = all.filter((f) => !isPicture(f));
+    const pics = all.filter(isPicture);
+    setPictures(sheets.length || pics.length ? pics : []);
+    setPickNote(sheets.length > 1 ? `Only "${sheets[0].name}" is imported: choose one sheet at a time (or put several in a ZIP).` : !sheets.length && pics.length ? "Add the sheet too: the spreadsheet that names these images in its Image Src column." : "");
+    pickFile(sheets[0] ?? null);
+  };
   const [url, setUrl] = useState(editing?.sourceUrl ?? "");
   const pickFile = (f: File | null) => {
     setFile(f);
@@ -113,7 +125,10 @@ export function ImportForm({
     setPreviewing(preview);
     form.set("source", source);
     form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch, hold: repeating && hold && !dryRun }));
-    if (source === "file" && file) form.set("file", file);
+    if (source === "file" && file) {
+      form.set("file", file);
+      for (const p of pictures) form.append("image", p);
+    }
     if (source === "url") {
       form.set("url", link);
       // Read from the link itself when it was only just tidied (state updates land after this call).
@@ -166,10 +181,11 @@ export function ImportForm({
           ) : (
             <>
           <s-drop-zone
-            label={`Add an Excel, CSV or ZIP file, up to ${maxUploadMb} MB`}
-            accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip"
-            onInput={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
-            onChange={(ev: any) => pickFile(ev.currentTarget.files?.[0] ?? null)}
+            label={`Add an Excel, CSV or ZIP file, with its image files if it has any, up to ${maxUploadMb} MB in all`}
+            accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
+            multiple
+            onInput={(ev: any) => pickFiles(ev.currentTarget.files)}
+            onChange={(ev: any) => pickFiles(ev.currentTarget.files)}
           />
           <div className="bp-url-row">
             <s-url-field
@@ -192,7 +208,16 @@ export function ImportForm({
             The file can have any name: what it holds (products, orders, customers…) is recognised from its columns.
             Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.
           </s-text>
-          {source === "file" && file ? <s-text>Selected file: {file.name}</s-text> : null}
+          {source === "file" && file ? (
+            <s-text>
+              Selected file: {file.name}
+              {pictures.length ? `, with ${pictures.length.toLocaleString("en")} image file${pictures.length === 1 ? "" : "s"} (${(pictures.reduce((n, p) => n + p.size, 0) / 1e6).toFixed(1)} MB)` : ""}
+            </s-text>
+          ) : null}
+          {pickNote ? <s-text tone="caution">{pickNote}</s-text> : null}
+          <s-text color="subdued">
+            Images from your computer: select them together with the sheet (or put everything in one ZIP) and write each image's file name, for example barrel-1.jpg, in the Image Src column. They are checked in the preview and uploaded as part of the import.
+          </s-text>
           {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}{username ? ` (signing in as ${username})` : ""}</s-text> : null}
             </>
           )}

@@ -252,6 +252,8 @@ export interface RunImportArgs {
   snapshot?: (entity: Entity, ids: string[]) => Promise<Row[]>;
   /** Failures a preview already announced, by sheet name: they don't count towards stopping. */
   expectedFailed?: Record<string, number>;
+  /** Called with each sheet once its columns are settled and corrections applied, before its rows are grouped. */
+  prepareSheet?: (sheet: Sheet, entity: Entity) => void | Promise<void>;
   /**
    * Cells corrected in the preview, by sheet name, then row position, then
    * column: they replace the file's values before anything is checked.
@@ -339,7 +341,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
   }
   plan.sort((a, b) => entities.indexOf(a.entity!) - entities.indexOf(b.entity!));
 
-  const grouped = plan.map((p) => {
+  const grouped: Array<{ sheet: Sheet; entity: Entity | null; renamed: string[]; items: ImportItem[] }> = [];
+  for (const p of plan) {
     // Column names from Shopify's own exports are read as the columns they mean.
     const renamed = p.entity?.import ? applyColumnAliases(p.entity, p.sheet) : [];
     const edits = args.edits?.[p.sheet.label ?? p.sheet.name];
@@ -349,8 +352,10 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         if (row) for (const [col, v] of Object.entries(cells)) if (p.sheet.headers.includes(col)) row[col] = v;
       }
     }
-    return { ...p, renamed, items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [] };
-  });
+    // The sheet as it will be imported: a last look for whoever started the import (uploaded image files are matched here).
+    if (p.entity?.import) await args.prepareSheet?.(p.sheet, p.entity);
+    grouped.push({ ...p, renamed, items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [] });
+  }
   const total = grouped.reduce((n, g) => n + g.items.length, 0);
   if (ctx.options.dryRun) log("Dry run: the file is checked against the store, but nothing is changed.");
   let done = 0;

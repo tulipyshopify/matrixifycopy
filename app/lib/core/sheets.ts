@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import ExcelJS from "exceljs";
@@ -317,7 +318,58 @@ export async function zipEntryNames(input: string | Buffer): Promise<string[] | 
   return (await zipDirectory(input, null))?.names ?? null;
 }
 
-async function zipDirectory(input: string | Buffer, want: string | null): Promise<{ names: string[]; data: Buffer | null } | null> {
+/**
+ * The first bytes of one entry of a zip (enough to tell what kind of file it
+ * is), without unpacking the whole entry. Null when it isn't there.
+ */
+export async function readZipEntryHead(file: string, name: string, bytes = 262_144): Promise<Buffer | null> {
+  const fh = await fs.promises.open(file, "r");
+  try {
+    const size = (await fh.stat()).size;
+    const read = async (pos: number, len: number) => {
+      const buf = Buffer.alloc(Math.max(0, Math.min(len, size - pos)));
+      await fh.read(buf, 0, buf.length, pos);
+      return buf;
+    };
+    const tailLen = Math.min(size, 65_557);
+    const tail = await read(size - tailLen, tailLen);
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail.readUInt32LE(i) === 0x06054b50) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) return null;
+    const dir = await read(tail.readUInt32LE(eocd + 16), tail.readUInt32LE(eocd + 12));
+    for (let p = 0; p + 46 <= dir.length && dir.readUInt32LE(p) === 0x02014b50; ) {
+      const nameLen = dir.readUInt16LE(p + 28);
+      if (dir.subarray(p + 46, p + 46 + nameLen).toString("utf8") === name) {
+        const method = dir.readUInt16LE(p + 10);
+        const compSize = dir.readUInt32LE(p + 20);
+        const local = dir.readUInt32LE(p + 42);
+        const head = await read(local, 30);
+        if (head.length < 30 || head.readUInt32LE(0) !== 0x04034b50) return null;
+        const data = await read(local + 30 + head.readUInt16LE(26) + head.readUInt16LE(28), Math.min(compSize, bytes));
+        if (method === 0) return data;
+        if (method === 8) return zlib.inflateRawSync(data, { finishFlush: zlib.constants.Z_SYNC_FLUSH }).subarray(0, bytes);
+        return null;
+      }
+      p += 46 + nameLen + dir.readUInt16LE(p + 30) + dir.readUInt16LE(p + 32);
+    }
+    return null;
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Every entry of a zip with its unpacked size, from its directory (nothing is unpacked); null when unreadable. */
+export async function zipEntries(input: string | Buffer): Promise<Array<{ name: string; size: number }> | null> {
+  const d = await zipDirectory(input, null);
+  return d ? d.names.map((name, i) => ({ name, size: d.sizes[i] })) : null;
+}
+
+async function zipDirectory(input: string | Buffer, want: string | null): Promise<{ names: string[]; sizes: number[]; data: Buffer | null } | null> {
   const fh = typeof input === "string" ? await fs.promises.open(input, "r") : null;
   try {
     const size = fh ? (await fh.stat()).size : (input as Buffer).length;
@@ -339,6 +391,7 @@ async function zipDirectory(input: string | Buffer, want: string | null): Promis
     }
     if (eocd < 0) return null;
     const names: string[] = [];
+    const sizes: number[] = [];
     const count = tail.readUInt16LE(eocd + 10);
     const dirSize = tail.readUInt32LE(eocd + 12);
     const dirOffset = tail.readUInt32LE(eocd + 16);
@@ -354,18 +407,19 @@ async function zipDirectory(input: string | Buffer, want: string | null): Promis
       const local = dir.readUInt32LE(p + 42);
       const entryName = dir.subarray(p + 46, p + 46 + nameLen).toString("utf8");
       names.push(entryName);
+      sizes.push(dir.readUInt32LE(p + 24));
       if (entryName === want) {
         const head = await read(local, 30);
         if (head.readUInt32LE(0) !== 0x04034b50) return null;
         const start = local + 30 + head.readUInt16LE(26) + head.readUInt16LE(28);
         const data = await read(start, compSize);
-        if (method === 0) return { names, data: Buffer.from(data) };
-        if (method === 8) return { names, data: Buffer.from(inflateSync(data)) };
+        if (method === 0) return { names, sizes, data: Buffer.from(data) };
+        if (method === 8) return { names, sizes, data: Buffer.from(inflateSync(data)) };
         return null;
       }
       p += 46 + nameLen + extraLen + commentLen;
     }
-    return want ? null : { names, data: null };
+    return want ? null : { names, sizes, data: null };
   } finally {
     await fh?.close();
   }
