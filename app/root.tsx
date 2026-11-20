@@ -110,6 +110,29 @@ export default function App() {
 .bp-home-import{display:flex;flex-direction:column;gap:16px;min-width:0}
 .bp-hist{grid-template-columns:minmax(160px,1fr) minmax(220px,2fr) auto}
 @media (max-width:640px){.bp-hist{grid-template-columns:1fr}.bp-hist .bp-row-what,.bp-hist .bp-row-do{grid-column:1}}
+.bp-share{max-width:900px;margin:0 auto;padding:24px 16px 64px;font:14px/1.5 Inter,system-ui,sans-serif;color:#202223}
+.bp-share h1{font-size:22px;margin:4px 0 8px}
+.bp-share h2{font-size:16px;margin:24px 0 8px}
+.bp-share header small{color:#616161}
+.bp-share section{background:#fff;border:1px solid #e3e3e3;border-radius:12px;margin-top:16px;overflow:hidden}
+.bp-share section>h2,.bp-share section>p{padding:0 16px}
+.bp-share-totals{display:flex;flex-wrap:wrap;gap:8px 20px;list-style:none;padding:0;margin:12px 0 0}
+.bp-share-totals b{font-size:18px}
+.bp-share-bad{color:#8e1f0b}
+.bp-share-warn{color:#8a6116}
+.bp-share-ok{color:#0c5132;font-weight:600}
+.bp-share-tag{display:inline-block;padding:2px 8px;border-radius:8px;font-size:12px;background:#e0f0ff;color:#00527c;white-space:nowrap}
+.bp-share-create{background:#fff1b8;color:#5e4200}
+.bp-share-delete,.bp-share-replace,.bp-share-failed{background:#fedad9;color:#8e1f0b}
+.bp-share-answer{padding:0 16px 16px}
+.bp-share-answer h2{padding:0!important}
+.bp-share-answer form{display:flex;flex-direction:column;gap:12px;max-width:520px}
+.bp-share-answer label{display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:13px}
+.bp-share-answer input,.bp-share-answer textarea{font:inherit;padding:8px 10px;border:1px solid #8a8a8a;border-radius:8px}
+.bp-share-buttons{display:flex;gap:8px;flex-wrap:wrap}
+.bp-share-buttons button{font:inherit;font-weight:600;padding:9px 14px;border-radius:8px;border:1px solid #8a8a8a;background:#fff;cursor:pointer}
+.bp-share-buttons .bp-share-yes{background:#202223;color:#fff;border-color:#202223}
+.bp-share-buttons button:disabled{opacity:.6}
 .bp-match{border-top:1px solid #ebebeb;font-size:13px}
 .bp-match-head,.bp-match-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(140px,1.4fr) minmax(170px,1.1fr);gap:12px;align-items:center;padding:8px 16px;border-bottom:1px solid #ebebeb}
 .bp-match-head{font-size:12px;font-weight:600;color:#616161;background:#fafafa}

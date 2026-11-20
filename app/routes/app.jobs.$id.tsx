@@ -7,6 +7,7 @@ import { authenticate } from "../shopify.server";
 import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPartialPreview, readPreview, rerunJob, startUndo } from "../lib/jobs/jobs.server";
 import { editableRows, editedRowCount, fixPreviewRows } from "../lib/jobs/fix.server";
 import { createGql } from "../lib/core/gql";
+import { SHARE_DAYS, createShare, shareStatus, stopShare } from "../lib/jobs/share.server";
 import { undoFileOf } from "../lib/jobs/runner.server";
 import { jobDir, RETENTION_DAYS } from "../lib/jobs/storage.server";
 import { FirstLook, ImportReview, ImportSteps } from "../components/DryRunPreview";
@@ -45,6 +46,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     preview,
     firstLook,
     editedRows,
+    share: dryRun && job.status === "finished" ? await shareStatus(session.shop, job.id) : null,
+    shareDays: SHARE_DAYS,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
     needs: dryRun && job.status === "finished" ? applyNeeds(job.stats) : null,
     job: {
@@ -77,6 +80,19 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session, redirect, admin } = await authenticate.admin(request);
   const form = await request.formData();
   if (form.get("intent") === "cancel") await cancelJob(session.shop, params.id!);
+  // A link to this preview for someone to check (read only).
+  if (form.get("intent") === "share") {
+    try {
+      const made = await createShare(session.shop, params.id!);
+      return { shareUrl: `${(process.env.SHOPIFY_APP_URL ?? "").replace(/\/+$/, "")}${made.path}` };
+    } catch (e: any) {
+      return { error: String(e?.message ?? e) };
+    }
+  }
+  if (form.get("intent") === "unshare") {
+    await stopShare(session.shop, params.id!);
+    return { ok: true };
+  }
   // Correcting a row on the preview's page: its cells, then a fresh check of just that row.
   if (form.get("intent") === "row") {
     try {
@@ -133,7 +149,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, firstLook, editedRows, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, firstLook, editedRows, share, shareDays, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
   const stopped = job.stats.some((s: any) => s?.stopped);
   const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
   const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
@@ -144,6 +160,8 @@ export default function JobDetail() {
     // unreadable config: just skip the details
   }
   const fetcher = useFetcher<{ error?: string }>();
+  const sharer = useFetcher<{ shareUrl?: string; error?: string }>();
+  const [copied, setCopied] = useState(false);
   const applying = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "apply";
   const active = isActive(job.status);
 
@@ -289,6 +307,51 @@ export default function JobDetail() {
           undoDays={undoDays}
           onImport={(confirm) => fetcher.submit({ intent: "apply", confirm: JSON.stringify(confirm) }, { method: "post" })}
         />
+      ) : null}
+
+      {share && needs && needs.changes > 0 ? (
+        <s-section heading="Ask someone to check this preview">
+          <s-stack direction="block" gap="small">
+            {share.replies.map((r: any) => (
+              <s-banner key={r.at} tone={r.verdict === "approve" ? "success" : "warning"} heading={`${r.name} ${r.verdict === "approve" ? "approved this preview" : "asked for changes"}`}>
+                <s-text>
+                  {formatDate(r.at)}
+                  {r.note ? `: “${r.note}”` : ""}
+                </s-text>
+              </s-banner>
+            ))}
+            <s-text color="subdued">
+              A link that shows this preview, read only, to a colleague or a client without access to your store. They can answer "approved" or "please change"; their answer appears here. It can't apply anything. Anyone who has the link can see the preview's contents for {shareDays} days, so send it only to people who may see this data.
+            </s-text>
+            {sharer.data?.shareUrl ? (
+              <s-stack direction="inline" gap="small" alignItems="end">
+                <s-text-field label="Link to send (shown once)" readOnly value={sharer.data.shareUrl} />
+                <s-button
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(sharer.data!.shareUrl!);
+                    setCopied(true);
+                  }}
+                >
+                  {copied ? "Copied" : "Copy"}
+                </s-button>
+              </s-stack>
+            ) : null}
+            {sharer.data?.error ? <s-text tone="critical">{sharer.data.error}</s-text> : null}
+            <s-stack direction="inline" gap="small" alignItems="center">
+              <s-button loading={sharer.state !== "idle" && sharer.formData?.get("intent") === "share"} onClick={() => (setCopied(false), sharer.submit({ intent: "share" }, { method: "post" }))}>
+                {share.active ? "Make a new link (the old one stops working)" : "Create a link"}
+              </s-button>
+              {share.active ? (
+                <>
+                  <s-button variant="tertiary" tone="critical" onClick={() => sharer.submit({ intent: "unshare" }, { method: "post" })}>
+                    Stop sharing
+                  </s-button>
+                  <s-text color="subdued">A link is active until {formatDate(share.expiresAt)}.</s-text>
+                </>
+              ) : null}
+            </s-stack>
+          </s-stack>
+        </s-section>
       ) : null}
 
       <s-section heading="Status">

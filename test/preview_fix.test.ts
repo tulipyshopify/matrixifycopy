@@ -173,6 +173,49 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("correcting a row on the pr
     expect(applyNeeds((await prisma.job.findUniqueOrThrow({ where: { id } })).stats)).toMatchObject({ failing: 1, updates: 1, unchanged: 0 });
   });
 
+  it("a preview can be shared by link for someone to check and answer; the link can be stopped", async () => {
+    const { createShare, replyToShare, shareStatus, sharedPreview, stopShare } = await import("../app/lib/jobs/share.server");
+    const store = makeStore();
+    const id = await start("Handle,Title\npotato-barrel,Potato Barrel XL\ndracaena,Dracaena Planter\nnope,X\n");
+    await run(id, store);
+    expect(await shareStatus(shop, id)).toEqual({ active: false, expiresAt: null, replies: [] });
+    const made = await createShare(shop, id);
+    expect(made.path).toMatch(new RegExp(`^/share/${id}\\.[\\w-]{30,}$`));
+    const ref = made.path.replace("/share/", "");
+    const seen = (await sharedPreview(ref))!;
+    expect(seen).toMatchObject({ name: "Products.csv", totals: { changes: 1, unchanged: 1, failing: 1 } });
+    // Problems first, then changes; unchanged items are only counted.
+    expect(seen.sheets[0].items.map((i) => [i.row, i.action])).toEqual([[4, "failed"], [2, "update"]]);
+    expect(seen.sheets[0].unchanged).toBe(1);
+    expect(seen.sheets[0].items[1].changes).toEqual(["Title: Potato Barrel → Potato Barrel XL"]);
+    // A wrong or altered link shows nothing.
+    expect(await sharedPreview(`${id}.wrong`)).toBeNull();
+    expect(await sharedPreview(`${ref}x`)).toBeNull();
+    expect(await sharedPreview("nope.nope")).toBeNull();
+    expect(await sharedPreview("")).toBeNull();
+
+    await expect(replyToShare(ref, { verdict: "approve", name: " ", note: "" })).rejects.toThrow(/Enter your name/);
+    await replyToShare(ref, { verdict: "changes", name: "Sam Client", note: "Row 2 should stay as it was" });
+    const status = await shareStatus(shop, id);
+    expect(status.active).toBe(true);
+    expect(status.replies).toMatchObject([{ verdict: "changes", name: "Sam Client", note: "Row 2 should stay as it was" }]);
+    expect((await prisma.job.findUniqueOrThrow({ where: { id } })).log).toMatch(/Shared preview: Sam Client asked for changes: "Row 2 should stay as it was"/);
+
+    // A new link replaces the old one; stopping ends it, and the answers stay.
+    const again = await createShare(shop, id);
+    expect(await sharedPreview(ref)).toBeNull();
+    expect(await sharedPreview(again.path.replace("/share/", ""))).not.toBeNull();
+    await stopShare(shop, id);
+    expect(await sharedPreview(again.path.replace("/share/", ""))).toBeNull();
+    await expect(replyToShare(again.path.replace("/share/", ""), { verdict: "approve", name: "Sam", note: "" })).rejects.toThrow(/no longer works/);
+    expect(await shareStatus(shop, id)).toMatchObject({ active: false, replies: [{ name: "Sam Client" }] });
+    // A link is for previews only, and expires.
+    const real = await prisma.job.create({ data: { shop, type: "import", config: JSON.stringify({ options: {} }), format: "csv", name: "real", status: "finished" } });
+    await expect(createShare(shop, real.id)).rejects.toThrow(/Only a finished preview/);
+    const old = await createShare(shop, id, Date.now() - 8 * 86_400_000);
+    expect(await sharedPreview(old.path.replace("/share/", ""))).toBeNull();
+  });
+
   it("only a finished preview can be corrected", async () => {
     const job = await prisma.job.create({ data: { shop, type: "import", config: JSON.stringify({ options: { defaultCommand: "UPDATE" } }), format: "csv", name: "real", status: "finished", inputFile: "/x", inputName: "Products.csv" } });
     await expect(editableRows(shop, job.id, "Products", 2)).rejects.toThrow(/finished preview only/);
