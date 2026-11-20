@@ -240,6 +240,13 @@ export default function Home() {
                     <s-button href={`/app/tasks?task=${t.key}`}>Start</s-button>
                   </div>
                 ))}
+                <div className="bp-quick-row">
+                  <div className="bp-quick-text">
+                    <s-text type="strong">Edit in a table</s-text>
+                    <s-text tone="neutral">Type and paste like a spreadsheet, inside the app</s-text>
+                  </div>
+                  <s-button href="/app/edit">Open</s-button>
+                </div>
               </div>
             </s-stack>
           </s-section>

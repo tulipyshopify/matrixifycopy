@@ -22,6 +22,7 @@ export default function App() {
         <s-link href="/app/import">Import</s-link>
         <s-link href="/app/export">Export</s-link>
         <s-link href="/app/tasks">Quick changes</s-link>
+        <s-link href="/app/edit">Edit in a table</s-link>
         <s-link href="/app/jobs">Jobs</s-link>
         <s-link href="/app/history">Change history</s-link>
         <s-link href="/app/schedules">Automations</s-link>
