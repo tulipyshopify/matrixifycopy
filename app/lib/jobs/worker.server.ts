@@ -1,7 +1,9 @@
+import fs from "node:fs";
 import path from "node:path";
 import prisma from "../../db.server";
 import { apiVersion, unauthenticated } from "../../shopify.server";
 import { listLayouts } from "./layouts.server";
+import { FEED_FILE, compareFeeds, feedSummary } from "./feed.server";
 import { clearOldHistory, recordChanges } from "./history.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
@@ -142,6 +144,21 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       job.inputFile = file;
       job.inputName = name;
       await prisma.job.update({ where: { id: job.id }, data: { inputFile: file, inputName: name } });
+      // A feed: say what differs from the file fetched last time.
+      try {
+        const last = job.scheduleId
+          ? await prisma.job.findFirst({ where: { scheduleId: job.scheduleId, id: { not: job.id }, inputFile: { not: null }, type: "import" }, orderBy: { createdAt: "desc" }, select: { inputFile: true, inputName: true, createdAt: true } })
+          : null;
+        if (last?.inputFile && fs.existsSync(last.inputFile)) {
+          const diff = await compareFeeds({ file: last.inputFile, name: last.inputName ?? name, at: last.createdAt }, { file, name });
+          if (diff) {
+            await fs.promises.writeFile(path.join(jobDir(job.shop, job.id), FEED_FILE), JSON.stringify(diff));
+            for (const line of feedSummary(diff)) log(line[0].toUpperCase() + line.slice(1));
+          }
+        }
+      } catch (e: any) {
+        log(`The file could not be compared with the last one (${e?.message ?? e}); the import goes ahead.`);
+      }
     }
 
     const { resultFile, stats } = await executeJob(job, {

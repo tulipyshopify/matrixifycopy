@@ -8,6 +8,7 @@ import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entity
 import { editableRows, editedRowCount, fixPreviewRows } from "../lib/jobs/fix.server";
 import { createGql } from "../lib/core/gql";
 import { SHARE_DAYS, createShare, shareStatus, stopShare } from "../lib/jobs/share.server";
+import { feedSummary, readFeedDiff } from "../lib/jobs/feed.server";
 import { undoFileOf } from "../lib/jobs/runner.server";
 import { jobDir, RETENTION_DAYS } from "../lib/jobs/storage.server";
 import { FirstLook, ImportReview, ImportSteps } from "../components/DryRunPreview";
@@ -46,6 +47,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     preview,
     firstLook,
     editedRows,
+    feed: await (async () => {
+      // A scheduled import from a link: what differs from the file fetched last time.
+      const d = job.type === "import" && job.scheduleId ? await readFeedDiff(jobDir(session.shop, job.id)) : null;
+      return d ? { lines: feedSummary(d), examples: d.sheets.flatMap((s) => s.examples).slice(0, 6), previousAt: d.previousAt, alarming: d.sheets.some((s) => s.removed > 20 && s.removed > (s.rows + s.removed) * 0.3) } : null;
+    })(),
     share: dryRun && job.status === "finished" ? await shareStatus(session.shop, job.id) : null,
     shareDays: SHARE_DAYS,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
@@ -149,7 +155,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, firstLook, editedRows, share, shareDays, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, firstLook, editedRows, share, shareDays, feed, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
   const stopped = job.stats.some((s: any) => s?.stopped);
   const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
   const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
@@ -290,6 +296,17 @@ export default function JobDetail() {
                 Match columns
               </s-button>
             </div>
+          </s-stack>
+        </s-banner>
+      ) : null}
+
+      {feed ? (
+        <s-banner tone={feed.alarming ? "warning" : "info"} heading={`Compared with the file fetched ${formatDate(feed.previousAt)}`}>
+          <s-stack direction="block" gap="small-300">
+            {feed.lines.map((l: string, k: number) => (
+              <s-text key={k}>{l[0].toUpperCase() + l.slice(1)}</s-text>
+            ))}
+            {feed.examples.length ? <s-text color="subdued">For example: {feed.examples.join("; ")}</s-text> : null}
           </s-stack>
         </s-banner>
       ) : null}
