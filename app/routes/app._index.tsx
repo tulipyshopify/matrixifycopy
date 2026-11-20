@@ -218,6 +218,31 @@ export default function Home() {
               </div>
             </s-stack>
           </s-section>
+          <s-section>
+            <s-stack direction="block" gap="small">
+              <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+                <s-heading>Quick changes</s-heading>
+                <s-button href="/app/tasks">All quick changes</s-button>
+              </s-stack>
+              <s-text tone="neutral">No spreadsheet needed. Each one shows a preview first and can be undone.</s-text>
+              <div className="bp-quick">
+                {[
+                  { key: "prices", title: "Change prices", note: "Up or down by a percentage or an amount; can start a sale" },
+                  { key: "replace", title: "Find and replace text", note: "In titles, descriptions or SEO text" },
+                  { key: "tags", title: "Add or remove tags", note: "On the products you choose" },
+                  { key: "end_sale", title: "End a sale", note: "Clear compare-at prices" },
+                ].map((t, i) => (
+                  <div key={t.key} className={`bp-quick-row${i >= 3 ? " bp-quick-more" : ""}`}>
+                    <div className="bp-quick-text">
+                      <s-text type="strong">{t.title}</s-text>
+                      <s-text tone="neutral">{t.note}</s-text>
+                    </div>
+                    <s-button href={`/app/tasks?task=${t.key}`}>Start</s-button>
+                  </div>
+                ))}
+              </div>
+            </s-stack>
+          </s-section>
         </div>
 
         <s-section padding="none" accessibilityLabel="Recent jobs">

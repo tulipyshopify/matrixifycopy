@@ -1,5 +1,7 @@
-import { Fragment, useMemo, useState } from "react";
-import type { PreviewItem } from "../lib/core/importer";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { useFetcher } from "react-router";
+import type { PartialPreview, PreviewItem } from "../lib/core/importer";
+import type { EditableRows } from "../lib/jobs/fix.server";
 import type { ApplyConfirm, ApplyNeeds, PreviewKind, PreviewSheet } from "../lib/jobs/jobs.server";
 
 type Tone = "success" | "info" | "critical" | "warning" | "neutral";
@@ -73,6 +75,226 @@ export function ImportSteps({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
+type RowAnswer = { rows?: EditableRows; rowError?: string; fixed?: { sheet: string; row: number; actions: string[]; message: string } };
+
+/**
+ * Corrects one item's cells right in the preview: its rows are loaded from
+ * the file, changed cells are saved beside the preview (never in the file),
+ * and just this item is checked against the store again.
+ */
+function RowEditor({ sheet, item, onClose }: { sheet: string; item: PreviewItem; onClose: () => void }) {
+  const loadRows = useFetcher<RowAnswer>();
+  const save = useFetcher<RowAnswer>();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [allColumns, setAllColumns] = useState(false);
+  useEffect(() => {
+    loadRows.submit({ intent: "row", sheet, row: String(item.row) }, { method: "post" });
+    // Loaded once, when the editor opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const data = loadRows.data?.rows;
+  const saving = save.state !== "idle";
+  const done = save.state === "idle" && save.data?.fixed;
+  useEffect(() => {
+    if (!done) return;
+    const still = save.data!.fixed!.actions.includes("failed");
+    (globalThis as any).shopify?.toast?.show(still ? "Checked again: this row still has a problem" : "Checked again: the row is fine now");
+    if (!still) onClose();
+    else {
+      // Show the row as it is now saved, with what is still wrong.
+      setValues({});
+      loadRows.submit({ intent: "row", sheet, row: String(item.row) }, { method: "post" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
+
+  if (loadRows.data?.rowError) {
+    return (
+      <div className="bp-edit">
+        <s-text tone="critical">{loadRows.data.rowError}</s-text>
+      </div>
+    );
+  }
+  if (!data) {
+    return (
+      <div className="bp-edit">
+        <s-stack direction="inline" gap="small" alignItems="center">
+          <s-spinner size="base" accessibilityLabel="Loading" />
+          <s-text color="subdued">Reading this row from the file…</s-text>
+        </s-stack>
+      </div>
+    );
+  }
+  const text = [item.message, ...(item.errors ?? []), ...(item.warnings ?? []), ...item.changes].join("\n").toLowerCase();
+  // The columns worth showing first: keys, cells with a value, and any column a problem or change names.
+  const relevant = data.headers.filter((h) => data.keyColumns.includes(h) || h === "Command" || data.rows.some((r) => r.cells[h] !== "") || text.includes(h.toLowerCase()));
+  const columns = allColumns ? data.headers : relevant;
+  const id = (index: number, h: string) => `${index}\u0000${h}`;
+  const changed = Object.entries(values).filter(([k, v]) => {
+    const [index, h] = k.split("\u0000");
+    return data.rows.find((r) => String(r.index) === index)?.cells[h] !== v;
+  });
+  const wasEdited = data.rows.some((r) => r.edited.length);
+  const edit = (index: number, h: string, value: string) => setValues((c) => ({ ...c, [id(index, h)]: value }));
+  // A cell is marked when a problem names its column (and, where the problem says which row, its row).
+  const problems = [item.message, ...(item.errors ?? [])].filter(Boolean).map((e) => e.toLowerCase());
+  const named = (h: string, rowNumber: number) =>
+    problems.some((e) => {
+      const at = /^row (\d+)/.exec(e);
+      if (at && Number(at[1]) !== rowNumber) return false;
+      const c = h.toLowerCase();
+      return e.includes(`"${c}"`) || e.includes(`${c}:`) || e.includes(` ${c} `);
+    });
+  return (
+    <div className="bp-edit">
+      {data.rows.map((r) => (
+        <div key={r.index} className="bp-edit-row">
+          {data.rows.length > 1 ? <div className="bp-edit-n">Row {r.number}</div> : null}
+          <div className="bp-edit-grid">
+            {columns.map((h) => {
+              const v = values[id(r.index, h)] ?? r.cells[h];
+              const long = v.length > 60 || v.includes("\n");
+              const cls = `bp-edit-cell${long ? " bp-edit-wide" : ""}${kindOf(item) === "failed" && named(h, r.number) ? " bp-edit-flag" : ""}${r.edited.includes(h) || (values[id(r.index, h)] !== undefined && values[id(r.index, h)] !== r.cells[h]) ? " bp-edit-changed" : ""}`;
+              return (
+                <label key={h} className={cls}>
+                  <span>{h}</span>
+                  {long ? (
+                    <textarea rows={3} value={v} disabled={saving} onChange={(ev) => edit(r.index, h, ev.currentTarget.value)} />
+                  ) : (
+                    <input type="text" value={v} disabled={saving} onChange={(ev) => edit(r.index, h, ev.currentTarget.value)} />
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {save.data?.rowError && !saving ? <s-text tone="critical">✕ {save.data.rowError}</s-text> : null}
+      {save.data?.fixed?.message && !saving && !changed.length ? <s-text tone="critical">✕ Still a problem: {save.data.fixed.message}</s-text> : null}
+      <div className="bp-edit-bar">
+        <s-stack direction="inline" gap="small" alignItems="center">
+          <s-button
+            variant="primary"
+            loading={saving && save.formData?.get("intent") === "fix"}
+            disabled={saving || !changed.length}
+            onClick={() =>
+              save.submit(
+                {
+                  intent: "fix",
+                  sheet,
+                  row: String(item.row),
+                  fixes: JSON.stringify(
+                    changed.map(([k, value]) => {
+                      const [index, column] = k.split("\u0000");
+                      return { index: Number(index), column, value };
+                    }),
+                  ),
+                },
+                { method: "post" },
+              )
+            }
+          >
+            Save and check again
+          </s-button>
+          <s-button disabled={saving} onClick={onClose}>
+            Cancel
+          </s-button>
+          {wasEdited ? (
+            <s-button variant="tertiary" loading={saving && save.formData?.get("intent") === "unfix"} disabled={saving} onClick={() => save.submit({ intent: "unfix", sheet, row: String(item.row) }, { method: "post" })}>
+              Back to the file's values
+            </s-button>
+          ) : null}
+        </s-stack>
+        {data.headers.length > relevant.length ? (
+          <s-link onClick={() => setAllColumns(!allColumns)}>{allColumns ? "Show fewer columns" : `Show all ${n(data.headers.length)} columns`}</s-link>
+        ) : null}
+      </div>
+      <s-text color="subdued">Only this item is checked again, against the store as it is now. Your file is not changed: the correction is kept with this preview and used when you apply it. An empty box means an empty cell.</s-text>
+    </div>
+  );
+}
+
+/**
+ * While a preview is still running: the first rows it has checked, so a wrong
+ * file or a wrong column shows within seconds instead of at the end.
+ */
+export function FirstLook({ sheets, timing }: { sheets: PartialPreview[]; timing?: string }) {
+  const checked = sheets.reduce((x, s) => x + s.checked, 0);
+  const total = sheets.reduce((x, s) => x + s.total, 0);
+  const failed = sheets.reduce((x, s) => x + s.failed, 0);
+  const shown = sheets.reduce((x, s) => x + s.items.length, 0);
+  if (!shown) return null;
+  const left = /about (.+) left/.exec(timing ?? "")?.[1];
+  // Most of what was checked so far can't be applied: probably the wrong file or column, worth stopping for.
+  const bad = checked >= 10 && failed / checked > 0.5;
+  return (
+    <s-section heading={`First look: ${n(checked)} of ${n(total)} checked so far`} padding="none">
+      <s-box padding="base">
+        <s-stack direction="block" gap="small">
+          <s-text color="subdued">
+            These are the first rows of the file. The rest is still being checked{left ? `, about ${left} to go` : ""}; choosing what to include comes when it has finished.
+          </s-text>
+          {bad ? (
+            <s-banner tone="warning" heading={`${n(failed)} of the first ${n(checked)} can't be applied`}>
+              <s-text>If the reasons below point to the wrong file or a wrong column, stop the preview now, fix the file and start again. Otherwise let it finish: single rows can be corrected on this page afterwards.</s-text>
+            </s-banner>
+          ) : null}
+          {sheets.flatMap((s) => (s.warnings ?? []).slice(0, 4).map((w, k) => (
+            <s-text key={`${s.sheet}${k}`} tone="caution">
+              ! {sheets.length > 1 ? `${s.sheet}: ` : ""}{w}
+            </s-text>
+          )))}
+        </s-stack>
+      </s-box>
+      {sheets.map((s) =>
+        s.items.length ? (
+          <Fragment key={s.sheet}>
+            {sheets.length > 1 ? (
+              <s-box padding="small base">
+                <s-heading>{s.sheet}</s-heading>
+              </s-box>
+            ) : null}
+            <div className="bp-rows" role="list">
+              {s.items.slice(0, 50).map((i) => {
+                const kind = kindOf(i);
+                const a = actionOf(i.action);
+                const errors = i.errors?.length ? i.errors : kind === "failed" ? [i.message || "Can't be applied"] : [];
+                return (
+                  <div key={`${i.row}${i.key ?? ""}`} role="listitem" className={`bp-row bp-row-${kind}`}>
+                    <div className="bp-row-n">{i.row}</div>
+                    <div className="bp-row-item">
+                      <s-text type="strong">{i.title || i.item.replace(/^[A-Za-z ]+: /, "")}</s-text>
+                      <s-text color="subdued">{i.title ? i.item : i.item.split(":")[0]}</s-text>
+                    </div>
+                    <div className="bp-row-what">
+                      {errors.map((e, k) => (
+                        <s-text key={`e${k}`} tone="critical">
+                          ✕ {e}
+                        </s-text>
+                      ))}
+                      {kind === "failed" ? null : i.changes.slice(0, 6).map((c, k) => <ChangeLine key={k} text={c} />)}
+                      {kind !== "failed" && i.changes.length > 6 ? <s-text color="subdued">…and {n(i.changes.length - 6)} more changes</s-text> : null}
+                      {(i.warnings ?? []).map((w, k) => (
+                        <s-text key={`w${k}`} tone="caution">
+                          ! {w}
+                        </s-text>
+                      ))}
+                      {!errors.length && !i.changes.length ? <s-text color="subdued">{kind === "none" ? "Same as the store" : i.message || "—"}</s-text> : null}
+                    </div>
+                    <div className="bp-row-do">
+                      <s-badge tone={a.tone}>{a.label}</s-badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Fragment>
+        ) : null,
+      )}
+    </s-section>
+  );
+}
+
 const SEGMENTS: Array<{ kind: PreviewKind; label: (x: number) => string }> = [
   { kind: "none", label: (x) => `${n(x)} no change` },
   { kind: "update", label: (x) => `${n(x)} will update` },
@@ -95,7 +317,12 @@ export function ImportReview({
   busy,
   undoDays = 90,
   onImport,
+  editedRows = 0,
 }: {
+  /** The preview's job (rows are corrected against it). */
+  jobId?: string;
+  /** Rows of the file carrying corrections made on this page. */
+  editedRows?: number;
   sheets: PreviewSheet[];
   needs: ApplyNeeds;
   canApply: boolean;
@@ -128,6 +355,8 @@ export function ImportReview({
   const [filter, setFilter] = useState<FilterKey>(listed.failed ? "all" : "all");
   const [shown, setShown] = useState(PAGE);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  /** The row being corrected, by its sheet and row number. */
+  const [editing, setEditing] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState("");
   const [rest, setRest] = useState(false);
@@ -288,6 +517,14 @@ export function ImportReview({
                           ))}
                           {kind === "create" ? <s-text tone="caution">+ Nothing in the store has this handle or ID. Check for a typo before including it.</s-text> : null}
                           {!errors.length && !i.changes.length ? <s-text color="subdued">{kind === "none" ? "Same as the store" : i.message || "—"}</s-text> : null}
+                          {i.edited ? <s-text color="subdued">✎ Corrected on this page. The file itself is unchanged; the import uses the corrected values.</s-text> : null}
+                          {canApply && i.action !== "skipped" ? (
+                            <div>
+                              <s-button variant={kind === "failed" ? "secondary" : "tertiary"} icon="edit" onClick={() => setEditing(editing === `${s.sheet}\u0000${i.row}` ? null : `${s.sheet}\u0000${i.row}`)}>
+                                {kind === "failed" ? "Fix this row" : "Edit row"}
+                              </s-button>
+                            </div>
+                          ) : null}
                         </div>
                         <div className="bp-row-do">
                           {(RISKY.has(kind) || kind === "update") && canApply ? (
@@ -303,6 +540,7 @@ export function ImportReview({
                             <s-badge tone={a.tone}>{a.label}</s-badge>
                           )}
                         </div>
+                        {editing === `${s.sheet}\u0000${i.row}` ? <RowEditor sheet={s.sheet} item={i} onClose={() => setEditing(null)} /> : null}
                       </div>
                     );
                   })}
@@ -321,6 +559,11 @@ export function ImportReview({
             <s-stack direction="block" gap="small-300">
               {all.length >= 1000 ? (
                 <s-text color="subdued">The list holds 1,000 items of each sheet, the ones with problems or warnings first. The bar counts every item, and the results file has every row.</s-text>
+              ) : null}
+              {editedRows ? (
+                <s-text color="subdued">
+                  {plural(editedRows, "row")} of the file {editedRows === 1 ? "was" : "were"} corrected on this page. Your file is not changed; the import uses the corrected values, and the log below lists each correction.
+                </s-text>
               ) : null}
               {compared ? (
                 <s-text color="subdued">

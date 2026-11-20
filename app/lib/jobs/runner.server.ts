@@ -3,8 +3,8 @@ import path from "node:path";
 import v8 from "node:v8";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
-import { runImport, type ImportSummary } from "../core/importer";
-import { createWorkbookOut, readWorkbook, unpackedSizes, type OutputFormat } from "../core/sheets";
+import { runImport, type ImportSummary, type SheetEdits } from "../core/importer";
+import { createWorkbookOut, readWorkbook, unpackedSizes, type OutputFormat, type Sheet } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
@@ -13,6 +13,43 @@ import { generateAiFixFile, type AiFixSpec } from "../check/aifix";
 
 /** Dry-run preview of an import, in the job's folder. */
 export const PREVIEW_FILE = "preview.json";
+/** While a preview runs: its first items and running totals, for a first look. */
+export const PARTIAL_FILE = "preview-partial.json";
+/** Cells corrected on a preview's page (see SheetEdits). */
+export const EDITS_FILE = "edits.json";
+
+export async function readEdits(dir: string): Promise<SheetEdits> {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(dir, EDITS_FILE), "utf8")) as SheetEdits;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Reads an import's file into the sheets the import works on: the whole file,
+ * or for a restore only the chosen items and fields.
+ */
+export async function readImportSheets(job: { inputFile: string; inputName: string | null }, config: ImportConfig, log: (m: string) => void = () => {}): Promise<Sheet[]> {
+  log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
+  await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
+  const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
+  log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
+  let chosen = sheets;
+  if (config.onlyItems?.length) {
+    const { kept, missing } = keepOnlyItems(sheets, config.onlyItems);
+    // Sheets without any of the chosen items are left out entirely.
+    chosen = sheets.filter((s) => s.rows.length);
+    log(`Only the ${config.onlyItems.length} chosen item(s) are imported: ${kept} row(s) kept.`);
+    if (missing.length) log(`Not in the file: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? `, and ${missing.length - 20} more` : ""}.`);
+    if (!kept) throw new Error(`None of the chosen items is in this file (${config.onlyItems.slice(0, 5).join(", ")}${config.onlyItems.length > 5 ? "…" : ""}). Use the ID, handle, order name or email exactly as in the backup.`);
+  }
+  if (config.onlyFields) {
+    const dropped = keepOnlyFields(chosen, config.onlyFields);
+    if (dropped.length) log(`Left out of this restore, so not touched: ${dropped.slice(0, 12).join(", ")}${dropped.length > 12 ? `, and ${dropped.length - 12} more columns` : ""}.`);
+  }
+  return chosen;
+}
 
 export interface ExportConfig {
   entities: Array<{ entity: string; options: ExportOptions }>;
@@ -300,27 +337,15 @@ export async function executeJob(
       await deps.onInput?.(made.file, made.name);
     }
     if (!job.inputFile) throw new Error("No input file");
-    deps.log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
-    await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
-    const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
-    deps.log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
-    let chosen = sheets;
-    if (config.onlyItems?.length) {
-      const { kept, missing } = keepOnlyItems(sheets, config.onlyItems);
-      // Sheets without any of the chosen items are left out entirely.
-      chosen = sheets.filter((s) => s.rows.length);
-      deps.log(`Only the ${config.onlyItems.length} chosen item(s) are imported: ${kept} row(s) kept.`);
-      if (missing.length) deps.log(`Not in the file: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? `, and ${missing.length - 20} more` : ""}.`);
-      if (!kept) throw new Error(`None of the chosen items is in this file (${config.onlyItems.slice(0, 5).join(", ")}${config.onlyItems.length > 5 ? "…" : ""}). Use the ID, handle, order name or email exactly as in the backup.`);
-    }
+    const chosen = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config, deps.log);
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));
     const resultFormat: OutputFormat = /\.(csv|tsv|txt|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);
     const cache = new Map<string, unknown>();
-    if (config.onlyFields) {
-      const dropped = keepOnlyFields(chosen, config.onlyFields);
-      if (dropped.length) deps.log(`Left out of this restore, so not touched: ${dropped.slice(0, 12).join(", ")}${dropped.length > 12 ? `, and ${dropped.length - 12} more columns` : ""}.`);
-    }
+    // Cells corrected on the preview's page: this preview's own, or those of the preview being applied.
+    const edits = await readEdits(jobDir(job.shop, config.previewOf ?? job.id));
+    const edited = Object.values(edits).reduce((n: number, rows) => n + Object.keys(rows).length, 0);
+    if (edited) deps.log(`${edited} row${edited === 1 ? " was" : "s were"} corrected in the preview; the corrected values are used.`);
     // "Import for real" after a preview: what the preview saw in the store, to compare with now.
     let expected: Record<string, Record<string, Record<string, string>>> | undefined;
     if (config.previewOf && !config.options?.dryRun) {
@@ -382,6 +407,17 @@ export async function executeJob(
       exclude: config.options?.dryRun ? undefined : config.exclude,
       stopAtFailedPercent: config.options?.dryRun ? undefined : config.stopAtFailedPercent,
       expectedFailed: config.expectedFailed,
+      edits,
+      // A first look for the job's page while a large file is still being checked.
+      onPartial: config.options?.dryRun
+        ? (sheets) => {
+            const tmp = path.join(dir, `${PARTIAL_FILE}.tmp`);
+            void fs.promises
+              .writeFile(tmp, JSON.stringify(sheets))
+              .then(() => fs.promises.rename(tmp, path.join(dir, PARTIAL_FILE)))
+              .catch(() => {});
+          }
+        : undefined,
     });
     const resultFile = await out.close();
     // What puts this import back, as a file that can itself be imported.
@@ -408,6 +444,7 @@ export async function executeJob(
         path.join(dir, PREVIEW_FILE),
         JSON.stringify(stats.map((s) => ({ sheet: s.sheet, entity: s.entity, items: s.preview ?? [], seen: s.seen, risk: s.risk, warnings: s.warnings }))),
       );
+      await fs.promises.rm(path.join(dir, PARTIAL_FILE), { force: true }).catch(() => {});
     }
     return { resultFile, stats: stats.map(({ preview: _p, seen: _s, undo, ...s }) => ({ ...s, ...(undo?.length ? { undoRows: undo.length } : {}) })) };
   }

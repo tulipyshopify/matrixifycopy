@@ -70,6 +70,8 @@ export interface PreviewItem {
   clears?: string[];
   deletes?: number;
   creates?: number;
+  /** One or more of its cells were corrected on the preview's page. */
+  edited?: boolean;
 }
 
 /** What needs a person's sign-off before a preview is imported for real, counted over every item. */
@@ -245,7 +247,35 @@ export interface RunImportArgs {
   snapshot?: (entity: Entity, ids: string[]) => Promise<Row[]>;
   /** Failures a preview already announced, by sheet name: they don't count towards stopping. */
   expectedFailed?: Record<string, number>;
+  /**
+   * Cells corrected in the preview, by sheet name, then row position, then
+   * column: they replace the file's values before anything is checked.
+   */
+  edits?: SheetEdits;
+  /**
+   * Dry runs: called with what has been checked so far (the first items of
+   * each sheet, and running totals), so a first look can be shown while a
+   * large file is still being checked.
+   */
+  onPartial?: (sheets: PartialPreview[]) => void;
 }
+
+export type SheetEdits = Record<string, Record<string, Record<string, string>>>;
+
+/** A preview in the making: the first items checked, and how far it is. */
+export interface PartialPreview {
+  sheet: string;
+  entity: string | null;
+  /** Items in the sheet, and how many are checked so far. */
+  total: number;
+  checked: number;
+  failed: number;
+  items: PreviewItem[];
+  warnings?: string[];
+}
+
+/** Items of each sheet shown in the first look. */
+export const FIRST_LOOK_ITEMS = 50;
 
 /** Columns that hold codes, where a number in scientific notation is always damage. */
 const CODE_COLUMN = /(Barcode|SKU|(^|\s)ID|Phone|Zip|HS Code)$/i;
@@ -306,16 +336,26 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
   const grouped = plan.map((p) => {
     // Column names from Shopify's own exports are read as the columns they mean.
     const renamed = p.entity?.import ? applyColumnAliases(p.entity, p.sheet) : [];
+    const edits = args.edits?.[p.sheet.label ?? p.sheet.name];
+    if (edits) {
+      for (const [index, cells] of Object.entries(edits)) {
+        const row = p.sheet.rows[Number(index)];
+        if (row) for (const [col, v] of Object.entries(cells)) if (p.sheet.headers.includes(col)) row[col] = v;
+      }
+    }
     return { ...p, renamed, items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [] };
   });
   const total = grouped.reduce((n, g) => n + g.items.length, 0);
   if (ctx.options.dryRun) log("Dry run: the file is checked against the store, but nothing is changed.");
   let done = 0;
   const summaries: ImportSummary[] = [];
+  const partials: PartialPreview[] = [];
 
   for (const { sheet: read, entity, items, renamed } of grouped) {
     // Sheets of several workbooks in one ZIP carry their file's name, so each can be told apart.
     const sheet = read.label ? { ...read, name: read.label } : read;
+    // +2: spreadsheet rows start at 1 and the header is row 1 (unless the sheet says which rows these are).
+    const rowNo = (i: number) => sheet.rowNumbers?.[i] ?? i + 2;
     const summary: ImportSummary = {
       sheet: sheet.name,
       entity: entity?.key ?? null,
@@ -410,6 +450,50 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         }
       }
     }
+    const toPreview = ({ item, result }: { item: ImportItem; result: ItemResult }): PreviewItem => {
+      const keyCol = item.key.startsWith("#row") ? null : (entity.import!.keyColumns.find((c) => cell(item.rows[0], c)) ?? null);
+      const p = previews.get(item);
+      const rich = result.preview;
+      return {
+        row: rowNo(item.rowIndexes[0]),
+        key: item.key,
+        ...(result.title ? { title: result.title } : {}),
+        item: keyCol ? `${keyCol}: ${cell(item.rows[0], keyCol)}` : `Row ${rowNo(item.rowIndexes[0])}`,
+        command: result.command,
+        action: result.status === "Failed" ? "failed" : result.status === "Skipped" ? "skipped" : (rich?.action ?? p?.action ?? "none"),
+        message: (result.message ?? "").replace(/^Dry run: /, ""),
+        changes: rich?.changes ?? p?.changes ?? [],
+        ...(rich ? { compared: true } : {}),
+        ...(result.errors?.length ? { errors: result.errors } : {}),
+        ...(rich?.warnings?.length ? { warnings: rich.warnings } : {}),
+        ...(rich?.clears?.length ? { clears: rich.clears } : {}),
+        ...(rich?.deletes ? { deletes: rich.deletes } : {}),
+        ...(rich?.creates ? { creates: rich.creates } : {}),
+      };
+    };
+    // A first look while the sheet is still being checked: after the first few items, then every few seconds.
+    let lastPartial = 0;
+    const partial: PartialPreview = { sheet: sheet.name, entity: entity.key, total: items.length, checked: 0, failed: 0, items: [] };
+    if (ctx.options.dryRun && args.onPartial) partials.push(partial);
+    const emitPartial = (force = false) => {
+      if (!ctx.options.dryRun || !args.onPartial) return;
+      const n = results.length;
+      const now = Date.now();
+      if (!force && !(n === 10 || n === FIRST_LOOK_ITEMS || (n > FIRST_LOOK_ITEMS && now - lastPartial > 5000))) return;
+      lastPartial = now;
+      partial.checked = n;
+      partial.failed = summary.failed;
+      partial.warnings = sheetWarnings.length ? [...sheetWarnings] : undefined;
+      // The first items of the file among those checked so far (they finish slightly out of order).
+      if (partial.items.length < FIRST_LOOK_ITEMS || force) {
+        partial.items = [...results].sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0]).slice(0, FIRST_LOOK_ITEMS).map(toPreview);
+      }
+      try {
+        args.onPartial(partials);
+      } catch {
+        // a first look that can't be shown never stops the preview
+      }
+    };
     // Batch mode (opt-in, never for dry runs): the sheet goes to Shopify as one
     // bulk operation when it qualifies; otherwise it runs the normal way below.
     let batched = false;
@@ -458,7 +542,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
             result = { status: "Failed", command, message: errors.join("; "), errors };
           } else if (ctx.options.dryRun) {
             try {
-              const r = await entity.import!.apply({ ...ctx, gql: dryRunGql(ctx.gql) }, item.rows, command, { rowNumbers: item.rowIndexes.map((i) => i + 2) });
+              const r = await entity.import!.apply({ ...ctx, gql: dryRunGql(ctx.gql) }, item.rows, command, { rowNumbers: item.rowIndexes.map(rowNo) });
               if (r.seen) seen[item.key] = r.seen;
               if (r.preview) {
                 // The data type compared the file with the store itself.
@@ -485,7 +569,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
               });
             }
           } else {
-            result = await entity.import!.apply(ctx, item.rows, command, { expectedSeen: expected?.[item.key], rowNumbers: item.rowIndexes.map((i) => i + 2) });
+            result = await entity.import!.apply(ctx, item.rows, command, { expectedSeen: expected?.[item.key], rowNumbers: item.rowIndexes.map(rowNo) });
           }
         } catch (e: any) {
           result = {
@@ -531,6 +615,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       }
       done++;
       args.progress?.(done, total);
+      emitPartial();
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
@@ -539,7 +624,6 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     if (undo.length) summary.undo = undo;
     if (undoNotes.length) summary.undoNotes = undoNotes;
     if (ctx.options.dryRun) {
-      const firstValue = (row: Row, col: string) => cell(row, col);
       summary.risk = risk;
       summary.seen = seen;
       // Problems and risky items first in line for the limited preview, then file order.
@@ -549,33 +633,14 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         .sort((a, b) => (results.length > MAX_PREVIEW_ITEMS ? weight(a.result) - weight(b.result) : 0))
         .slice(0, MAX_PREVIEW_ITEMS)
         .sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0])
-        .map(({ item, result }) => {
-          const keyCol = item.key.startsWith("#row") ? null : (entity.import!.keyColumns.find((c) => firstValue(item.rows[0], c)) ?? null);
-          const p = previews.get(item);
-          const rich = result.preview;
-          return {
-            row: item.rowIndexes[0] + 2,
-            key: item.key,
-            ...(result.title ? { title: result.title } : {}),
-            item: keyCol ? `${keyCol}: ${firstValue(item.rows[0], keyCol)}` : `Row ${item.rowIndexes[0] + 2}`,
-            command: result.command,
-            action: result.status === "Failed" ? "failed" : result.status === "Skipped" ? "skipped" : (rich?.action ?? p?.action ?? "none"),
-            message: (result.message ?? "").replace(/^Dry run: /, ""),
-            changes: rich?.changes ?? p?.changes ?? [],
-            ...(rich ? { compared: true } : {}),
-            ...(result.errors?.length ? { errors: result.errors } : {}),
-            ...(rich?.warnings?.length ? { warnings: rich.warnings } : {}),
-            ...(rich?.clears?.length ? { clears: rich.clears } : {}),
-            ...(rich?.deletes ? { deletes: rich.deletes } : {}),
-            ...(rich?.creates ? { creates: rich.creates } : {}),
-          } satisfies PreviewItem;
-        });
+        .map(toPreview);
+      emitPartial(true);
     }
     // Say why rows failed right in the log (the results file has every row).
     const failures = results.filter((r) => r.result.status === "Failed").sort((a, b) => a.item.rowIndexes[0] - b.item.rowIndexes[0]);
     for (const { item, result } of failures.slice(0, MAX_LOGGED_FAILURES)) {
       // +2: spreadsheet rows start at 1 and the header is row 1.
-      log(`  Row ${item.rowIndexes[0] + 2} (${item.key.replace(/^#row\d+$/, "no key").replace("=", ": ")}): ${result.message ?? "Failed"}`);
+      log(`  Row ${rowNo(item.rowIndexes[0])} (${item.key.replace(/^#row\d+$/, "no key").replace("=", ": ")}): ${result.message ?? "Failed"}`);
     }
     if (failures.length > MAX_LOGGED_FAILURES) {
       log(`  …and ${failures.length - MAX_LOGGED_FAILURES} more failed rows. The results file lists every one.`);

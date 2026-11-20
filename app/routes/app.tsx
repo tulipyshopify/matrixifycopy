@@ -21,6 +21,7 @@ export default function App() {
         <s-link href="/app">Home</s-link>
         <s-link href="/app/import">Import</s-link>
         <s-link href="/app/export">Export</s-link>
+        <s-link href="/app/tasks">Quick changes</s-link>
         <s-link href="/app/jobs">Jobs</s-link>
         <s-link href="/app/schedules">Automations</s-link>
         <s-link href="/app/backups">Backups</s-link>

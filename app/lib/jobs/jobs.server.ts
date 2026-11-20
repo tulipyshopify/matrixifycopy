@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { ImportRisk, PreviewItem } from "../core/importer";
+import type { ImportRisk, PartialPreview, PreviewItem } from "../core/importer";
 import prisma from "../../db.server";
 import type { Command, DateRange, Entity, ExportOptions, FilterCondition, ImportOptions } from "../core/types";
 import { COMMANDS, DATE_PRESETS, DATE_UNITS, MAX_LIST_VALUES, listValues, opsFor } from "../core/types";
@@ -9,7 +9,7 @@ import { ENTITIES, getEntity } from "../entities";
 import { METAFIELD_FILTER } from "../core/util";
 import { INVENTORY_COLUMN } from "../core/exporter";
 import type { ExportConfig, ImportConfig } from "./runner.server";
-import { PREVIEW_FILE, undoFileOf } from "./runner.server";
+import { EDITS_FILE, PARTIAL_FILE, PREVIEW_FILE, undoFileOf } from "./runner.server";
 import { jobDir, openSecret, saveUpload, sealSecret, signedDownloadUrl } from "./storage.server";
 import { SOURCE_PROTOCOLS, UPLOAD_PROTOCOLS, redactUrl } from "./sources.server";
 import { isValidTimeZone, nextRun } from "./schedule-time";
@@ -469,7 +469,7 @@ export async function rerunJob(shop: string, id: string) {
       throw new Error("This job's settings can't be read");
     }
   }
-  return prisma.job.create({
+  const again = await prisma.job.create({
     data: {
       shop,
       type: job.type,
@@ -482,6 +482,11 @@ export async function rerunJob(shop: string, id: string) {
       kind: job.kind,
     },
   });
+  // Rows corrected on the earlier preview's page stay corrected when the same file is previewed again.
+  if (job.type === "import" && job.inputFile) {
+    await fs.promises.copyFile(path.join(jobDir(shop, job.id), EDITS_FILE), path.join(jobDir(shop, again.id), EDITS_FILE)).catch(() => {});
+  }
+  return again;
 }
 
 /** What a person must agree to before a preview is imported for real. */
@@ -711,6 +716,15 @@ export async function readPreview(shop: string, id: string): Promise<PreviewShee
       ...s,
       ...(s.items ? { items: s.items.map((i) => (i.changes.length > MAX_LINES ? { ...i, changes: [...i.changes.slice(0, MAX_LINES), `…and ${(i.changes.length - MAX_LINES).toLocaleString("en-GB")} more changes on this item`] } : i)) } : {}),
     }));
+  } catch {
+    return [];
+  }
+}
+
+/** A running preview's first look: the first items checked and running totals (empty until there is one). */
+export async function readPartialPreview(shop: string, id: string): Promise<PartialPreview[]> {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(jobDir(shop, id), PARTIAL_FILE), "utf8")) as PartialPreview[];
   } catch {
     return [];
   }

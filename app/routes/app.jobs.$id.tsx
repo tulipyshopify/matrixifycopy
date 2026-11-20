@@ -4,10 +4,12 @@ import { useFetcher, useLoaderData } from "react-router";
 import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPreview, rerunJob, startUndo } from "../lib/jobs/jobs.server";
+import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPartialPreview, readPreview, rerunJob, startUndo } from "../lib/jobs/jobs.server";
+import { editableRows, editedRowCount, fixPreviewRows } from "../lib/jobs/fix.server";
+import { createGql } from "../lib/core/gql";
 import { undoFileOf } from "../lib/jobs/runner.server";
 import { jobDir, RETENTION_DAYS } from "../lib/jobs/storage.server";
-import { ImportReview, ImportSteps } from "../components/DryRunPreview";
+import { FirstLook, ImportReview, ImportSteps } from "../components/DryRunPreview";
 import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
 import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
@@ -24,6 +26,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // unreadable config: not a dry run
   }
   const preview = dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [];
+  // While a preview is still running: the first rows it has checked, to look at straight away.
+  const firstLook = dryRun && (job.status === "running" || job.status === "queued") ? await readPartialPreview(session.shop, job.id) : [];
+  const editedRows = dryRun && job.status === "finished" ? await editedRowCount(session.shop, job.id) : 0;
   let undoOf: string | null = null;
   try {
     undoOf = JSON.parse(job.config).undoOf ?? null;
@@ -38,6 +43,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     undoOf,
     dryRun,
     preview,
+    firstLook,
+    editedRows,
     canApply: dryRun && job.status === "finished" && !!job.inputFile,
     needs: dryRun && job.status === "finished" ? applyNeeds(job.stats) : null,
     job: {
@@ -67,9 +74,33 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const { session, redirect, admin } = await authenticate.admin(request);
   const form = await request.formData();
   if (form.get("intent") === "cancel") await cancelJob(session.shop, params.id!);
+  // Correcting a row on the preview's page: its cells, then a fresh check of just that row.
+  if (form.get("intent") === "row") {
+    try {
+      return { rows: await editableRows(session.shop, params.id!, String(form.get("sheet")), Number(form.get("row"))) };
+    } catch (e: any) {
+      return { rowError: String(e?.message ?? e) };
+    }
+  }
+  if (form.get("intent") === "fix" || form.get("intent") === "unfix") {
+    try {
+      const gql = createGql(async (query, variables) => (await admin.graphql(query, { variables })).json());
+      let fixes = [];
+      try {
+        fixes = JSON.parse(String(form.get("fixes") ?? "[]"));
+      } catch {
+        fixes = [];
+      }
+      const items = await fixPreviewRows(session.shop, params.id!, String(form.get("sheet")), Number(form.get("row")), fixes, gql, { reset: form.get("intent") === "unfix" });
+      return { fixed: { sheet: String(form.get("sheet")), row: Number(form.get("row")), actions: items.map((i) => i.action), message: items.find((i) => i.action === "failed")?.message ?? "" } };
+    } catch (e: any) {
+      if (e instanceof Response) throw e;
+      return { rowError: String(e?.message ?? e) };
+    }
+  }
   if (form.get("intent") === "apply") {
     try {
       let confirm = {};
@@ -102,7 +133,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, firstLook, editedRows, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
   const stopped = job.stats.some((s: any) => s?.stopped);
   const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
   const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
@@ -232,8 +263,12 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
+      {active && dryRun && firstLook.length ? <FirstLook sheets={firstLook} timing={timing} /> : null}
+
       {needs && dryRun ? (
         <ImportReview
+          jobId={job.id}
+          editedRows={editedRows}
           sheets={preview}
           needs={needs}
           canApply={canApply}
