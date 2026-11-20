@@ -313,7 +313,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
   // Process sheets in registry order so dependencies (products before collections) exist.
   const plan: Array<{ sheet: Sheet; entity: Entity | null }> = [];
   for (const sheet of sheets) {
-    let entity = detectEntity(sheet, entities);
+    // A saved column layout says what the sheet is; otherwise it is recognised from its name and columns.
+    let entity = (sheet.entity ? (entities.find((e) => e.key === sheet.entity) ?? null) : null) ?? detectEntity(sheet, entities);
     // Columns that fit several data types (e.g. only ID and Tags): the IDs tell which one.
     if (!entity) {
       entity = await detectEntityByIds(ctx.gql, sheet, entities);
@@ -391,7 +392,8 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
 
     // Columns the data type doesn't have are ignored: say so, with the likely intended name.
     if (renamed.length) sheetWarnings.push(`Column names from Shopify's own export were recognised: ${renamed.join("; ")}.`);
-    const unknown = unknownColumns(entity, sheet.headers);
+    const setAside = new Set(sheet.ignoredColumns ?? []);
+    const unknown = unknownColumns(entity, sheet.headers).filter((u) => !setAside.has(u.header));
     // Near-misses and known Shopify columns are worth a line each; a long tail of unrelated columns is one line.
     const specific = unknown.filter((u) => u.suggestion || columnHint(entity, u.header));
     const plain = unknown.filter((u) => !specific.includes(u));

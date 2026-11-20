@@ -108,6 +108,17 @@ export default function App() {
 .bp-strip .bp-dot{border-radius:50%}
 .bp-home{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;align-items:start}
 .bp-home-import{display:flex;flex-direction:column;gap:16px;min-width:0}
+.bp-match{border-top:1px solid #ebebeb;font-size:13px}
+.bp-match-head,.bp-match-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(140px,1.4fr) minmax(170px,1.1fr);gap:12px;align-items:center;padding:8px 16px;border-bottom:1px solid #ebebeb}
+.bp-match-head{font-size:12px;font-weight:600;color:#616161;background:#fafafa}
+.bp-match-row b{overflow-wrap:anywhere}
+.bp-match-sample{color:#616161;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-match-off b{color:#8a8a8a;font-weight:500}
+.bp-match-row select{width:100%;font:inherit;padding:6px 8px;border:1px solid #8a8a8a;border-radius:8px;background:#fff;color:#202223}
+.bp-match-off select{color:#8a8a8a;border-color:#c9c9c9}
+.bp-match-row select.bp-match-bad{border-color:#c5280c;background:#fff6f5}
+.bp-match-row small{color:#8e1f0b}
+@media (max-width:640px){.bp-match-head{display:none}.bp-match-row{grid-template-columns:1fr 1fr}.bp-match-sample{grid-column:1/-1;order:3}}
 .bp-tasks{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
 .bp-task{display:flex;flex-direction:column;gap:4px;text-align:left;padding:12px 14px;border:1px solid #c9c9c9;border-radius:10px;background:#fff;cursor:pointer;font:inherit;font-size:13px;color:#303030}
 .bp-task span{color:#616161;font-size:12px;line-height:1.35}

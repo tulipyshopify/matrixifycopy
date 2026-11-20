@@ -6,6 +6,7 @@ import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary, type SheetEdits } from "../core/importer";
 import { createWorkbookOut, readWorkbook, unpackedSizes, type OutputFormat, type Sheet } from "../core/sheets";
 import { ENTITIES, getEntity } from "../entities";
+import { applyLayout, matchLayout, type ColumnLayout } from "../core/layouts";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
 import { runCheck } from "../check/run";
@@ -30,11 +31,21 @@ export async function readEdits(dir: string): Promise<SheetEdits> {
  * Reads an import's file into the sheets the import works on: the whole file,
  * or for a restore only the chosen items and fields.
  */
-export async function readImportSheets(job: { inputFile: string; inputName: string | null }, config: ImportConfig, log: (m: string) => void = () => {}): Promise<Sheet[]> {
+export async function readImportSheets(job: { inputFile: string; inputName: string | null }, config: ImportConfig, log: (m: string) => void = () => {}, layouts: ColumnLayout[] = []): Promise<Sheet[]> {
   log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
   await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
   const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
   log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
+  // Files in someone else's layout are read with the column matching saved for them.
+  if (layouts.length) {
+    for (const sheet of sheets) {
+      const layout = matchLayout(sheet.headers, layouts);
+      if (!layout) continue;
+      const note = applyLayout(sheet, layout);
+      (sheet.notes ??= []).push(note);
+      log(`Sheet "${sheet.label ?? sheet.name}": ${note}`);
+    }
+  }
   let chosen = sheets;
   if (config.onlyItems?.length) {
     const { kept, missing } = keepOnlyItems(sheets, config.onlyItems);
@@ -188,6 +199,8 @@ export interface RunnerDeps {
   bulkEvents?: { onRoots: (n: number) => void };
   /** Data check: tags whose products are left out. */
   checkExclusions?: () => Promise<string[]>;
+  /** The store's saved column layouts, for files in someone else's layout. */
+  layouts?: () => Promise<ColumnLayout[]>;
   /** Checks an image link loads and is an image (see ImportContext.checkImageUrl). */
   checkImageUrl?: (url: string) => Promise<string | null>;
 }
@@ -337,7 +350,7 @@ export async function executeJob(
       await deps.onInput?.(made.file, made.name);
     }
     if (!job.inputFile) throw new Error("No input file");
-    const chosen = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config, deps.log);
+    const chosen = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config, deps.log, (await deps.layouts?.()) ?? []);
     const inputBase = path.basename(job.inputName ?? "Import", path.extname(job.inputName ?? ""));
     const resultFormat: OutputFormat = /\.(csv|tsv|txt|zip)$/i.test(job.inputName ?? "") ? "csv" : format;
     const out = createWorkbookOut(resultFormat, path.join(dir, `${inputBase}_Import_Result_${timestamp()}`), deps.log);

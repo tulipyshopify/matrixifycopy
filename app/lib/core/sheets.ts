@@ -17,6 +17,10 @@ export interface Sheet {
   file?: string;
   /** How to show the sheet when its name alone doesn't say which file it is from ("file › sheet"). */
   label?: string;
+  /** The data type this sheet was matched to by a saved column layout (overrides recognising it). */
+  entity?: string;
+  /** Columns a saved layout sets aside: kept in the sheet, not imported and not reported as unknown. */
+  ignoredColumns?: string[];
   /** Row number in the file of each row, when the rows are a part of a larger sheet (default: position + 2). */
   rowNumbers?: number[];
 }

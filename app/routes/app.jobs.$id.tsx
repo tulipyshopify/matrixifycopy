@@ -263,6 +263,19 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
+      {dryRun && job.status === "finished" && links.input && (job.stats.some((x: any) => x?.entity === null && x?.skipped) || job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => /not .* columns? and (is|are) ignored/.test(w))) || job.stats.some((x: any) => x?.items > 0 && x?.failed === x?.items)) ? (
+        <s-banner tone="warning" heading={job.stats.some((x: any) => x?.entity === null && x?.skipped) ? "Bulkport could not tell what this file holds" : job.stats.some((x: any) => x?.items > 0 && x?.failed === x?.items) ? "No row of this file could be applied" : "Some columns of this file were not recognised"}>
+          <s-stack direction="block" gap="small">
+            <s-text>If the file comes from a supplier or another system, its columns have their own names. Say once which column is which, and files like it are read correctly from then on.</s-text>
+            <div>
+              <s-button variant="primary" href={`/app/jobs/${job.id}/columns`}>
+                Match columns
+              </s-button>
+            </div>
+          </s-stack>
+        </s-banner>
+      ) : null}
+
       {active && dryRun && firstLook.length ? <FirstLook sheets={firstLook} timing={timing} /> : null}
 
       {needs && dryRun ? (
@@ -324,6 +337,7 @@ export default function JobDetail() {
               Download the original file ({job.inputName})
             </s-link>
           ) : null}
+          {links.input && job.type === "import" && !active ? <s-link href={`/app/jobs/${job.id}/columns`}>Match this file's columns</s-link> : null}
         </s-stack>
       </s-section>
 

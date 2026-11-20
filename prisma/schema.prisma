@@ -140,7 +140,31 @@ model ShopSetting {
   alertEmails String @default("")
   /// S3-compatible storage for backup copies: JSON, sealed.
   backupBucket String?
+  /// Saved ways of reading other people's files: which of their columns is which of ours (JSON list).
+  columnLayouts String @default("[]")
   updatedAt   DateTime @updatedAt
+}
+
+/// What an import changed on one item, kept to answer "what changed this product, and when".
+model ChangeLog {
+  id        String   @id @default(cuid())
+  shop      String
+  jobId     String
+  entity    String
+  /// How the file named the item ("Handle=blue-shirt", "ID=123").
+  itemKey   String
+  /// The item's Shopify ID (numbers only), when the import reported it.
+  itemId    String   @default("")
+  title     String   @default("")
+  action    String   @default("update")
+  /// The change lines of the preview ("Title: old → new"), JSON.
+  changes   String   @default("[]")
+  createdAt DateTime @default(now())
+
+  @@index([shop, itemKey])
+  @@index([shop, itemId])
+  @@index([shop, createdAt])
+  @@index([jobId])
 }
 
 /// Plain-English requests ("Ask Bulkport") and the plan each became.

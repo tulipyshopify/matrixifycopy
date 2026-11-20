@@ -11,6 +11,7 @@ import { jobHealth } from "./health";
 import type { ImportConfig } from "./runner.server";
 import { EDITS_FILE, PREVIEW_FILE, readEdits, readImportSheets } from "./runner.server";
 import { jobDir } from "./storage.server";
+import { listLayouts } from "./layouts.server";
 
 /**
  * Correcting a row on the preview's page. The file itself is never changed:
@@ -63,7 +64,7 @@ async function load(shop: string, id: string, sheetName: string, rowNumber: numb
   const sheetPreview = stored.find((s) => s.sheet === sheetName);
   const entity = sheetPreview?.entity ? getEntity(sheetPreview.entity) : null;
   if (!sheetPreview || !entity?.import) throw new Error("That sheet is not part of this preview");
-  const sheets = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config);
+  const sheets = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, config, () => {}, await listLayouts(shop));
   const sheet = sheets.find((s) => (s.label ?? s.name) === sheetName);
   if (!sheet) throw new Error("That sheet is no longer in the file");
   applyColumnAliases(entity, sheet);

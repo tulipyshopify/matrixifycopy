@@ -10,6 +10,7 @@ import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAler
 import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
 import { approveConnection, listConnections, removeConnection } from "../lib/api/oauth.server";
+import { deleteLayout, listLayouts } from "../lib/jobs/layouts.server";
 
 /** SHA-256 of the command-line file as this server hands it out, to check a download against. */
 function cliChecksum(): string {
@@ -39,6 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     expiryChoices: EXPIRY_CHOICES,
     cliSha: cliChecksum(),
     connections: await listConnections(session.shop),
+    layouts: (await listLayouts(session.shop)).map((l) => ({ id: l.id, name: l.name, entity: l.entity, columns: Object.values(l.map).filter(Boolean).length, savedAt: l.savedAt })),
     keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, readOnly: k.readOnly, expiresAt: k.expiresAt, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
   };
 };
@@ -57,6 +59,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (form.get("intent") === "approve") {
       const name = await approveConnection(session.shop, String(form.get("code") ?? ""));
       return { saved: `Approved. ${name} is now connected; go back to its tab, which continues by itself.` };
+    }
+    if (form.get("intent") === "delete-layout") {
+      await deleteLayout(session.shop, String(form.get("id")));
+      return { saved: "Removed." };
     }
     if (form.get("intent") === "disconnect") {
       await removeConnection(session.shop, String(form.get("id")));
@@ -112,7 +118,7 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections } = useLoaderData<typeof loader>();
+  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections, layouts } = useLoaderData<typeof loader>();
   const [code, setCode] = useState("");
   const [undoStop, setUndoStop] = useState(undoSaved);
   const [emailList, setEmailList] = useState(emails);
@@ -256,6 +262,26 @@ export default function Connect() {
               Save
             </s-button>
           </s-stack>
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Saved column matchings">
+        <s-stack direction="block" gap="small-200">
+          <s-paragraph>How files from suppliers and other systems are read: which of their columns is which of ours. A file whose columns fit one of these is read that way automatically. Make one with "Match columns" on a preview.</s-paragraph>
+          {layouts.length ? (
+            layouts.map((l) => (
+              <s-stack key={l.id} direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+                <s-text>
+                  <b>{l.name}</b> · {l.entity.replace(/_/g, " ")} · {l.columns} columns matched · saved {new Date(l.savedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                </s-text>
+                <s-button variant="tertiary" tone="critical" onClick={() => fetcher.submit({ intent: "delete-layout", id: l.id }, { method: "post" })}>
+                  Remove
+                </s-button>
+              </s-stack>
+            ))
+          ) : (
+            <s-text color="subdued">None saved yet.</s-text>
+          )}
         </s-stack>
       </s-section>
 
