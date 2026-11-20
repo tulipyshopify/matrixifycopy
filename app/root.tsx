@@ -108,6 +108,8 @@ export default function App() {
 .bp-strip .bp-dot{border-radius:50%}
 .bp-home{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;align-items:start}
 .bp-home-import{display:flex;flex-direction:column;gap:16px;min-width:0}
+.bp-hist{grid-template-columns:minmax(160px,1fr) minmax(220px,2fr) auto}
+@media (max-width:640px){.bp-hist{grid-template-columns:1fr}.bp-hist .bp-row-what,.bp-hist .bp-row-do{grid-column:1}}
 .bp-match{border-top:1px solid #ebebeb;font-size:13px}
 .bp-match-head,.bp-match-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(140px,1.4fr) minmax(170px,1.1fr);gap:12px;align-items:center;padding:8px 16px;border-bottom:1px solid #ebebeb}
 .bp-match-head{font-size:12px;font-weight:600;color:#616161;background:#fafafa}

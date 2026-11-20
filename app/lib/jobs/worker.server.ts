@@ -2,6 +2,7 @@ import path from "node:path";
 import prisma from "../../db.server";
 import { apiVersion, unauthenticated } from "../../shopify.server";
 import { listLayouts } from "./layouts.server";
+import { clearOldHistory, recordChanges } from "./history.server";
 import { createBulkRunner } from "../core/bulk";
 import { createGql } from "../core/gql";
 import { shopTimezone } from "../core/lookups";
@@ -157,6 +158,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       checkImageUrl,
       checkExclusions: () => checkExclusions(job.shop),
       layouts: () => listLayouts(job.shop),
+      onChanges: (entries) => recordChanges(job.shop, job.id, entries),
       timezone: () => shopTimezone(gql),
       // A change asked for in plain English builds its file: keep it, so
       // "Import for real" applies exactly what was previewed.
@@ -337,6 +339,7 @@ export function startWorker() {
         lastCleanup = Date.now();
         const n = await cleanupOldFiles();
         if (n) console.log(`[worker] removed ${n} old job folders`);
+        await clearOldHistory().catch(() => 0);
         const cleared = await clearOldExports();
         await clearStaleRequests().catch(() => {});
         const pruned = await pruneBackups();

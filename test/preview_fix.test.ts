@@ -59,15 +59,17 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("correcting a row on the pr
   const { applyDryRun, applyNeeds, readPreview } = await import("../app/lib/jobs/jobs.server");
   const { editableRows, editedRowCount, fixPreviewRows } = await import("../app/lib/jobs/fix.server");
   const { jobDir } = await import("../app/lib/jobs/storage.server");
+  const { recordChanges, searchHistory, clearOldHistory } = await import("../app/lib/jobs/history.server");
   const shop = `fix-${Date.now()}.myshopify.com`;
   afterAll(async () => {
     await prisma.job.deleteMany({ where: { shop } });
+    await prisma.changeLog.deleteMany({ where: { shop } });
   });
 
   const run = async (id: string, store: ReturnType<typeof fakeStore>) => {
     const job = await prisma.job.findUniqueOrThrow({ where: { id } });
     const logs: string[] = [];
-    const { stats } = await executeJob(job as any, { gql: store.gql, bulk: (async function* () {}) as any, log: (m) => logs.push(m), progress: () => {}, isCancelled: async () => false });
+    const { stats } = await executeJob(job as any, { gql: store.gql, bulk: (async function* () {}) as any, log: (m) => logs.push(m), progress: () => {}, isCancelled: async () => false, onChanges: (entries) => recordChanges(shop, id, entries) });
     await prisma.job.update({ where: { id }, data: { status: "finished", stats: JSON.stringify(stats) } });
     return { stats, log: logs.join("\n") };
   };
@@ -131,6 +133,19 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("correcting a row on the pr
     const p = store.products.find((x) => x.handle === "potato-barrel")!;
     expect(p.title).toBe("Potato Barrel XL");
     expect(p.variants[0].price).toBe("49.99");
+
+    // The change history: what the import changed on each item, found by handle, ID or title.
+    const all = await searchHistory(shop, "");
+    expect(all.map((e) => e.item).sort()).toEqual(["Handle: hurdle", "Handle: potato-barrel"]);
+    const one = await searchHistory(shop, "Potato-Barrel");
+    expect(one).toHaveLength(1);
+    expect(one[0]).toMatchObject({ jobId: real.id, entity: "products", action: "update", title: "Potato Barrel" });
+    expect(one[0].changes.join("\n")).toMatch(/Title: Potato Barrel → Potato Barrel XL/);
+    expect(await searchHistory(shop, p.id.split("/").pop()!)).toHaveLength(1);
+    expect(await searchHistory(shop, "Willow Hurdle")).toHaveLength(1);
+    expect(await searchHistory(shop, "dracaena")).toEqual([]);
+    expect(await searchHistory("other.myshopify.com", "")).toEqual([]);
+    expect(await clearOldHistory(new Date(Date.now() + 400 * 86_400_000))).toBeGreaterThanOrEqual(2);
   });
 
   it("a correction that doesn't solve it leaves the row failing; the file's values can be put back", async () => {

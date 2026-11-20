@@ -167,6 +167,16 @@ export function keepOnlyItems(sheets: Array<{ name: string; headers: string[]; r
   return { kept, missing: [...wanted].filter((v) => !found.has(v)) };
 }
 
+/** One item an import changed, for the change history. */
+export interface ChangeEntry {
+  entity: string;
+  itemKey: string;
+  itemId: string;
+  title: string;
+  action: string;
+  changes: string[];
+}
+
 export interface JobRecord {
   id: string;
   shop: string;
@@ -199,6 +209,8 @@ export interface RunnerDeps {
   bulkEvents?: { onRoots: (n: number) => void };
   /** Data check: tags whose products are left out. */
   checkExclusions?: () => Promise<string[]>;
+  /** Records what a real import changed, item by item (the change history). */
+  onChanges?: (entries: ChangeEntry[]) => Promise<void>;
   /** The store's saved column layouts, for files in someone else's layout. */
   layouts?: () => Promise<ColumnLayout[]>;
   /** Checks an image link loads and is an image (see ImportContext.checkImageUrl). */
@@ -459,7 +471,35 @@ export async function executeJob(
       );
       await fs.promises.rm(path.join(dir, PARTIAL_FILE), { force: true }).catch(() => {});
     }
-    return { resultFile, stats: stats.map(({ preview: _p, seen: _s, undo, ...s }) => ({ ...s, ...(undo?.length ? { undoRows: undo.length } : {}) })) };
+    // The change history: what each item was changed from and to, as the preview showed it.
+    if (!config.options?.dryRun && deps.onChanges && stats.some((s) => s.applied?.length)) {
+      const shown = new Map<string, { title?: string; action: string; changes: string[] }>();
+      if (config.previewOf) {
+        try {
+          const saved = JSON.parse(await fs.promises.readFile(path.join(jobDir(job.shop, config.previewOf), PREVIEW_FILE), "utf8")) as Array<{ sheet: string; items: Array<{ key?: string; title?: string; action: string; changes: string[] }> }>;
+          for (const sh of saved) for (const i of sh.items) if (i.key) shown.set(`${sh.sheet}\u0000${i.key}`, { title: i.title, action: i.action, changes: i.changes });
+        } catch {
+          // the preview is no longer kept: the history says that the item changed, without the values
+        }
+      }
+      const entries: ChangeEntry[] = [];
+      for (const s of stats) {
+        for (const a of s.applied ?? []) {
+          const p = shown.get(`${s.sheet}\u0000${a.key}`);
+          if (p?.action === "none") continue;
+          entries.push({
+            entity: s.entity ?? "",
+            itemKey: a.key,
+            itemId: a.id ?? "",
+            title: a.title ?? p?.title ?? "",
+            action: config.undoOf ? "undo" : (p?.action ?? (/^(created|replaced)/i.test(a.message ?? "") ? "create" : /^deleted/i.test(a.message ?? "") ? "delete" : "update")),
+            changes: (p?.changes?.length ? p.changes : a.message ? [a.message] : []).slice(0, 30).map((c) => (c.length > 400 ? `${c.slice(0, 397)}…` : c)),
+          });
+        }
+      }
+      await deps.onChanges(entries).catch((e: any) => deps.log(`The change history could not be recorded (${e?.message ?? e}).`));
+    }
+    return { resultFile, stats: stats.map(({ preview: _p, seen: _s, undo, applied: _a, ...s }) => ({ ...s, ...(undo?.length ? { undoRows: undo.length } : {}) })) };
   }
 
   throw new Error(`Unknown job type ${job.type}`);

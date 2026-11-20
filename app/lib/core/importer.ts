@@ -142,6 +142,9 @@ const MAX_SNAPSHOT_ITEMS = 2000;
 /** Most undo rows kept for one sheet (a very large import can still be undone from a backup). */
 const MAX_UNDO_ROWS = 200_000;
 
+/** Most changed items remembered per sheet for the change history. */
+const MAX_APPLIED = 50_000;
+
 /** How many failed rows are written to the job log per sheet. */
 const MAX_LOGGED_FAILURES = 20;
 
@@ -208,6 +211,8 @@ export interface ImportSummary {
   warnings?: string[];
   /** Real imports: rows that put back what the sheet changed, as a sheet of `entity` (see ItemResult.undo). */
   undo?: Row[];
+  /** Real imports: the items that were changed (for the change history; not stored with the job). */
+  applied?: Array<{ key: string; id?: string; title?: string; message?: string }>;
   /** Real imports: what can't be undone that way. */
   undoNotes?: string[];
   /** Real imports: stopped early because too many items were failing. */
@@ -434,6 +439,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     let cancelled = false;
     let stopped = false;
     const undo: Row[] = [];
+    const applied: NonNullable<ImportSummary["applied"]> = [];
     const undoNotes: string[] = [];
     // Before anything is written: a copy of the items as they are, to undo with
     // (data types that record their own undo row by row don't need it).
@@ -589,6 +595,10 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         if (result.undo?.length && undo.length < MAX_UNDO_ROWS) undo.push(...result.undo);
         if (result.undoNote && undoNotes.length < 50) undoNotes.push(result.undoNote);
         result.undo = undefined;
+        // What was really changed, for the change history ("Unchanged" items are not history).
+        if (result.status === "OK" && applied.length < MAX_APPLIED && !/^(unchanged|no change|nothing to change)/i.test(result.message ?? "")) {
+          applied.push({ key: item.key, ...(result.id ? { id: gidToId(result.id) } : {}), ...(result.title ? { title: result.title } : {}), ...(result.message ? { message: result.message.slice(0, 200) } : {}) });
+        }
         // A file that is going wrong is stopped, not pushed through.
         const tried = summary.ok + summary.failed + (result.status === "Failed" ? 1 : result.status === "OK" ? 1 : 0);
         const failedNow = Math.max(0, summary.failed + (result.status === "Failed" ? 1 : 0) - (args.expectedFailed?.[sheet.name] ?? 0));
@@ -624,6 +634,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     if (sheetWarnings.length) summary.warnings = sheetWarnings;
     if (!undo.length && before.length && summary.ok > 0) undo.push(...before);
     if (undo.length) summary.undo = undo;
+    if (applied.length) summary.applied = applied;
     if (undoNotes.length) summary.undoNotes = undoNotes;
     if (ctx.options.dryRun) {
       summary.risk = risk;
