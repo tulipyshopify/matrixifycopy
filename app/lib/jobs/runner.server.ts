@@ -5,7 +5,7 @@ import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../c
 import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary, type SheetEdits } from "../core/importer";
 import { createWorkbookOut, readWorkbook, readZipEntry, readZipEntryHead, unpackedSizes, zipEntries, type OutputFormat, type Sheet } from "../core/sheets";
-import { IMAGE_FILE, MAX_IMAGE_BYTES, MIME, imageInfo, isLocalRef, judgeImage, localName, parkLocalImages, sendLocalImages, unparkRow, type LocalImages } from "../core/images";
+import { IMAGE_FILE, MAX_IMAGE_BYTES, MIME, imageInfo, isLocalRef, judgeImage, localName, parkLocalImages, sendLocalImages, stripLocation, unparkRow, type LocalImages } from "../core/images";
 import { ImportError } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
 import { applyLayout, matchLayout, type ColumnLayout } from "../core/layouts";
@@ -277,8 +277,9 @@ export async function assertFitsInMemory(file: string, name: string, heap = v8.g
   const free = heap.heap_size_limit - heap.used_heap_size;
   if (need > free * 0.9) {
     const mb = (n: number) => `${Math.max(1, Math.round(n / 1e6))} MB`;
+    // Said without the server's own figures: they are nobody's business but ours.
     throw new Error(
-      `This file is too large to import in one go: it is ${mb(size)}${unpacked > size * 2 ? ` (${mb(unpacked)} once unpacked)` : ""} and would need about ${mb(need)} of memory, with ${mb(free)} free on the server right now. Split it into smaller files (for example by product type or by 20,000 rows) and import them one after another.`,
+      `This file is too large to import in one go: it is ${mb(size)}${unpacked > size * 2 ? ` (${mb(unpacked)} once unpacked)` : ""}, more than can be read at once. Split it into smaller files (for example by product type, or about 20,000 rows each) and import them one after another.`,
     );
   }
 }
@@ -407,7 +408,8 @@ export async function executeJob(
     const isZip = /\.zip$/i.test(job.inputName ?? job.inputFile);
     const uploaded = isZip ? ((await zipEntries(job.inputFile).catch(() => null)) ?? []).filter((e) => IMAGE_FILE.test(e.name) && !e.name.startsWith("__MACOSX") && !path.basename(e.name).startsWith(".")) : [];
     const images: LocalImages = { refs: new Map(), unused: [] };
-    const judged = new Map<string, Promise<{ problem: string | null; warning: string | null }>>();
+    const judged = new Map<string, Promise<{ problem: string | null; warning: string | null; located?: boolean }>>();
+    let locationsRemoved = 0;
     const judge = (address: string) => {
       if (!judged.has(address)) {
         judged.set(
@@ -417,7 +419,9 @@ export async function executeJob(
             if (!ref) return { problem: "is not a file of this upload", warning: null };
             if (ref.problem || !ref.file) return { problem: ref.problem ?? "is not a file of this upload", warning: null };
             const head = ref.file.size <= MAX_IMAGE_BYTES ? await readZipEntryHead(job.inputFile!, ref.file.name).catch(() => null) : null;
-            return judgeImage(ref.typed, ref.file.size, head);
+            // Whether the photo says where it was taken (checked on a copy: nothing is changed here).
+            const located = head ? stripLocation(new Uint8Array(head)) : false;
+            return { ...judgeImage(ref.typed, ref.file.size, head), located };
           })(),
         );
       }
@@ -443,6 +447,8 @@ export async function executeJob(
             if (!ref?.file || j.problem) throw new ImportError(`Image ${ref?.typed ?? localName(address)} ${j.problem ?? "is not a file of this upload"}`);
             const data = await readZipEntry(job.inputFile!, ref.file.name);
             if (!data) throw new ImportError(`Image ${ref.typed} could not be read from the upload`);
+            // Where a photo was taken is nobody's business in a shop: it is taken out before the file leaves.
+            if (stripLocation(data)) locationsRemoved++;
             const filename = path.basename(ref.file.name);
             const mimeType = MIME[imageInfo(data.subarray(0, 262_144)).type ?? "jpeg"];
             const staged = (await deps.gql(STAGE_IMAGE, { input: [{ resource: "IMAGE", filename, mimeType, httpMethod: "POST", fileSize: String(data.length) }] })).stagedUploadsCreate;
@@ -463,10 +469,13 @@ export async function executeJob(
       if (!parkLocalImages(sheet, uploaded, images)) return;
       const fresh = [...images.refs.keys()].slice(before);
       const warnings: string[] = [];
+      let located = 0;
       for (const address of fresh) {
-        const w = (await judge(address)).warning;
-        if (w) warnings.push(w);
+        const j = await judge(address);
+        if (j.warning) warnings.push(j.warning);
+        if (j.located) located++;
       }
+      if (located) (sheet.notes ??= []).push(`${located.toLocaleString("en")} photo${located === 1 ? " carries" : "s carry"} the place ${located === 1 ? "it was" : "they were"} taken (GPS data). It is removed before ${located === 1 ? "the photo is" : "they are"} sent to Shopify; nothing else in the ${located === 1 ? "file" : "files"} is changed.`);
       const found = fresh.filter((a) => images.refs.get(a)!.file).length;
       if (found) (sheet.notes ??= []).push(`${found.toLocaleString("en")} image file${found === 1 ? "" : "s"} from the upload ${found === 1 ? "is" : "are"} used by this sheet. ${config.options?.dryRun ? "They are checked now and sent to Shopify when the import is applied." : "Each is sent to Shopify with its row."}`);
       if (warnings.length) (sheet.notes ??= []).push(`About the images: ${warnings.slice(0, 8).join("; ")}${warnings.length > 8 ? `; and ${warnings.length - 8} more` : ""}.`);
@@ -532,6 +541,7 @@ export async function executeJob(
           }
         : undefined,
     });
+    if (locationsRemoved) deps.log(`The place it was taken (GPS data) was removed from ${locationsRemoved.toLocaleString("en")} photo${locationsRemoved === 1 ? "" : "s"} before upload.`);
     if (uploaded.length) {
       const used = new Set([...images.refs.values()].map((r) => r.file?.name).filter(Boolean));
       const unused = uploaded.filter((f) => !used.has(f.name)).map((f) => f.name);

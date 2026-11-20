@@ -213,6 +213,44 @@ export async function createImportJob(shop: string, file: File, options: ImportO
   }
 }
 
+const fileHash = (file: string) =>
+  new Promise<string>((resolve, reject) => {
+    const h = crypto.createHash("sha256");
+    fs.createReadStream(file).on("data", (d) => h.update(d)).on("end", () => resolve(h.digest("hex"))).on("error", reject);
+  });
+
+/**
+ * A job made from the very same file with the same settings in the last few
+ * minutes (a double click, an upload sent twice): the earlier job, if it is
+ * still waiting, running, or a finished preview. Null otherwise.
+ */
+export async function sameUploadBefore(shop: string, job: { id: string; config: string; inputFile: string | null; inputName: string | null }, withinMs = 10 * 60_000) {
+  if (!job.inputFile) return null;
+  const size = (await fs.promises.stat(job.inputFile)).size;
+  const earlier = await prisma.job.findMany({
+    where: { shop, type: "import", kind: "job", id: { not: job.id }, inputName: job.inputName, config: job.config, createdAt: { gte: new Date(Date.now() - withinMs) }, status: { in: ["queued", "running", "finished"] } },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+  });
+  let hash = "";
+  for (const e of earlier) {
+    try {
+      if (!e.inputFile || (await fs.promises.stat(e.inputFile)).size !== size) continue;
+      hash ||= await fileHash(job.inputFile);
+      if ((await fileHash(e.inputFile)) === hash) return e;
+    } catch {
+      // that job's file is gone: not the same upload any more
+    }
+  }
+  return null;
+}
+
+/** Takes back a job that was only just made (its row and its files). */
+export async function discardJob(shop: string, id: string) {
+  await prisma.job.deleteMany({ where: { id, shop } });
+  await fs.promises.rm(jobDir(shop, id), { recursive: true, force: true }).catch(() => {});
+}
+
 /** Creates an import job that downloads its file from a URL when it runs. */
 export async function createUrlImportJob(shop: string, url: string, options: ImportOptions) {
   // A one-off schedule (disabled) carries the URL so the worker can fetch it.

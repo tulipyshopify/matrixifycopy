@@ -28,6 +28,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // unreadable config: not a dry run
   }
   const preview = dryRun && job.status === "finished" ? await readPreview(session.shop, job.id) : [];
+  const sameUpload = new URL(request.url).searchParams.get("same") === "1";
   // While a preview is still running: the first rows it has checked, to look at straight away.
   const firstLook = dryRun && (job.status === "running" || job.status === "queued") ? await readPartialPreview(session.shop, job.id) : [];
   const editedRows = dryRun && job.status === "finished" ? await editedRowCount(session.shop, job.id) : 0;
@@ -47,6 +48,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     preview,
     firstLook,
     editedRows,
+    sameUpload,
     feed: await (async () => {
       // A scheduled import from a link: what differs from the file fetched last time.
       const d = job.type === "import" && job.scheduleId ? await readFeedDiff(jobDir(session.shop, job.id)) : null;
@@ -155,7 +157,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, firstLook, editedRows, share, shareDays, feed, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, firstLook, editedRows, sameUpload, share, shareDays, feed, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
   const stopped = job.stats.some((s: any) => s?.stopped);
   const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
   const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
@@ -288,8 +290,8 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
-      {dryRun && job.status === "finished" && links.input && (job.stats.some((x: any) => x?.entity === null && x?.skipped) || job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => /not .* columns? and (is|are) ignored/.test(w))) || job.stats.some((x: any) => x?.items > 0 && x?.failed === x?.items)) ? (
-        <s-banner tone="warning" heading={job.stats.some((x: any) => x?.entity === null && x?.skipped) ? "Bulkport could not tell what this file holds" : job.stats.some((x: any) => x?.items > 0 && x?.failed === x?.items) ? "No row of this file could be applied" : "Some columns of this file were not recognised"}>
+      {dryRun && job.status === "finished" && links.input && (job.stats.some((x: any) => x?.entity === null && x?.skipped) || job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => /not .* columns? and (is|are) ignored/.test(w)))) ? (
+        <s-banner tone="warning" heading={job.stats.some((x: any) => x?.entity === null && x?.skipped) ? "Bulkport could not tell what this file holds" : "Some columns of this file were not recognised"}>
           <s-stack direction="block" gap="small">
             <s-text>If the file comes from a supplier or another system, its columns have their own names. Say once which column is which, and files like it are read correctly from then on.</s-text>
             <div>
@@ -301,6 +303,11 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
+      {sameUpload ? (
+        <s-banner tone="info" heading="This is the same file you uploaded a moment ago">
+          <s-text>It was already here with the same settings, so no second job was started. This is the one that is running (or its finished preview).</s-text>
+        </s-banner>
+      ) : null}
       {feed ? (
         <s-banner tone={feed.alarming ? "warning" : "info"} heading={`Compared with the file fetched ${formatDate(feed.previousAt)}`}>
           <s-stack direction="block" gap="small-300">
@@ -449,7 +456,7 @@ export default function JobDetail() {
                 <>
                   <s-table-header format="numeric">OK</s-table-header>
                   <s-table-header format="numeric">Failed</s-table-header>
-                  <s-table-header format="numeric">Skipped</s-table-header>
+                  <s-table-header format="numeric">{job.status === "cancelled" ? "Not processed" : "Skipped"}</s-table-header>
                 </>
               )}
             </s-table-header-row>

@@ -5,6 +5,8 @@ import { authenticate } from "../shopify.server";
 import { bundleUpload } from "../lib/jobs/bundle";
 import {
   createImportJob,
+  discardJob,
+  sameUploadBefore,
   createSchedule,
   createUrlImportJob,
   editSchedule,
@@ -12,6 +14,7 @@ import {
   entityCatalog,
   parseImportOptions,
 } from "../lib/jobs/jobs.server";
+import { assertFitsInMemory } from "../lib/jobs/runner.server";
 import { ImportForm } from "../components/ImportForm";
 
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
@@ -95,15 +98,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (pictures.length) {
       if (/\.zip$/i.test(file.name)) throw new Error("Put the image files inside the ZIP, or select the sheet itself together with the images.");
       const job = await createImportJob(session.shop, await bundleUpload(file, pictures), options);
-      return redirect(`/app/jobs/${job.id}`);
+      return redirect(await afterUpload(session.shop, job));
     }
     const job = await createImportJob(session.shop, file, options);
-    return redirect(`/app/jobs/${job.id}`);
+    return redirect(await afterUpload(session.shop, job));
   } catch (e: any) {
     if (e instanceof Response) throw e;
     return { error: e.message as string };
   }
 };
+
+/**
+ * Straight after an upload: a file that is too large is refused now (not after waiting in the queue),
+ * and the same file sent twice in a row opens the job that is already there.
+ */
+async function afterUpload(shop: string, job: { id: string; config: string; inputFile: string | null; inputName: string | null }): Promise<string> {
+  try {
+    if (job.inputFile) await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
+  } catch (e) {
+    await discardJob(shop, job.id);
+    throw e;
+  }
+  const same = await sameUploadBefore(shop, job).catch(() => null);
+  if (same) {
+    await discardJob(shop, job.id);
+    return `/app/jobs/${same.id}?same=1`;
+  }
+  return `/app/jobs/${job.id}`;
+}
 
 export default function NewImport() {
   const { entities, maxUploadMb, editing, scheduleFirst } = useLoaderData<typeof loader>();

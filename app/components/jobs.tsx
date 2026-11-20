@@ -30,6 +30,8 @@ export function jobSummary(job: { type: string; config: string; inputName: strin
   try {
     const cfg = JSON.parse(job.config);
     if (job.type === "export") return cfg.entities.map((e: any) => e.entity.replace(/_/g, " ")).join(", ");
+    // A change made in the app (a quick change, the table) is known by what it does, not by the file built for it.
+    if (job.name && (cfg.generate || cfg.aiFix || /^(Quick change|Edited in a table|Change): /.test(job.name) || /^Edited in a table/.test(job.name))) return job.name.replace(/^Quick change: /, "");
     return job.inputName ?? job.name;
   } catch {
     return job.name;
@@ -54,12 +56,19 @@ export function jobTiming(job: {
   status: string;
   progress: number;
   total: number;
+  createdAt?: string | Date | null;
   startedAt: string | Date | null;
   finishedAt: string | Date | null;
 }): string {
   if (!job.startedAt) return "";
   const start = new Date(job.startedAt).getTime();
-  if (job.finishedAt) return `Took ${duration(new Date(job.finishedAt).getTime() - start)}`;
+  if (job.finishedAt) {
+    // From the moment it was asked for: a job restarted after a deploy, or one that queued, took that long for the person waiting.
+    const asked = job.createdAt ? new Date(job.createdAt).getTime() : start;
+    const end = new Date(job.finishedAt).getTime();
+    const waited = start - asked;
+    return `Took ${duration(end - Math.min(asked, start))}${waited > 60_000 ? ` (${duration(waited)} of it waiting to start)` : ""}`;
+  }
   if (job.status !== "running") return "";
   const elapsed = Date.now() - start;
   const fraction = job.total ? job.progress / job.total : 0;
@@ -130,6 +139,8 @@ export function jobRow(job: JobRowInput): {
   } else {
     const sheets = [...new Set(stats.map((s) => s?.sheet).filter(Boolean))];
     title = sheets.length ? sheets.join(", ") : job.inputName ?? job.name ?? "Import";
+    // A change made in the app is known by what it does.
+    if (/^(Quick change|Change): |^Edited in a table/.test(job.name ?? "")) title = job.name.replace(/^Quick change: /, "");
     if (isActive(job.status) || job.status === "stopping") {
       const p = progressText(job);
       if (p) counts.push({ label: p, tone: "info" });
@@ -137,12 +148,14 @@ export function jobRow(job: JobRowInput): {
       counts.push({ label: `Total: ${sum("items").toLocaleString("en")}`, tone: "neutral" });
       if (sum("ok")) counts.push({ label: `OK: ${sum("ok").toLocaleString("en")}`, tone: "success" });
       if (sum("failed")) counts.push({ label: `Failed: ${sum("failed").toLocaleString("en")}`, tone: "critical" });
-      if (sum("skipped")) counts.push({ label: `Skipped: ${sum("skipped").toLocaleString("en")}`, tone: "neutral" });
+      // Rows a cancelled job never reached were not skipped by anyone's choice.
+      if (sum("skipped")) counts.push({ label: `${job.status === "cancelled" ? "Not processed" : "Skipped"}: ${sum("skipped").toLocaleString("en")}`, tone: "neutral" });
     }
   }
   const ext = job.type === "import" ? (/\.(\w+)$/.exec(job.inputName ?? "")?.[1] ?? job.format) : job.format;
-  const took =
-    job.startedAt && job.finishedAt ? duration(new Date(job.finishedAt).getTime() - new Date(job.startedAt).getTime()) : "";
+  // From when it was asked for (a job that queued, or was started again after a restart, took that long).
+  const from = (job as { createdAt?: string | Date | null }).createdAt ?? job.startedAt;
+  const took = from && job.finishedAt ? duration(new Date(job.finishedAt).getTime() - new Date(from).getTime()) : "";
   return {
     number: job.id.slice(-6).toUpperCase(),
     kind: job.type === "export" ? "Export" : isDryRun(job.config) ? "Preview" : "Import",

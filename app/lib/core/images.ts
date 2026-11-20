@@ -20,6 +20,8 @@ export const MAX_IMAGE_PIXELS = 25_000_000;
 const LARGE_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Too small to look sharp on a product page. */
 const SMALL_IMAGE_SIDE = 400;
+/** A PNG this large is almost always a photo that would be far smaller as a JPEG. */
+const LARGE_PNG_BYTES = 2 * 1024 * 1024;
 
 export const IMAGE_FILE = /\.(jpe?g|png|gif|webp|heic|heif)$/i;
 /** Picture formats people have on disk that a shop can't use as they are. */
@@ -35,6 +37,8 @@ export interface ImageInfo {
   type: "jpeg" | "png" | "gif" | "webp" | "heic" | null;
   width?: number;
   height?: number;
+  /** A JPEG in print colours (CMYK): screens show its colours wrongly. */
+  cmyk?: boolean;
 }
 
 /** What kind of image the bytes are, and its size in pixels where the header says. */
@@ -68,7 +72,7 @@ export function imageInfo(b: Uint8Array): ImageInfo {
         i++;
         continue;
       }
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { type: "jpeg", height: u16(i + 5), width: u16(i + 7) };
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { type: "jpeg", height: u16(i + 5), width: u16(i + 7), ...(b[i + 9] === 4 ? { cmyk: true } : {}) };
       if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
         i += 2;
         continue;
@@ -90,10 +94,61 @@ export function judgeImage(name: string, size: number, head: Uint8Array | null):
     if (info.width * info.height > MAX_IMAGE_PIXELS) {
       return { problem: `is ${info.width.toLocaleString("en")} × ${info.height.toLocaleString("en")} pixels; Shopify accepts up to 25 megapixels (5,000 × 5,000). Make it smaller and upload again`, warning: null };
     }
-    if (Math.max(info.width, info.height) < SMALL_IMAGE_SIDE) return { problem: null, warning: `${name} is only ${info.width} × ${info.height} pixels and will look blurred on a product page` };
   }
-  if (size > LARGE_IMAGE_BYTES) return { problem: null, warning: `${name} is ${mb(size)}: it will be accepted, but is much larger than a shop page needs` };
-  return { problem: null, warning: null };
+  const notes: string[] = [];
+  if (info.cmyk) notes.push(`${name} is in print colours (CMYK), which shops and browsers show with wrong colours: save it as RGB`);
+  if (info.width && info.height && Math.max(info.width, info.height) < SMALL_IMAGE_SIDE) notes.push(`${name} is only ${info.width} × ${info.height} pixels and will look blurred on a product page`);
+  if (size > LARGE_IMAGE_BYTES) notes.push(`${name} is ${mb(size)}: it will be accepted, but is much larger than a shop page needs`);
+  else if (info.type === "png" && size > LARGE_PNG_BYTES) notes.push(`${name} is a ${mb(size)} PNG: for a photo, JPEG gives the same picture at a fraction of the size (keep PNG for logos and images with transparency)`);
+  return { problem: null, warning: notes.length ? notes.join("; ") : null };
+}
+
+/**
+ * Removes where a photo was taken (the GPS block of its EXIF data) from a
+ * JPEG, leaving everything else, the orientation included, as it is. Returns
+ * true when there was a location to remove. The bytes are changed in place.
+ */
+export function stripLocation(b: Uint8Array): boolean {
+  if (!(b.length > 4 && b[0] === 0xff && b[1] === 0xd8)) return false;
+  let i = 2;
+  while (i + 4 < b.length && b[i] === 0xff) {
+    const marker = b[i + 1];
+    const len = (b[i + 2] << 8) | b[i + 3];
+    if (marker === 0xe1 && b[i + 4] === 0x45 && b[i + 5] === 0x78 && b[i + 6] === 0x69 && b[i + 7] === 0x66) {
+      const tiff = i + 10;
+      const end = Math.min(b.length, i + 2 + len);
+      const little = b[tiff] === 0x49;
+      const u16 = (o: number) => (little ? b[o] | (b[o + 1] << 8) : (b[o] << 8) | b[o + 1]);
+      const u32 = (o: number) => (little ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0 : ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0);
+      const ifd0 = tiff + u32(tiff + 4);
+      if (ifd0 + 2 > end) return false;
+      const n = u16(ifd0);
+      for (let k = 0; k < n; k++) {
+        const e = ifd0 + 2 + k * 12;
+        if (e + 12 > end || u16(e) !== 0x8825) continue;
+        const gps = tiff + u32(e + 8);
+        if (gps + 2 > end) return false;
+        const count = u16(gps);
+        const SIZE = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8];
+        // The values kept outside the block (latitude, longitude, time…), then the block itself.
+        for (let g = 0; g < count; g++) {
+          const ge = gps + 2 + g * 12;
+          if (ge + 12 > end) break;
+          const bytes = (SIZE[u16(ge + 2)] ?? 1) * u32(ge + 4);
+          if (bytes > 4) {
+            const at = tiff + u32(ge + 8);
+            if (at >= tiff && at + bytes <= end) b.fill(0, at, at + bytes);
+          }
+        }
+        b.fill(0, gps, Math.min(end, gps + 2 + count * 12 + 4));
+        return count > 0;
+      }
+      return false;
+    }
+    if (marker === 0xda) break;
+    i += 2 + len;
+  }
+  return false;
 }
 
 export interface UploadedFile {

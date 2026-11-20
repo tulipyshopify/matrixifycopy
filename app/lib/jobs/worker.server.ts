@@ -47,8 +47,18 @@ const running = new Set<string>(); // job ids
 // behind another long preview. Keys are "<shop>:<kind>".
 const runningShops = new Map<string, number>();
 const PREVIEWS_PER_SHOP = 2;
-const slot = (job: { shop: string; type: string; config?: string | null }) =>
-  `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? "preview" : job.type}`;
+/** A file from this size on is a "large" job: a shop runs one of those at a time, so they don't slow each other to a crawl. */
+const LARGE_FILE_BYTES = Number(process.env.LARGE_FILE_MB ?? 3) * 1024 * 1024;
+const isLarge = (job: { inputFile?: string | null }) => {
+  try {
+    return !!job.inputFile && fs.statSync(job.inputFile).size >= LARGE_FILE_BYTES;
+  } catch {
+    return false;
+  }
+};
+// Large previews have a lane of their own (one at a time); small ones keep their slots and are never stuck behind a large one.
+const slot = (job: { shop: string; type: string; config?: string | null; inputFile?: string | null }) =>
+  `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? (isLarge(job) ? "preview-large" : "preview") : job.type}`;
 const slotFree = (key: string) => (runningShops.get(key) ?? 0) < (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1);
 const takeSlot = (key: string) => runningShops.set(key, (runningShops.get(key) ?? 0) + 1);
 const freeSlot = (key: string) => {

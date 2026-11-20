@@ -607,9 +607,76 @@ export function settleDecimalMark(rows: Row[], warn?: (message: string) => void)
   return "comma";
 }
 
+const KNOWN_PRODUCTS = "products:known";
+interface KnownProducts {
+  ids: Set<string>;
+  handles: Set<string>;
+  checkedIds: Set<string>;
+  checkedHandles: Set<string>;
+}
+/** Sheets with at least this many products are checked for existence in batches first. */
+const BATCH_LOOKUP_FROM = 30;
+const HANDLES_PER_REQUEST = 50;
+const IDS_PER_REQUEST = 250;
+
+/**
+ * Which of a sheet's products exist, asked 50 to 250 at a time instead of
+ * one by one. In a large file with many unknown handles or IDs (a supplier's
+ * full list, a typo in the key column) this is the difference between
+ * minutes and hours: rows for products that aren't there are answered from
+ * this, and only products that exist are read in full.
+ */
+export async function lookUpProducts(ctx: ImportContext, items: Array<{ rows: Row[] }>): Promise<KnownProducts> {
+  const known: KnownProducts = { ids: new Set(), handles: new Set(), checkedIds: new Set(), checkedHandles: new Set() };
+  const ids = new Set<string>();
+  const handles = new Set<string>();
+  for (const item of items) {
+    const top = item.rows[0];
+    const id = toGid("Product", cell(top, "ID"));
+    const handle = cell(top, "Handle");
+    if (id) ids.add(id);
+    // Anything but a plain handle is left to the ordinary lookup.
+    else if (handle && /^[^\s"\\]{1,255}$/.test(handle)) handles.add(handle.toLowerCase());
+  }
+  const idList = [...ids];
+  for (let i = 0; i < idList.length; i += IDS_PER_REQUEST) {
+    const chunk = idList.slice(i, i + IDS_PER_REQUEST);
+    const d = await ctx.gql(`#graphql\n      query ImportProductsExistById($ids: [ID!]!) { nodes(ids: $ids) { id } }`, { ids: chunk });
+    if (!Array.isArray(d?.nodes)) throw new Error("no answer");
+    for (const n of d.nodes) if (n?.id) known.ids.add(n.id);
+    for (const id of chunk) known.checkedIds.add(id);
+  }
+  const handleList = [...handles];
+  for (let i = 0; i < handleList.length; i += HANDLES_PER_REQUEST) {
+    const chunk = handleList.slice(i, i + HANDLES_PER_REQUEST);
+    const query = `#graphql\n      query ImportProductsExistByHandle(${chunk.map((_, k) => `$h${k}: String!`).join(", ")}) { ${chunk.map((_, k) => `p${k}: productByIdentifier(identifier: { handle: $h${k} }) { id handle }`).join(" ")} }`;
+    const d = await ctx.gql(query, Object.fromEntries(chunk.map((h, k) => [`h${k}`, h])));
+    if (!d || typeof d !== "object") throw new Error("no answer");
+    chunk.forEach((h, k) => {
+      // Only an explicit "nothing there" counts as checked.
+      if (!(`p${k}` in d)) return;
+      if (d[`p${k}`]?.id) known.handles.add(h);
+      known.checkedHandles.add(h);
+    });
+  }
+  return known;
+}
+
 async function prepareProducts(ctx: ImportContext, items: Array<{ rows: Row[]; rowIndexes: number[] }>): Promise<Map<number, string[]>> {
   const rows = items.flatMap((i) => i.rows);
   if (rows.length && MONEY_COLUMNS.some((c) => c in rows[0])) settleDecimalMark(rows, ctx.warn);
+  ctx.cache.delete(KNOWN_PRODUCTS);
+  if (items.length >= BATCH_LOOKUP_FROM) {
+    try {
+      const known = await lookUpProducts(ctx, items);
+      ctx.cache.set(KNOWN_PRODUCTS, known);
+      const missing = known.checkedIds.size + known.checkedHandles.size - known.ids.size - known.handles.size;
+      ctx.log(`Checked which products exist, in batches: ${(known.ids.size + known.handles.size).toLocaleString("en")} found${missing ? `, ${missing.toLocaleString("en")} not in the store` : ""}.`);
+    } catch (e: any) {
+      // Without the batch answer every row is simply looked up on its own, as before.
+      ctx.log(`Products could not be looked up in batches (${e?.message ?? e}); each row is looked up on its own.`);
+    }
+  }
   return new Map();
 }
 
@@ -2271,7 +2338,10 @@ export async function importProduct(
   const rowNo = (i: number) => meta.rowNumbers?.[i] ?? i + 1;
   const id = toGid("Product", cell(top, "ID"));
   const handle = cell(top, "Handle");
-  let existing = id || handle ? await fetchProduct(ctx.gql, { id, handle }) : null;
+  // A large sheet was checked in batches for which of its products exist: one that doesn't is not asked for again.
+  const known = ctx.cache.get(KNOWN_PRODUCTS) as KnownProducts | undefined;
+  const absent = !!known && (!id || (known.checkedIds.has(id) && !known.ids.has(id))) && (!handle || (known.checkedHandles.has(handle.toLowerCase()) && !known.handles.has(handle.toLowerCase())));
+  let existing = (id || handle) && !absent ? await fetchProduct(ctx.gql, { id, handle }) : null;
   // Variant-only sheets (no product ID or Handle): find the product through
   // the row's Variant ID or Variant SKU.
   if (!id && !handle) {

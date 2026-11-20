@@ -824,6 +824,11 @@ export function discountInput(
   else if (creating) input.startsAt = new Date().toISOString();
   const ends = cell(top, "Ends At");
   if (ends !== undefined && (ends || !creating)) input.endsAt = ends || null;
+  // A discount that ends before it starts can never run: almost always two dates the wrong way round.
+  for (const [col, v] of [["Starts At", starts], ["Ends At", ends]] as const) {
+    if (v && Number.isNaN(Date.parse(v))) throw new ImportError(`${col} "${v}" is not a date. Write it as 2026-11-20 or 2026-11-20T09:00:00Z`);
+  }
+  if (starts && ends && Date.parse(ends) <= Date.parse(starts)) throw new ImportError(`Ends At (${ends}) is before Starts At (${starts}): the discount could never be used. Check the two dates`);
   const combines = cell(top, "Combines With");
   if (combines !== undefined) input.combinesWith = combinesWith(combines);
   const context = contextInput(top, existing);
