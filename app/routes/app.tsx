@@ -29,6 +29,7 @@ export default function App() {
         <s-link href="/app/backups">Backups</s-link>
         <s-link href="/app/check">Catalogue health</s-link>
         <s-link href="/app/connect">Settings</s-link>
+        <s-link href="/app/simple-profit">Simple Profit (preview)</s-link>
         <s-link href="/app/help">Help</s-link>
       </s-app-nav>
       <Outlet />
