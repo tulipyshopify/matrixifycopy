@@ -204,6 +204,13 @@ export interface ImportOptions {
   batch?: boolean;
   /** Scheduled imports: preview each run first and wait for a person when the result is unusual. */
   hold?: boolean;
+  /**
+   * What a blank cell means. "leave": the field is not touched, and a field is
+   * emptied by typing [clear] in its cell (the default for uploaded files).
+   * "clear" (also when not set, as in files the app builds itself and in
+   * schedules made before this choice existed): a blank cell empties the field.
+   */
+  blanks?: "leave" | "clear";
 }
 
 export interface ImportContext {

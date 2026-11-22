@@ -155,11 +155,12 @@ describe("a sheet uploaded with its image files", async () => {
   it("the import sends each file once and gives the product the address Shopify returns", async () => {
     const s = store();
     const r = await run(s, false, "img-real");
-    expect(r.staged).toEqual([
+    // (The two files go up side by side, so their order is not fixed.)
+    expect([...r.staged].sort((x, y) => x.filename.localeCompare(y.filename))).toEqual([
       { resource: "IMAGE", filename: "barrel-front.png", mimeType: "image/png", httpMethod: "POST", fileSize: expect.any(String) },
       { resource: "IMAGE", filename: "barrel-side.jpg", mimeType: "image/jpeg", httpMethod: "POST", fileSize: expect.any(String) },
     ]);
-    expect(r.uploads.map((u) => [u.filename, u.mimeType, u.key])).toEqual([["barrel-front.png", "image/png", "tmp/barrel-front.png"], ["barrel-side.jpg", "image/jpeg", "tmp/barrel-side.jpg"]]);
+    expect(r.uploads.map((u) => [u.filename, u.mimeType, u.key]).sort()).toEqual([["barrel-front.png", "image/png", "tmp/barrel-front.png"], ["barrel-side.jpg", "image/jpeg", "tmp/barrel-side.jpg"]]);
     expect(s.products[0].images).toEqual(["https://staged.example/barrel-front.png", "https://staged.example/barrel-side.jpg"]);
     // The missing file is left out, as the preview said; the linked image of that product is still added.
     expect(r.stats.find((x: any) => x.entity === "products")).toMatchObject({ ok: 2, failed: 0 });

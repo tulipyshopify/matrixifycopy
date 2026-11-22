@@ -18,8 +18,19 @@ export function formatDate(d: string | Date | null | undefined): string {
   return new Date(d).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function progressText(job: { status: string; progress: number; total: number }): string {
+export function progressText(job: { status: string; progress: number; total: number; stats?: unknown }): string {
   if (job.status === "queued") return "Waiting";
+  // A cancelled job: how far it really got, not the rows it gave up on.
+  if (job.status === "cancelled" && job.total) {
+    let stats: any[] = [];
+    try {
+      stats = typeof job.stats === "string" ? JSON.parse(job.stats) : Array.isArray(job.stats) ? job.stats : [];
+    } catch {
+      stats = [];
+    }
+    const done = stats.reduce((n, s) => n + (Number(s?.ok) || 0) + (Number(s?.failed) || 0), 0);
+    if (stats.length && done <= job.total) return `${done.toLocaleString()} / ${job.total.toLocaleString()} (${Math.floor((done / job.total) * 100)}%), cancelled`;
+  }
   if (!job.total) return job.progress ? `${job.progress.toLocaleString()} items` : "";
   const pct = Math.floor((job.progress / job.total) * 100);
   return `${job.progress.toLocaleString()} / ${job.total.toLocaleString()} (${pct}%)`;

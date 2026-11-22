@@ -12,6 +12,8 @@ import {
   createExportJob,
   createImportJob,
   createUrlImportJob,
+  discardJob,
+  sameUploadBefore,
   entityCatalog,
   parseExportConfig,
   parseImportOptions,
@@ -121,6 +123,8 @@ export interface ImportRequest {
   command?: string;
   /** Run for real. Needs a key that allows imports; otherwise it's a preview. */
   apply?: boolean;
+  /** "clear": a blank cell empties its field. Default "leave": blanks are ignored, and [clear] in a cell empties that field. */
+  blankCells?: string;
   /** Batch mode for sheets of only ID + Metafield columns. */
   batch?: boolean;
   /** Items sent at once, 1-8. */
@@ -138,7 +142,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   if (input.apply) assertCanImport(auth);
   let options;
   try {
-    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : "UPDATE", dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined });
+    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : "UPDATE", dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined, blanks: input.blankCells === "clear" ? "clear" : "leave" });
   } catch (e: any) {
     throw new ApiError(400, e.message);
   }
@@ -162,6 +166,14 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new ApiError(400, "The file must be .xlsx, .csv, .tsv, .txt or .zip");
   if (file.size > MAX_API_UPLOAD_MB * 1024 * 1024) throw new ApiError(413, `The file is larger than ${MAX_API_UPLOAD_MB} MB`);
   const job = await createImportJob(auth.shop, file, options);
+  // The same preview sent twice in a row (a retry, an assistant asking again) is one job, not two.
+  if (options.dryRun) {
+    const same = await sameUploadBefore(auth.shop, job).catch(() => null);
+    if (same) {
+      await discardJob(auth.shop, job.id);
+      return { ...(await jobView(auth.shop, same.id)), note: "This is the same file with the same settings as a preview started a moment ago: that job is returned, and no second one was started." };
+    }
+  }
   return jobView(auth.shop, job.id);
 }
 

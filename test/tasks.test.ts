@@ -130,7 +130,7 @@ describe("quick changes: the change file and its preview", () => {
   });
 
   it("says so when nothing needs the change", async () => {
-    await expect(generate([{ action: "replace_text", column: "Title", find: "zzz", value: "x" }])).rejects.toThrow(/3 products match, but none of them needs this change/);
+    await expect(generate([{ action: "replace_text", column: "Title", find: "zzz", value: "x" }])).rejects.toThrow(/3 products match, but none of them contains the text to find/);
   });
 });
 

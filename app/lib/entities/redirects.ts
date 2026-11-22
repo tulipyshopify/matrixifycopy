@@ -205,6 +205,9 @@ async function prepareRedirects(ctx: ImportContext, items: Array<{ rows: Row[]; 
 
 export async function importRedirect(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const row = rows[0];
+  // A plain Path,Target file is the usual way to add redirects: with no Command of its own, a row creates
+  // the redirect or updates it. (The preview still lists each new one for a yes.)
+  if (command === "UPDATE" && !cell(row, "Command")) command = "MERGE";
   const existing = await fetchRedirect(ctx, row);
   const input = redirectInput(row);
   // Preview: what would happen, compared with the redirect as it is now.

@@ -90,7 +90,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
     expect(a.status).toBe(201);
     expect(a.body).toMatchObject({ type: "import", preview: true, status: "queued" });
     const stored = await prisma.job.findUniqueOrThrow({ where: { id: a.body.id } });
-    expect(JSON.parse(stored.config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE" });
+    expect(JSON.parse(stored.config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE", blanks: "leave" });
     expect(stored.inputName).toBe("Products.csv");
     expect(fs.readFileSync(stored.inputFile!, "utf8")).toBe(csv);
 
@@ -105,11 +105,15 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("API and MCP server", async
 
     // A full key previews by default too…
     const form = new FormData();
-    form.set("file", new File([csv], "Products.csv"));
+    // The very same preview sent again is the job that is already there, not a second one.
+    const again = await call("POST", "imports", preview.key, { csv, file_name: "Products" });
+    expect(again.body.id).toBe(a.body.id);
+    expect(again.body.note).toMatch(/same file with the same settings/);
+    form.set("file", new File([`${csv}2,Sale\n`], "Products.csv"));
     form.set("command", "update");
     const b = await call("POST", "imports", full.key, undefined, form);
     expect(b.body.preview).toBe(true);
-    expect(JSON.parse((await prisma.job.findUniqueOrThrow({ where: { id: b.body.id } })).config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE" });
+    expect(JSON.parse((await prisma.job.findUniqueOrThrow({ where: { id: b.body.id } })).config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE", blanks: "leave" });
     // …and can apply a finished preview, or ask for a real run outright.
     const applied = await call("POST", `jobs/${a.body.id}/apply`, full.key);
     expect(applied.status).toBe(201);

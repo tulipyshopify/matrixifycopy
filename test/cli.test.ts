@@ -133,7 +133,7 @@ describe.skipIf(!fs.existsSync("prisma/dev.sqlite"))("command line", async () =>
     expect(r.out).toMatch(/Nothing was changed\. To run it for real: bulkport apply \w+/);
     expect(r.code).toBe(2);
     const job = await prisma.job.findFirstOrThrow({ where: { shop, type: "import" }, orderBy: { createdAt: "desc" } });
-    expect(JSON.parse(job.config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE" });
+    expect(JSON.parse(job.config).options).toEqual({ dryRun: true, defaultCommand: "UPDATE", blanks: "leave" });
     expect(job.inputName).toBe("Products.csv");
 
     // The preview-only key can't go further.

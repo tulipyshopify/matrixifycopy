@@ -17,6 +17,7 @@ export interface ImportScheduleBeingEdited {
   /** Shown with any password hidden; sent back unchanged it keeps the saved link. */
   sourceUrl: string;
   defaultCommand: string;
+  blanks?: string;
   dryRun: boolean;
   concurrency?: number;
   batch?: boolean;
@@ -67,6 +68,7 @@ export function ImportForm({
     setSource(f ? "file" : url.trim() ? "url" : null);
   };
   const [defaultCommand, setDefaultCommand] = useState(editing?.defaultCommand ?? "UPDATE");
+  const [blanks, setBlanks] = useState(editing?.blanks ?? "leave");
   const [linkError, setLinkError] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -124,7 +126,7 @@ export function ImportForm({
     }
     setPreviewing(preview);
     form.set("source", source);
-    form.set("options", JSON.stringify({ defaultCommand, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch, hold: repeating && hold && !dryRun }));
+    form.set("options", JSON.stringify({ defaultCommand, blanks, dryRun: preview || (repeating && dryRun), concurrency: Number(concurrency), batch, hold: repeating && hold && !dryRun }));
     if (source === "file" && file) {
       form.set("file", file);
       for (const p of pictures) form.append("image", p);
@@ -267,6 +269,17 @@ export function ImportForm({
               {defaultCommand === "DELETE" ? "Every row without its own Command deletes its item." : "Every row without its own Command deletes its item and creates it again from the file: anything not in the file is lost."} The preview lists them and asks you to confirm.
             </s-text>
           ) : null}
+          <s-select
+            key={`blanks-${selectKey}`}
+            label="Blank cells"
+            details="To empty one field whatever is chosen here, type [clear] in its cell."
+            value={blanks}
+            onChange={(ev: any) => setBlanks(ev.currentTarget.value)}
+          >
+            <s-option value="leave">Leave the field as it is (safest)</s-option>
+            <s-option value="clear">Empty the field</s-option>
+          </s-select>
+          {blanks === "clear" ? <s-text tone="caution">A blank cell in any column of the file empties that field in the store: tags, description, barcode and so on. Only include columns you mean to change. The preview lists every field that would be emptied.</s-text> : null}
           <s-select
             key={`speed-${selectKey}`}
             label="Speed"

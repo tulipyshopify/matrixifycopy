@@ -191,6 +191,8 @@ export function parseImportOptions(raw: unknown): ImportOptions {
   if (input.batch) o.batch = true;
   if (input.hold) o.hold = true;
   if (input.concurrency) o.concurrency = Math.min(8, Math.max(1, Math.floor(Number(input.concurrency))));
+  // Blank cells leave fields alone unless the person chose otherwise ([clear] in a cell always empties it).
+  o.blanks = input.blanks === "clear" ? "clear" : "leave";
   return o;
 }
 

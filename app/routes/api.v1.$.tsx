@@ -105,13 +105,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             command: form.get("command") ? String(form.get("command")) : undefined,
             apply: String(form.get("apply") ?? "") === "true",
             batch: String(form.get("batch") ?? "") === "true",
+            blankCells: String(form.get("blank_cells") ?? ""),
             concurrency: form.get("concurrency") ? Number(form.get("concurrency")) : undefined,
           }),
           201,
         );
       }
       const b2 = (await body()) as any;
-      return json(await startImport(auth, { csv: b2.csv, fileName: b2.file_name, url: b2.url, command: b2.command, apply: b2.apply === true, batch: b2.batch === true, concurrency: b2.concurrency }), 201);
+      return json(await startImport(auth, { csv: b2.csv, fileName: b2.file_name, url: b2.url, command: b2.command, apply: b2.apply === true, batch: b2.batch === true, concurrency: b2.concurrency, blankCells: b2.blank_cells }), 201);
     }
     if (a === "jobs" && b && c === "apply") {
       const given = (await body()) as any;

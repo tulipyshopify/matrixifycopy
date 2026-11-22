@@ -89,7 +89,15 @@ const notes: string[] = [];
       deps.log(note);
       notes.push(`${note[0].toUpperCase()}${note.slice(1)}.`);
     }
-    if (!out.length) throw new Error(ids.size ? `${ids.size.toLocaleString("en")} ${entity.sheet.toLowerCase()} match, but none of them needs this change (they already have these values, or the text to find is not in them).` : `No ${entity.sheet.toLowerCase()} match what you chose.`);
+    if (!out.length) {
+      // The real reason, not a general one: a price that can't take the change is not "already as wanted".
+      const n = ids.size.toLocaleString("en");
+      const what = entity.sheet.toLowerCase();
+      if (!ids.size) throw new Error(`No ${what} match what you chose.`);
+      if (unpriced && unpriced >= unchanged) throw new Error(`${n} ${what} match, but this change can't be made to any of them: it would take the price to zero or below, or there is no price to work from. Choose a smaller amount, or a percentage.`);
+      if (spec.changes.some((c) => c.action === "replace_text")) throw new Error(`${n} ${what} match, but none of them contains the text to find, so there is nothing to change.`);
+      throw new Error(`${n} ${what} match, but all of them already have these values, so there is nothing to change.`);
+    }
     await fs.promises.writeFile(file, "\ufeff" + Papa.unparse({ fields, data: out }, { newline: "\r\n" }));
     return { file, name, items: ids.size, notes };
   }

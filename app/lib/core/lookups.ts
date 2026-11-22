@@ -177,14 +177,35 @@ export async function removeTags(gql: Gql, id: string, tags: string[]) {
  */
 export async function narrowToLimit(ctx: ExportContext, root: "products" | "customers" | "orders", search: string): Promise<string> {
   const limit = ctx.options.limit;
-  if (!limit || limit > 250) return search;
+  if (!limit || limit > NARROW_UP_TO) return search;
   try {
-    const d = await ctx.gql(`#graphql\n      query ExportFirst_${root}($n: Int!, $q: String) { ${root}(first: $n, query: $q, sortKey: ID) { nodes { id } } }`, { n: limit, q: search || null });
-    const nodes = d?.[root]?.nodes;
-    if (!Array.isArray(nodes)) return search;
-    ctx.log(`Reading only the first ${nodes.length} (limit ${limit})`);
-    return nodes.length ? nodes.map((n: { id: string }) => `id:${String(n.id).split("/").pop()}`).join(" OR ") : "id:0";
+    if (limit <= 250) {
+      const d = await ctx.gql(`#graphql\n      query ExportFirst_${root}($n: Int!, $q: String) { ${root}(first: $n, query: $q, sortKey: ID) { nodes { id } } }`, { n: limit, q: search || null });
+      const nodes = d?.[root]?.nodes;
+      if (!Array.isArray(nodes)) return search;
+      ctx.log(`Reading only the first ${nodes.length} (limit ${limit})`);
+      return nodes.length ? nodes.map((n: { id: string }) => `id:${String(n.id).split("/").pop()}`).join(" OR ") : "id:0";
+    }
+    // A larger limit: page through the IDs (cheap) to the last one wanted, then read everything up to it.
+    let after: string | null = null;
+    let seen = 0;
+    let last = "";
+    while (seen < limit) {
+      const d: any = await ctx.gql(`#graphql\n      query ExportUpTo_${root}($n: Int!, $q: String, $after: String) { ${root}(first: $n, query: $q, sortKey: ID, after: $after) { nodes { id } pageInfo { hasNextPage endCursor } } }`, { n: Math.min(250, limit - seen), q: search || null, after });
+      const page = d?.[root];
+      if (!Array.isArray(page?.nodes)) return search;
+      seen += page.nodes.length;
+      if (page.nodes.length) last = String(page.nodes[page.nodes.length - 1].id).split("/").pop()!;
+      // Fewer than the limit exist: the search as it is reads no more than needed.
+      if (!page.pageInfo?.hasNextPage) return seen ? search : "id:0";
+      after = page.pageInfo.endCursor;
+    }
+    ctx.log(`Reading only the first ${seen.toLocaleString("en")} (limit ${limit.toLocaleString("en")})`);
+    return search ? `(${search}) AND id:<=${last}` : `id:<=${last}`;
   } catch {
     return search;
   }
 }
+
+/** Limits up to this are narrowed before the bulk read; beyond it, finding the cut-off would cost more than it saves. */
+const NARROW_UP_TO = 25_000;

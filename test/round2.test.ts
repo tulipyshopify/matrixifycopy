@@ -413,16 +413,20 @@ describe("round 2: connector, messages and security", () => {
     expect(jobHealth({ type: "import", status: "finished", dryRun: true, stats: [{ sheet: "Products", entity: "products", items: 2, ok: 2, failed: 0, skipped: 0 }] as any })).toMatchObject({ level: "ok", label: "Preview ready" });
   });
 
-  it("R37: an unknown redirect says what to do", async () => {
+  it("R37: an unknown redirect says what to do; a plain Path,Target file adds redirects", async () => {
     const s = fakeStore([]);
     const gql = (async (q: string, v: any) => (/UrlRedirect|urlRedirects/.test(q) ? { urlRedirects: { nodes: [], pageInfo: { hasNextPage: false } }, urlRedirect: null } : s.gql(q, v))) as any;
-    const stats = await runImport({
-      ctx: { gql, options: { dryRun: true, defaultCommand: "UPDATE" } as any, log: () => {}, cache: new Map() } as any,
-      sheets: [{ name: "Redirects", headers: ["Path", "Target"], rows: [{ Path: "/old-page", Target: "/new-page" }] }],
-      entities: ENTITIES,
-      log: () => {},
-    });
-    expect(stats[0].preview![0].message).toMatch(/Redirect not found.*set Command to MERGE or NEW/);
+    const go = (row: Record<string, string>) =>
+      runImport({
+        ctx: { gql, options: { dryRun: true, defaultCommand: "UPDATE" } as any, log: () => {}, cache: new Map() } as any,
+        sheets: [{ name: "Redirects", headers: Object.keys(row), rows: [row] }],
+        entities: ENTITIES,
+        log: () => {},
+      });
+    // Asked outright to update one that isn't there.
+    expect((await go({ Path: "/old-page", Target: "/new-page", Command: "UPDATE" }))[0].preview![0].message).toMatch(/Redirect not found.*set Command to MERGE or NEW/);
+    // No Command at all: the usual way to add redirects. It would be created (and starts on Skip like any new item).
+    expect((await go({ Path: "/old-page", Target: "/new-page" }))[0].preview![0]).toMatchObject({ action: "create" });
   });
 
   it("R39: every response says HTTPS only and no type guessing; pages can only be framed by the Shopify admin", () => {

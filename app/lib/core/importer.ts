@@ -1,6 +1,6 @@
 import type { Command, Entity, ImportContext, ItemResult, Logger, Row } from "./types";
 import { ImportError, ImportErrors } from "./types";
-import { cell, gidToId, mapLimit, parseCommand } from "./util";
+import { CLEAR_MARK, cell, gidToId, leaveBlanks, mapLimit, parseCommand } from "./util";
 import type { Sheet, WorkbookOut } from "./sheets";
 import { EXCEL_ERROR, NO_VALUE_MARK } from "./sheets";
 import { applyColumnAliases, columnHint, detectEntity, detectEntityByHandles, detectEntityByIds, detectEntityByMetafields, unknownColumns } from "./registry";
@@ -365,6 +365,14 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     }
     // The sheet as it will be imported: a last look for whoever started the import (uploaded image files are matched here).
     if (p.entity?.import) await args.prepareSheet?.(p.sheet, p.entity);
+    // Blank cells: left alone, unless the import says a blank empties the field. [clear] always empties.
+    if (p.entity?.import && ctx.options.blanks === "leave") {
+      const cleared = leaveBlanks(p.sheet.rows);
+      (p.sheet.notes ??= []).push(`Blank cells in this sheet leave their fields as they are.${cleared ? ` ${cleared.toLocaleString("en")} cell${cleared === 1 ? " is" : "s are"} marked [clear] and will be emptied.` : " To empty a field, type [clear] in its cell."}`);
+    } else if (p.entity?.import) {
+      // The older rule (a blank empties): [clear] is understood here too.
+      for (const row of p.sheet.rows) for (const col of Object.keys(row)) if (row[col] && row[col].charCodeAt(0) === 91 && CLEAR_MARK.test(row[col].trim())) row[col] = "";
+    }
     grouped.push({ ...p, renamed, items: p.entity?.import ? groupRows(p.sheet.rows, p.entity.import.keyColumns) : [] });
   }
   const total = grouped.reduce((n, g) => n + g.items.length, 0);
@@ -657,7 +665,17 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
     if (sheetWarnings.length) summary.warnings = sheetWarnings;
-    if (!undo.length && before.length && summary.ok > 0) undo.push(...before);
+    if (!undo.length && before.length && summary.ok > 0) {
+      // An item this import deleted is put back by creating it again from its recorded copy (it gets a new ID).
+      const deleted = new Set(results.filter((r) => r.result.status === "OK" && (r.result.command === "DELETE" || r.result.command === "REPLACE") && r.result.id).map((r) => gidToId(r.result.id!)));
+      const alt = SNAPSHOT_KEYS[entity.key];
+      const deletedByName = new Set(alt ? results.filter((r) => r.result.status === "OK" && r.result.command === "DELETE").map((r) => (cell(r.item.rows[0], alt.column) ?? "").toLowerCase()).filter(Boolean) : []);
+      let recreate = false;
+      for (const row of before) {
+        if (row.ID) recreate = deleted.has(row.ID) || (!!alt && deletedByName.has((row[alt.column] ?? "").toLowerCase()));
+        undo.push(recreate && row.ID ? { ...row, Command: "MERGE" } : row);
+      }
+    }
     if (undo.length) summary.undo = undo;
     if (applied.length) summary.applied = applied;
     if (undoNotes.length) summary.undoNotes = undoNotes;

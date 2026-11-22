@@ -1,6 +1,6 @@
 import type { Row } from "../core/types";
 import { ImportError } from "../core/types";
-import { cell, cellToMetafieldValue, gidToId, joinTags, metafieldToCell, parseBool, parseMetafieldColumn, parseSubCommand, splitTags } from "../core/util";
+import { cell, cellToMetafieldValue, gidToId, has, joinTags, metafieldToCell, parseBool, parseMetafieldColumn, parseSubCommand, splitTags } from "../core/util";
 
 /**
  * Compares the cells of an import row with what the store holds now, in the
@@ -181,7 +181,7 @@ function metafieldCanon(type: string, value: string): string {
 export function compareMetafields(row: Row, prefix: string, now: MetafieldsNow | null, owner: string, out: RowComparison) {
   for (const header of Object.keys(row)) {
     const col = parseMetafieldColumn(header, prefix);
-    if (!col) continue;
+    if (!col || !has(row, header)) continue;
     const raw = (row[header] ?? "").trim();
     const key = `${col.namespace}.${col.key}`;
     const label = `Metafield ${key}${owner}`;

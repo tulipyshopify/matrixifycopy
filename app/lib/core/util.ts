@@ -36,8 +36,42 @@ export function str(v: unknown): string {
   return JSON.stringify(v);
 }
 
+/**
+ * Rows of an import where a blank cell means "leave this field as it is"
+ * (the default for files people upload), and within them the cells that were
+ * explicitly marked to be emptied with [clear].
+ */
+const LEAVE_BLANKS = new WeakSet<Row>();
+const CLEARED = new WeakMap<Row, Set<string>>();
+/** What a person types in a cell to empty the field. */
+export const CLEAR_MARK = /^\[\s*clear\s*\]$/i;
+
+/**
+ * Marks a sheet's rows so that blank cells leave their fields alone. A cell
+ * holding [clear] becomes an intended blank: that field is emptied. Returns
+ * how many cells were marked to be emptied.
+ */
+export function leaveBlanks(rows: Row[]): number {
+  let cleared = 0;
+  for (const row of rows) {
+    LEAVE_BLANKS.add(row);
+    for (const col of Object.keys(row)) {
+      const v = row[col];
+      if (v && v.charCodeAt(0) === 91 && CLEAR_MARK.test(v.trim())) {
+        row[col] = "";
+        (CLEARED.get(row) ?? CLEARED.set(row, new Set()).get(row)!).add(col);
+        cleared++;
+      }
+    }
+  }
+  return cleared;
+}
+
+/** True when the row has the column, and its cell is not a blank that is to be left alone. */
 export function has(row: Row, col: string): boolean {
-  return Object.prototype.hasOwnProperty.call(row, col);
+  if (!Object.prototype.hasOwnProperty.call(row, col)) return false;
+  if (row[col] === "" && LEAVE_BLANKS.has(row) && !CLEARED.get(row)?.has(col)) return false;
+  return true;
 }
 
 /** Cell value, or undefined when the column is absent (as opposed to blank). */
@@ -249,7 +283,7 @@ export function metafieldsFromRow(
   const blank: MetafieldColumn[] = [];
   for (const header of Object.keys(row)) {
     const col = parseMetafieldColumn(header, prefix);
-    if (!col) continue;
+    if (!col || !has(row, header)) continue;
     const v = (row[header] ?? "").trim();
     if (v === "") {
       blank.push(col);

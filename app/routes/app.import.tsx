@@ -38,6 +38,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         concurrency: Number(found.config?.options?.concurrency ?? 4),
         batch: !!found.config?.options?.batch,
         hold: !!found.config?.options?.hold,
+        // A schedule made before the choice existed keeps the rule it was made with.
+        blanks: found.config?.options?.blanks === "leave" ? "leave" : "clear",
       }
     : null;
   return { editing, scheduleFirst: new URL(request.url).searchParams.get("scheduled") === "1", entities: entityCatalog().filter((e) => e.canImport), maxUploadMb: MAX_UPLOAD_MB };
