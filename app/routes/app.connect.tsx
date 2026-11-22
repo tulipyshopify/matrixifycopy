@@ -6,7 +6,7 @@ import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { EXPIRY_CHOICES, createKey, listKeys, revokeKeyAndSignIn, type KeyScope } from "../lib/api/keys.server";
-import { alertEmails, alertWebhookSet, emailAvailable, saveAlertEmails, saveAlertWebhook, sendAlert } from "../lib/jobs/alerts.server";
+import { alertEmails, alertWebhookSet, emailAvailable, likelyTypo, saveAlertEmails, saveAlertWebhook, sendAlert, sendTestEmail } from "../lib/jobs/alerts.server";
 import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
 import { approveConnection, listConnections, removeConnection } from "../lib/api/oauth.server";
@@ -70,7 +70,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     if (form.get("intent") === "emails") {
       const list = await saveAlertEmails(session.shop, String(form.get("emails") ?? ""));
-      return { saved: list.length ? `Alerts will be emailed to ${list.join(", ")}.` : "Email alerts are off." };
+      const typo = likelyTypo(list);
+      if (form.get("test") === "1" && list.length) {
+        const sent = await sendTestEmail(session.shop);
+        return { saved: `Saved, and a test email was sent to ${sent.join(", ")}. If it doesn't arrive within a few minutes, check the address and the spam folder.${typo ? ` Note: ${typo}` : ""}` };
+      }
+      return { saved: list.length ? `Alerts will be emailed to ${list.join(", ")}.${typo ? ` Note: ${typo}` : ""}` : "Email alerts are off." };
     }
     if (form.get("intent") === "defaults") {
       const failStopPercent = [0, 5, 10, 25].includes(Number(form.get("failStop"))) ? Number(form.get("failStop")) : 5;
@@ -288,13 +293,19 @@ export default function Connect() {
       <s-section heading="Alerts by email">
         <s-stack direction="block" gap="small-200">
           <s-paragraph>Failed or partly failed scheduled jobs and backups, and scheduled imports held for approval, can be emailed.</s-paragraph>
-          {canEmail ? null : <s-text tone="caution">Email alerts aren't switched on for this app yet. You can save the addresses now; alerts start arriving once it is. Until then, use Slack or Teams below.</s-text>}
+          {canEmail ? null : <s-text tone="caution">Email alerts aren't switched on for this app yet: its server has no mail account set. You can save the addresses now; alerts start arriving once it is, and the test button works from then. Until then, use Slack or Teams below.</s-text>}
           <div className="bp-url-row">
             <s-text-field label="Email addresses" labelAccessibilityVisibility="exclusive" placeholder="you@example.com, team@example.com" value={emailList} onInput={(ev: any) => setEmailList(ev.currentTarget.value)} />
-            <s-button disabled={fetcher.state !== "idle" || emailList.trim() === emails} onClick={() => fetcher.submit({ intent: "emails", emails: emailList }, { method: "post" })}>
-              Save
-            </s-button>
+            <s-stack direction="inline" gap="small-200">
+              <s-button disabled={fetcher.state !== "idle" || emailList.trim() === emails} onClick={() => fetcher.submit({ intent: "emails", emails: emailList }, { method: "post" })}>
+                Save
+              </s-button>
+              <s-button variant="primary" disabled={fetcher.state !== "idle" || !canEmail || !emailList.trim()} onClick={() => fetcher.submit({ intent: "emails", emails: emailList, test: "1" }, { method: "post" })}>
+                Save and send a test
+              </s-button>
+            </s-stack>
           </div>
+          {canEmail ? <s-text color="subdued">Send a test whenever you change an address: it is the only way to know an alert would arrive.</s-text> : null}
         </s-stack>
       </s-section>
 

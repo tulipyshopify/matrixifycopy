@@ -54,6 +54,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       finishedAt: b.finishedAt,
       error: b.error,
       size: b.size,
+      zipped: /\.zip$/i.test(b.fileName ?? ""),
       progress: b.progress,
       total: b.total,
       stats: b.stats,
@@ -111,11 +112,30 @@ function size(bytes: number): string {
 
 function contents(stats: string): string {
   try {
-    return (JSON.parse(stats) as Array<{ entity: string; items: number }>)
-      .map((s) => `${(s.items ?? 0).toLocaleString("en")} ${BACKUP_LABEL[s.entity] ?? s.entity}`)
+    return (JSON.parse(stats) as Array<{ entity: string; items: number; rows?: number; error?: string }>)
+      .map((s) => (s.error ? `${BACKUP_LABEL[s.entity] ?? s.entity}: NOT backed up` : `${(s.items ?? 0).toLocaleString("en")} ${BACKUP_LABEL[s.entity] ?? s.entity}${s.rows && s.rows !== s.items ? ` (${s.rows.toLocaleString("en")} rows)` : ""}`))
       .join(", ");
   } catch {
     return "";
+  }
+}
+
+/** What a backup holds noticeably less of than the one before it (a sign that something was missed). */
+function shrunk(stats: string, before: string | undefined): string[] {
+  try {
+    const now = JSON.parse(stats) as Array<{ entity: string; items: number; rows?: number }>;
+    const was = new Map((JSON.parse(before ?? "[]") as Array<{ entity: string; items: number; rows?: number }>).map((s) => [s.entity, s]));
+    const out: string[] = [];
+    for (const s of now) {
+      const p = was.get(s.entity);
+      if (!p) continue;
+      const label = BACKUP_LABEL[s.entity] ?? s.entity;
+      if ((p.items ?? 0) >= 20 && (s.items ?? 0) < p.items * 0.9) out.push(`${(p.items - s.items).toLocaleString("en")} fewer ${label} than the backup before (${s.items.toLocaleString("en")}, was ${p.items.toLocaleString("en")})`);
+      else if ((p.rows ?? 0) >= 50 && (s.rows ?? 0) < (p.rows ?? 0) * 0.8) out.push(`${label}: ${(s.rows ?? 0).toLocaleString("en")} rows, was ${(p.rows ?? 0).toLocaleString("en")} in the backup before (the same items with less detail)`);
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 
@@ -284,6 +304,9 @@ export default function Backups() {
       </s-section>
 
       <s-section heading={`Backups${data.backups.length ? ` (${data.backups.length}, ${size(total)})` : ""}`} padding="none">
+        <s-box padding="base">
+          <s-text color="subdued">Size is no guide to what a backup holds: backups are compressed (older single-type ones were not, and are about ten times larger for the same data). The Contents column counts what is inside, and says so when a backup holds noticeably less than the one before.</s-text>
+        </s-box>
         {data.backups.length === 0 ? (
           <s-box padding="base">
             <s-text tone="neutral">No backups yet. Press "Back up now" for the first one.</s-text>
@@ -298,7 +321,11 @@ export default function Backups() {
               <s-table-header>Actions</s-table-header>
             </s-table-header-row>
             <s-table-body>
-              {data.backups.map((b) => (
+              {data.backups.map((b, at) => {
+                // Checked against the finished backup taken before this one.
+                const previous = data.backups.slice(at + 1).find((x) => x.status === "finished" && !x.error);
+                const less = b.status === "finished" ? shrunk(b.stats, previous?.stats) : [];
+                return (
                 <s-table-row key={b.id}>
                   <s-table-cell>
                     <s-link href={`/app/jobs/${b.id}`}>{formatDate(b.createdAt)}</s-link>
@@ -306,8 +333,18 @@ export default function Backups() {
                   <s-table-cell>
                     <HealthBadge job={{ type: "export", status: b.status, error: b.error, stats: b.stats, config: b.config }} />
                   </s-table-cell>
-                  <s-table-cell>{b.error ? <s-text tone="critical">{b.error}</s-text> : contents(b.stats) || (isActive(b.status) ? "Working…" : "—")}</s-table-cell>
-                  <s-table-cell>{size(b.size)}</s-table-cell>
+                  <s-table-cell>
+                    {b.error ? <s-text tone="critical">{b.error}</s-text> : contents(b.stats) || (isActive(b.status) ? "Working…" : "—")}
+                    {less.map((l) => (
+                      <div key={l}>
+                        <s-text tone="caution">! {l}</s-text>
+                      </div>
+                    ))}
+                  </s-table-cell>
+                  <s-table-cell>
+                    {size(b.size)}
+                    {b.size && !b.zipped ? <s-text color="subdued"> (not compressed)</s-text> : null}
+                  </s-table-cell>
                   <s-table-cell>
                     <s-stack direction="inline" gap="small-200">
                       {b.link ? (
@@ -323,7 +360,8 @@ export default function Backups() {
                     </s-stack>
                   </s-table-cell>
                 </s-table-row>
-              ))}
+                );
+              })}
             </s-table-body>
           </s-table>
         )}

@@ -400,23 +400,8 @@ const PRODUCT_FIELDS = `#graphql
   }
 `;
 
-const PRODUCT_BY_ID = `#graphql
-  query ImportProductById($id: ID!) { product(id: $id) { ...ImportProduct } }
-  ${PRODUCT_FIELDS}
-`;
-
-const PRODUCT_BY_HANDLE = `#graphql
-  query ImportProductByHandle($handle: String!) {
-    productByIdentifier(identifier: { handle: $handle }) { ...ImportProduct }
-  }
-  ${PRODUCT_FIELDS}
-`;
-
-const PRODUCT_VARIANTS = `#graphql
-  query ImportProductVariants($id: ID!, $after: String) {
-    product(id: $id) {
-      variants(first: 250, after: $after) {
-        nodes {
+/** A variant as the import reads it (also the page size of the first read, see below). */
+const VARIANT_FIELDS = `#graphql
           id sku position barcode price compareAtPrice taxable taxCode inventoryPolicy inventoryQuantity
           image { url }
           selectedOptions { name value }
@@ -425,7 +410,35 @@ const PRODUCT_VARIANTS = `#graphql
             unitCost { amount }
             measurement { weight { value unit } }
             inventoryLevels(first: 100) { nodes { location { id } } }
-          }
+          }`;
+
+// The product, its first 100 variants and the metafields the file names, in ONE request: most products
+// have fewer variants, so a product is read with a single round trip instead of three.
+const PRODUCT_WITH = `#graphql
+      ...ImportProduct
+      variants(first: 100) { nodes {${VARIANT_FIELDS}
+        } pageInfo { hasNextPage endCursor } }
+      metafields(first: 250, keys: $keys) @include(if: $withMetafields) { nodes { namespace key type value } }`;
+
+const PRODUCT_BY_ID = `#graphql
+  query ImportProductById($id: ID!, $keys: [String!], $withMetafields: Boolean!) { product(id: $id) {${PRODUCT_WITH}
+  } }
+  ${PRODUCT_FIELDS}
+`;
+
+const PRODUCT_BY_HANDLE = `#graphql
+  query ImportProductByHandle($handle: String!, $keys: [String!], $withMetafields: Boolean!) {
+    productByIdentifier(identifier: { handle: $handle }) {${PRODUCT_WITH}
+    }
+  }
+  ${PRODUCT_FIELDS}
+`;
+
+const PRODUCT_VARIANTS = `#graphql
+  query ImportProductVariants($id: ID!, $after: String) {
+    product(id: $id) {
+      variants(first: 250, after: $after) {
+        nodes {${VARIANT_FIELDS}
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -472,6 +485,8 @@ interface ExistingProduct {
   templateSuffix?: string | null;
   publishedAt?: string | null;
   updatedAt?: string | null;
+  /** The product's metafields named by the file, when they were read together with the product. */
+  metafieldsNow?: { keys: string[]; nodes: any[] };
   seo?: { title: string | null; description: string | null } | null;
   category?: { id: string } | null;
   options: Array<{
@@ -494,23 +509,27 @@ interface ExistingProduct {
 async function fetchProduct(
   gql: Gql,
   by: { id?: string; handle?: string },
+  metafieldKeys: string[] = [],
 ): Promise<ExistingProduct | null> {
   let p: any = null;
-  if (by.id) p = (await gql(PRODUCT_BY_ID, { id: by.id })).product;
+  const extra = { keys: metafieldKeys.length ? metafieldKeys : null, withMetafields: metafieldKeys.length > 0 };
+  if (by.id) p = (await gql(PRODUCT_BY_ID, { id: by.id, ...extra })).product;
   if (!p && by.handle)
-    p = (await gql(PRODUCT_BY_HANDLE, { handle: by.handle }))
+    p = (await gql(PRODUCT_BY_HANDLE, { handle: by.handle, ...extra }))
       .productByIdentifier;
   if (!p) return null;
-  const variants: ExistingVariant[] = [];
-  let after: string | null = null;
-  do {
-    const d: any = await gql(PRODUCT_VARIANTS, { id: p.id, after });
+  // The first variants came with the product; only a product with more is asked for again.
+  const first = p.variants;
+  const variants: ExistingVariant[] = Array.isArray(first?.nodes) ? [...first.nodes] : [];
+  let after: string | null = Array.isArray(first?.nodes) ? (first.pageInfo?.hasNextPage ? first.pageInfo.endCursor : null) : "";
+  while (after !== null) {
+    const d: any = await gql(PRODUCT_VARIANTS, { id: p.id, after: after || null });
     variants.push(...d.product.variants.nodes);
     after = d.product.variants.pageInfo.hasNextPage
       ? d.product.variants.pageInfo.endCursor
       : null;
-  } while (after);
-  return { ...p, variants };
+  }
+  return { ...p, variants, metafieldsNow: metafieldKeys.length && Array.isArray(p.metafields?.nodes) ? { keys: metafieldKeys, nodes: p.metafields.nodes } : undefined };
 }
 
 // --- Import: parsing rows -------------------------------------------------------
@@ -1621,7 +1640,10 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   const productKeys = metafieldKeys([top], "Metafield");
   if (productKeys.length) {
     try {
-      productMetafields = metafieldMap((await ctx.gql(PRODUCT_METAFIELDS_NOW, { id: existing.id, keys: productKeys }))?.product?.metafields?.nodes);
+      // Already read with the product when the same keys were asked for; otherwise read now.
+      const have = existing.metafieldsNow;
+      const nodes = have && productKeys.every((k) => have.keys.includes(k)) ? have.nodes : (await ctx.gql(PRODUCT_METAFIELDS_NOW, { id: existing.id, keys: productKeys }))?.product?.metafields?.nodes;
+      productMetafields = metafieldMap(nodes);
     } catch {
       productMetafields = null;
     }
@@ -2355,12 +2377,13 @@ export async function importProduct(
   // A large sheet was checked in batches for which of its products exist: one that doesn't is not asked for again.
   const known = ctx.cache.get(KNOWN_PRODUCTS) as KnownProducts | undefined;
   const absent = !!known && (!id || (known.checkedIds.has(id) && !known.ids.has(id))) && (!handle || (known.checkedHandles.has(handle.toLowerCase()) && !known.handles.has(handle.toLowerCase())));
-  let existing = (id || handle) && !absent ? await fetchProduct(ctx.gql, { id, handle }) : null;
+  const keysInFile = metafieldKeys([top], "Metafield");
+  let existing = (id || handle) && !absent ? await fetchProduct(ctx.gql, { id, handle }, keysInFile) : null;
   // Variant-only sheets (no product ID or Handle): find the product through
   // the row's Variant ID or Variant SKU.
   if (!id && !handle) {
     const productId = await productIdForVariant(ctx.gql, cell(top, "Variant ID"), cell(top, "Variant SKU"));
-    if (productId) existing = await fetchProduct(ctx.gql, { id: productId });
+    if (productId) existing = await fetchProduct(ctx.gql, { id: productId }, keysInFile);
     else if (cell(top, "Variant ID") || cell(top, "Variant SKU")) {
       return {
         status: "Failed",

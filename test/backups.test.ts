@@ -133,6 +133,11 @@ describe("writing a backup", () => {
       },
     );
     expect(r.resultFile).toContain(`${path.sep}_backups${path.sep}bk1${path.sep}`);
-    expect(fs.readFileSync(r.resultFile, "utf8")).toContain("/old");
+    // A backup is always a compressed archive, one data type or many (so its size says nothing about what it holds).
+    expect(r.resultFile).toMatch(/\.zip$/);
+    const { readWorkbook } = await import("../app/lib/core/sheets");
+    const sheets = await readWorkbook(r.resultFile);
+    expect(sheets.map((s) => s.name)).toEqual(["Redirects"]);
+    expect(sheets[0].rows[0]).toMatchObject({ Path: "/old", Target: "/new" });
   });
 });

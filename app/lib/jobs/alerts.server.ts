@@ -49,6 +49,34 @@ export async function saveAlertEmails(shop: string, value: string) {
   return list;
 }
 
+/** Mail domains that are nearly always a slip of the keyboard, and what was meant. */
+const DOMAIN_SLIPS: Record<string, string> = { "gmial.com": "gmail.com", "gmai.com": "gmail.com", "gmail.co": "gmail.com", "gnail.com": "gmail.com", "hotmial.com": "hotmail.com", "hotmai.com": "hotmail.com", "outlok.com": "outlook.com", "outloo.com": "outlook.com", "yaho.com": "yahoo.com", "yahooo.com": "yahoo.com", "icloud.co": "icloud.com" };
+
+/** An address that looks mistyped, with what was probably meant; null when none does. */
+export function likelyTypo(list: string[]): string | null {
+  for (const e of list) {
+    const domain = e.split("@")[1] ?? "";
+    if (DOMAIN_SLIPS[domain]) return `"${e}" looks mistyped: did you mean ${e.split("@")[0]}@${DOMAIN_SLIPS[domain]}?`;
+  }
+  return null;
+}
+
+/**
+ * Sends a test message to the store's alert addresses, so a wrong address or
+ * a mail set-up that doesn't deliver shows now and not when an alert matters.
+ */
+export async function sendTestEmail(shop: string): Promise<string[]> {
+  const to = await alertEmails(shop);
+  if (!to.length) throw new Error("Save at least one address first.");
+  if (!emailAvailable()) throw new Error("Email isn't switched on for this app yet (the server has no mail account set), so no test can be sent. The addresses are saved and will be used once it is.");
+  try {
+    await sendEmail(to, "Bulkport: test alert", `This is a test from Bulkport for ${shop.replace(/\.myshopify\.com$/, "")}.\n\nIf you are reading it, alerts about failed or held jobs will reach this address. Nothing is wrong with your store.`);
+  } catch (e: any) {
+    throw new Error(`The test could not be sent: ${String(e?.message ?? e).slice(0, 200)}`);
+  }
+  return to;
+}
+
 async function sendEmail(to: string[], subject: string, text: string): Promise<boolean> {
   if (!emailAvailable() || !to.length) return false;
   const { createTransport } = await import("nodemailer");

@@ -1009,7 +1009,7 @@ function csvLine(values: string[]): string {
  * CSV output: one sheet -> one .csv file; several sheets -> a .zip with one
  * CSV per sheet. `filePath` should be given without extension.
  */
-export function createCsvOut(filePathNoExt: string): WorkbookOut {
+export function createCsvOut(filePathNoExt: string, opts: { alwaysZip?: boolean } = {}): WorkbookOut {
   const tmpFiles: Array<{ name: string; file: string }> = [];
   const used = new Set<string>();
   return {
@@ -1034,7 +1034,7 @@ export function createCsvOut(filePathNoExt: string): WorkbookOut {
         await fs.promises.writeFile(final, "\ufeff" + csvLine(["Note"]) + csvLine(["The file had no sheets with rows."]));
         return final;
       }
-      if (tmpFiles.length === 1) {
+      if (tmpFiles.length === 1 && !opts.alwaysZip) {
         const final = `${filePathNoExt}.csv`;
         await fs.promises.rename(tmpFiles[0].file, final);
         return final;
@@ -1061,8 +1061,8 @@ export function createCsvOut(filePathNoExt: string): WorkbookOut {
   };
 }
 
-export function createWorkbookOut(format: OutputFormat, filePathNoExt: string, log?: Logger): WorkbookOut {
-  return format === "csv" ? createCsvOut(filePathNoExt) : createXlsxOut(`${filePathNoExt}.xlsx`, log);
+export function createWorkbookOut(format: OutputFormat, filePathNoExt: string, log?: Logger, opts: { alwaysZip?: boolean } = {}): WorkbookOut {
+  return format === "csv" ? createCsvOut(filePathNoExt, opts) : createXlsxOut(`${filePathNoExt}.xlsx`, log);
 }
 
 // --- Row spool ------------------------------------------------------------------

@@ -312,7 +312,8 @@ export async function executeJob(
       return { entity: e, options: { ...options, timezone } };
     });
     const base = job.name ? job.name.replace(/[^\w.-]+/g, "_") : `Export_${timestamp()}`;
-    const out = createWorkbookOut(format, path.join(dir, base), deps.log);
+    // A backup is always a compressed archive, one type or many: a tenth of the disk space, and the same kind of file every day.
+    const out = createWorkbookOut(format, path.join(dir, base), deps.log, { alwaysZip: job.kind === "backup" });
     // Expected totals make a percentage and time estimate possible. If any
     // data type can't be counted, progress falls back to a plain item counter.
     const expected: Array<number | null> = [];
