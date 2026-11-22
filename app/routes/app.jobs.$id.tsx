@@ -14,6 +14,7 @@ import { jobDir, RETENTION_DAYS } from "../lib/jobs/storage.server";
 import { FirstLook, ImportReview, ImportSteps } from "../components/DryRunPreview";
 import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
+import { Icon } from "../components/ui";
 import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -220,6 +221,53 @@ export default function JobDetail() {
       )}
 
       {job.type === "import" && job.kind === "job" ? <ImportSteps step={dryRun ? 2 : 3} /> : null}
+
+      {job.type === "import" && !dryRun && job.status === "finished" && !job.error ? (
+        (() => {
+          const sum = (k: string) => job.stats.reduce((x: number, st: any) => x + (Number(st?.[k]) || 0), 0);
+          const ok = sum("ok");
+          const failed = sum("failed");
+          const skipped = sum("skipped");
+          return (
+            <div className={`bp-done${failed || stopped ? " bp-done-warn" : ""}`}>
+              <span className="bp-done-icon">
+                <Icon name={failed || stopped ? "alert" : "check"} size={24} />
+              </span>
+              <div className="bp-done-text">
+                <b>{stopped ? "Import stopped part-way" : failed ? "Import finished, with rows to look at" : "Import complete"}</b>
+                <span>
+                  {timing ? `${timing}. ` : ""}
+                  {canUndo ? `You can undo it for ${undoDays} days.` : "The store now has these values."}
+                </span>
+              </div>
+              <div className="bp-done-nums">
+                <span>
+                  <b>{ok.toLocaleString("en")}</b>applied
+                </span>
+                {failed ? (
+                  <span>
+                    <b style={{ color: "#b3261e" }}>{failed.toLocaleString("en")}</b>failed
+                  </span>
+                ) : null}
+                {skipped ? (
+                  <span>
+                    <b>{skipped.toLocaleString("en")}</b>
+                    skipped
+                  </span>
+                ) : null}
+              </div>
+              <div className="bp-done-actions">
+                {links.result ? (
+                  <s-button href={links.result} target="_blank">
+                    Results file
+                  </s-button>
+                ) : null}
+                <s-button href="/app/history">What changed</s-button>
+              </div>
+            </div>
+          );
+        })()
+      ) : null}
 
       {fetcher.data?.error && !(needs && dryRun) ? (
         <s-banner tone="critical" heading="Could not start the import">

@@ -7,6 +7,7 @@ import { searchHistory } from "../lib/jobs/history.server";
 import { RETENTION_DAYS } from "../lib/jobs/storage.server";
 import { formatDate } from "../components/jobs";
 
+import { EmptyState, JOB_PAGES, SubNav } from "../components/ui";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const q = new URL(request.url).searchParams.get("q") ?? "";
@@ -29,10 +30,11 @@ export default function History() {
   const go = (value: string) => navigate(value.trim() ? `/app/history?q=${encodeURIComponent(value.trim())}` : "/app/history");
 
   return (
-    <s-page heading="Change history" inlineSize="base">
+    <s-page heading="Jobs and history" inlineSize="base">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
+      <SubNav items={JOB_PAGES} current="/app/history" />
       <s-section>
         <s-stack direction="block" gap="small">
           <s-text color="subdued">What Bulkport's imports changed, item by item, for the last {days} days. Changes made in Shopify itself or by other apps are not listed here.</s-text>
@@ -79,9 +81,9 @@ export default function History() {
             })}
           </div>
         ) : (
-          <s-box padding="base">
-            <s-text color="subdued">{q ? "No import in this period changed an item matching that. Try its handle, its ID or its SKU exactly as in the file." : "Nothing yet. Every import you apply from now on is listed here, with what it changed."}</s-text>
-          </s-box>
+          <EmptyState icon="history" title={q ? "No change found for that" : "No changes recorded yet"}>
+            {q ? "No import in this period changed an item matching that. Try its handle, its ID or its SKU exactly as in the file." : "Every import you apply from now on is listed here, item by item, with the old and new values."}
+          </EmptyState>
         )}
       </s-section>
       {entries.length ? (

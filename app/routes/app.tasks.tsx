@@ -16,6 +16,7 @@ const TASKS: Array<{ key: TaskInput["task"]; title: string; note: string }> = [
   { key: "field", title: "Set a field", note: "Status, vendor, type, tax or what happens when out of stock." },
 ];
 
+import { EDIT_PAGES, SubNav } from "../components/ui";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const task = new URL(request.url).searchParams.get("task");
@@ -117,10 +118,11 @@ export default function Tasks() {
       : "";
 
   return (
-    <s-page heading="Quick changes" inlineSize="base">
+    <s-page heading="Edit products" inlineSize="base">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
+      <SubNav items={EDIT_PAGES} current="/app/tasks" />
       <s-banner tone="info" heading="Nothing changes until you have seen the preview">
         <s-text>Choose a change and the products it is for. Bulkport works out the new value for every product and shows them as a preview, old value beside new. You then choose what to apply, and it can be undone afterwards.</s-text>
       </s-banner>

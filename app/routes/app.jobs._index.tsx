@@ -11,6 +11,7 @@ import { usePolling } from "../components/usePolling";
 /** Jobs shown per page. */
 const PAGE = 30;
 
+import { EmptyState, JOB_PAGES, SubNav } from "../components/ui";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -45,8 +46,9 @@ export default function Jobs() {
   usePolling(jobs.some((j) => isActive(j.status)), 3000);
 
   return (
-    <s-page heading="Jobs" inlineSize="large">
+    <s-page heading="Jobs and history" inlineSize="large">
       <div className="bp-column">
+        <SubNav items={JOB_PAGES} current="/app/jobs" />
         <div className="bp-tabs" role="tablist" style={{ alignSelf: "flex-start" }}>
           {FILTERS.map((f) => (
             <button
@@ -62,14 +64,10 @@ export default function Jobs() {
           ))}
         </div>
         {jobs.length === 0 ? (
-          <s-section>
-            <s-text tone="neutral">
-              {filter === "all"
-                ? "Exports and imports you run will be listed here."
-                : filter === "problems"
-                  ? "Nothing has failed. Jobs that fail or finish with errors are listed here."
-                  : "No jobs of this kind yet."}
-            </s-text>
+          <s-section padding="none">
+            <EmptyState icon={filter === "problems" ? "check" : "history"} title={filter === "all" ? "Nothing here yet" : filter === "problems" ? "Nothing has failed" : "No jobs of this kind yet"}>
+              {filter === "all" ? "Exports and imports you run are listed here, each with its file, its result and a way to undo it." : filter === "problems" ? "Jobs that fail or finish with errors are listed here, so nothing goes wrong unnoticed." : "Start one from Home."}
+            </EmptyState>
           </s-section>
         ) : (
           <s-section padding="none" accessibilityLabel="Jobs">

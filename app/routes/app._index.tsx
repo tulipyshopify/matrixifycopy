@@ -11,6 +11,7 @@ import { usePolling } from "../components/usePolling";
 import { isDryRunConfig, jobHealth } from "../lib/jobs/health";
 import { ImportForm } from "../components/ImportForm";
 import { AskBox } from "../components/AskBox";
+import { ActionTile, EmptyState, StatTile } from "../components/ui";
 import { EXPORT_TEMPLATES, getTemplate } from "../lib/jobs/templates";
 import { latestChecks, scoreDrop } from "../lib/check/check.server";
 import { DEFAULT_BACKUP_TYPES, backupNow, backupsAllowed, saveBackupSettings } from "../lib/jobs/backups.server";
@@ -107,8 +108,20 @@ export default function Home() {
   const first = attention[0];
 
   return (
-    <s-page heading="Bulkport" inlineSize="large">
+    <s-page inlineSize="large">
       <div className="bp-column">
+        <header className="bp-hero">
+          <div className="bp-hero-text">
+            <h1>What would you like to change today?</h1>
+            <p>Every change is shown before it is made, and can be undone afterwards.</p>
+          </div>
+          <div className="bp-acts">
+            <ActionTile primary href="#import" icon="import" title="Import a file" note="Excel, CSV or ZIP, with images" />
+            <ActionTile href="/app/tasks" icon="bolt" title="Quick change" note="Prices, tags, text: no file needed" />
+            <ActionTile href="/app/edit" icon="table" title="Edit in a table" note="Type and paste like a spreadsheet" />
+            <ActionTile href="/app/export?new=1" icon="export" title="Export" note="Any data, the columns you choose" />
+          </div>
+        </header>
         {fetcher.data?.error ? (
           <s-banner tone="critical" heading="That didn't work">
             {fetcher.data.error}
@@ -143,27 +156,41 @@ export default function Home() {
           </s-banner>
         ) : null}
 
-        <div className="bp-strip" role="list" aria-label="Status">
+        <div className="bp-stats" aria-label="Status">
           {backupsEnabled ? (
-            <a role="listitem" href="/app/backups" className="bp-strip-item">
-              <i className={`bp-dot ${stats.backupOn ? "bp-ok" : "bp-warn"}`} />
-              {stats.backupOn ? `Backups on${stats.lastBackupAt ? `, last ${daysAgo(stats.lastBackupAt)}` : ""}` : `Daily backups are off${stats.lastBackupAt ? `, last ${daysAgo(stats.lastBackupAt)}` : ""}`}
-            </a>
+            <StatTile
+              href="/app/backups"
+              icon="shield"
+              label="Backups"
+              value={stats.backupOn ? "On" : "Off"}
+              note={stats.lastBackupAt ? `Last ${daysAgo(stats.lastBackupAt)}` : stats.backupOn ? "First one tonight" : "No backup yet"}
+              tone={stats.backupOn ? "ok" : "warn"}
+            />
           ) : null}
-          <a role="listitem" href="/app/check" className="bp-strip-item">
-            <i className={`bp-dot ${checkScore === null ? "bp-idle" : checkScore >= 80 ? "bp-ok" : "bp-warn"}`} />
-            {checkScore === null ? "Catalogue health: not checked yet" : `Catalogue health ${checkScore}${checkDrop ? `, down ${checkDrop.from - checkDrop.to}` : ""}`}
-          </a>
-          <a role="listitem" href="/app/schedules" className="bp-strip-item">
-            <i className={`bp-dot ${stats.nextSchedule ? "bp-ok" : "bp-idle"}`} />
-            {stats.nextSchedule ? `Next automation ${formatDate(stats.nextSchedule.nextRunAt)} (${scheduleCount} on)` : "No automations set up"}
-          </a>
-          {stats.problems ? (
-            <a role="listitem" href="/app/jobs?show=problems" className="bp-strip-item">
-              <i className="bp-dot bp-bad" />
-              {stats.problems} {stats.problems === 1 ? "problem" : "problems"} in the last 7 days
-            </a>
-          ) : null}
+          <StatTile
+            href="/app/check"
+            icon="heart"
+            label="Catalogue health"
+            value={checkScore === null ? "Not checked" : `${checkScore} / 100`}
+            note={checkScore === null ? "Run a check" : checkDrop ? `Down ${checkDrop.from - checkDrop.to} since last week` : checkScore >= 80 ? "In good shape" : "Gaps to fix"}
+            tone={checkScore === null ? "idle" : checkScore >= 80 && !checkDrop ? "ok" : "warn"}
+          />
+          <StatTile
+            href="/app/schedules"
+            icon="clock"
+            label="Automations"
+            value={scheduleCount ? `${scheduleCount} on` : "None"}
+            note={stats.nextSchedule ? `Next ${formatDate(stats.nextSchedule.nextRunAt)}` : "Repeat an export or import"}
+            tone={stats.nextSchedule ? "ok" : "idle"}
+          />
+          <StatTile
+            href="/app/jobs?show=problems"
+            icon={stats.problems ? "alert" : "check"}
+            label="Last 7 days"
+            value={stats.problems ? `${stats.problems} ${stats.problems === 1 ? "problem" : "problems"}` : "No problems"}
+            note={stats.problems ? "Open to see them" : "Everything went through"}
+            tone={stats.problems ? "bad" : "ok"}
+          />
         </div>
         {backupsEnabled && !stats.backupOn && !stats.lastBackupAt ? (
           <s-banner tone="info" heading="Keep a daily backup, so a mistake can be put right">
@@ -182,15 +209,36 @@ export default function Home() {
         ) : null}
 
         {stats.firstRun ? (
-          <s-section>
-            <s-text tone="neutral">
-              New here? Export a file, edit it in Excel or Google Sheets, then drop it below: you see exactly what would change for every row before anything is applied.
-            </s-text>
-          </s-section>
+          <section className="bp-start" aria-label="Getting started">
+            <b>New here? Three steps to your first safe change</b>
+            <ol>
+              <li>
+                <span>1</span>
+                <div>
+                  <b>Get a file in the right layout</b>
+                  Press Export on "All products" below, or use a file you already have.
+                </div>
+              </li>
+              <li>
+                <span>2</span>
+                <div>
+                  <b>Edit it and drop it in</b>
+                  Change what you need in Excel or Google Sheets, then add the file under Import.
+                </div>
+              </li>
+              <li>
+                <span>3</span>
+                <div>
+                  <b>Check the preview, then apply</b>
+                  You see the old and new value of every row first. Nothing changes until you say so.
+                </div>
+              </li>
+            </ol>
+          </section>
         ) : null}
 
         <div className="bp-home">
-          <div className="bp-home-import">
+          <div className="bp-home-import" id="import">
             <ImportForm maxUploadMb={maxUploadMb} />
           </div>
           <s-section>
@@ -218,38 +266,6 @@ export default function Home() {
               </div>
             </s-stack>
           </s-section>
-          <s-section>
-            <s-stack direction="block" gap="small">
-              <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
-                <s-heading>Quick changes</s-heading>
-                <s-button href="/app/tasks">All quick changes</s-button>
-              </s-stack>
-              <s-text tone="neutral">No spreadsheet needed. Each one shows a preview first and can be undone.</s-text>
-              <div className="bp-quick">
-                {[
-                  { key: "prices", title: "Change prices", note: "Up or down by a percentage or an amount; can start a sale" },
-                  { key: "replace", title: "Find and replace text", note: "In titles, descriptions or SEO text" },
-                  { key: "tags", title: "Add or remove tags", note: "On the products you choose" },
-                  { key: "end_sale", title: "End a sale", note: "Clear compare-at prices" },
-                ].map((t, i) => (
-                  <div key={t.key} className={`bp-quick-row${i >= 3 ? " bp-quick-more" : ""}`}>
-                    <div className="bp-quick-text">
-                      <s-text type="strong">{t.title}</s-text>
-                      <s-text tone="neutral">{t.note}</s-text>
-                    </div>
-                    <s-button href={`/app/tasks?task=${t.key}`}>Start</s-button>
-                  </div>
-                ))}
-                <div className="bp-quick-row">
-                  <div className="bp-quick-text">
-                    <s-text type="strong">Edit in a table</s-text>
-                    <s-text tone="neutral">Type and paste like a spreadsheet, inside the app</s-text>
-                  </div>
-                  <s-button href="/app/edit">Open</s-button>
-                </div>
-              </div>
-            </s-stack>
-          </s-section>
         </div>
 
         <s-section padding="none" accessibilityLabel="Recent jobs">
@@ -265,9 +281,9 @@ export default function Home() {
           {jobs.length ? (
             <JobList jobs={jobs} pendingId={pendingIntent === "quick-export" ? null : pendingId} onAction={(intent, id) => fetcher.submit({ intent, id }, { method: "post" })} />
           ) : (
-            <s-box padding="none base base base">
-              <s-text tone="neutral">Exports and imports you run will be listed here.</s-text>
-            </s-box>
+            <EmptyState icon="history" title="Nothing here yet">
+              Exports and imports you run are listed here, each with its file, its result and a way to undo it.
+            </EmptyState>
           )}
         </s-section>
 

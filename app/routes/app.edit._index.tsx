@@ -9,6 +9,7 @@ import { countItems } from "../lib/jobs/counts.server";
 import { EDIT_COLUMNS, MAX_EDIT_PRODUCTS, startEdit } from "../lib/jobs/edit.server";
 import { PICK_FIELDS, planTask } from "../lib/jobs/tasks.server";
 
+import { EDIT_PAGES, SubNav } from "../components/ui";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   return { pickFields: PICK_FIELDS, columns: EDIT_COLUMNS, max: MAX_EDIT_PRODUCTS };
@@ -53,10 +54,11 @@ export default function EditStart() {
   const toggle = (c: string, on: boolean) => setCols((cur) => (on ? [...cur, c] : cur.filter((x) => x !== c)));
 
   return (
-    <s-page heading="Edit in a table" inlineSize="base">
+    <s-page heading="Edit products" inlineSize="base">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
+      <SubNav items={EDIT_PAGES} current="/app/edit" />
       <s-banner tone="info" heading="Edit products like a spreadsheet, without leaving the app">
         <s-text>Choose the products and the columns. They open in a table you can type in, paste into from Excel, and fill a whole column at once. Your changes then go through the usual preview before anything is applied.</s-text>
       </s-banner>

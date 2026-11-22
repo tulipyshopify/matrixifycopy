@@ -181,7 +181,7 @@ export function ImportForm({
           ) : (
             <>
           <s-drop-zone
-            label={`Add an Excel, CSV or ZIP file, with its image files if it has any, up to ${maxUploadMb} MB in all`}
+            label={`Your sheet, and its images if it has any (up to ${maxUploadMb} MB in all)`}
             accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
             multiple
             onInput={(ev: any) => pickFiles(ev.currentTarget.files)}
@@ -204,10 +204,6 @@ export function ImportForm({
               Use this link
             </s-button>
           </div>
-          <s-text tone="neutral">
-            The file can have any name: what it holds (products, orders, customers…) is recognised from its columns.
-            Google Sheets, Dropbox and other direct links work. Only a link can be repeated on a schedule.
-          </s-text>
           {source === "file" && file ? (
             <s-text>
               Selected file: {file.name}
@@ -215,9 +211,17 @@ export function ImportForm({
             </s-text>
           ) : null}
           {pickNote ? <s-text tone="caution">{pickNote}</s-text> : null}
-          <s-text color="subdued">
-            Images from your computer: select them together with the sheet (or put everything in one ZIP) and write each image's file name, for example barrel-1.jpg, in the Image Src column. They are checked in the preview and uploaded as part of the import.
-          </s-text>
+          <ul className="bp-hints">
+            <li>
+              <b>Any file name.</b> What the file holds (products, orders, customers…) is recognised from its columns.
+            </li>
+            <li>
+              <b>Images from your computer.</b> Select them together with the sheet, or put everything in one ZIP, and write each image's file name (for example barrel-1.jpg) in the Image Src column.
+            </li>
+            <li>
+              <b>From a link.</b> Google Sheets, Dropbox and other direct links work; only a link can be repeated on a schedule.
+            </li>
+          </ul>
           {source === "url" ? <s-text>Selected link: {url.trim() || "enter a link above"}{username ? ` (signing in as ${username})` : ""}</s-text> : null}
             </>
           )}

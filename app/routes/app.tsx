@@ -1,5 +1,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import { useEffect } from "react";
+import { Outlet, useLoaderData, useNavigation, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
@@ -14,6 +15,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
+  // Shopify admin's own loading bar while a page of the app is loading, so a click is always answered at once.
+  const navigating = useNavigation().state !== "idle";
+  useEffect(() => {
+    try {
+      (globalThis as any).shopify?.loading?.(navigating);
+    } catch {
+      // outside Shopify admin there is no bar to show
+    }
+  }, [navigating]);
 
   return (
     <AppProvider apiKey={apiKey}>
@@ -21,16 +31,14 @@ export default function App() {
         <s-link href="/app">Home</s-link>
         <s-link href="/app/import">Import</s-link>
         <s-link href="/app/export">Export</s-link>
-        <s-link href="/app/tasks">Quick changes</s-link>
-        <s-link href="/app/edit">Edit in a table</s-link>
-        <s-link href="/app/jobs">Jobs</s-link>
-        <s-link href="/app/history">Change history</s-link>
+        <s-link href="/app/tasks">Edit products</s-link>
+        <s-link href="/app/jobs">Jobs and history</s-link>
         <s-link href="/app/schedules">Automations</s-link>
         <s-link href="/app/backups">Backups</s-link>
         <s-link href="/app/check">Catalogue health</s-link>
         <s-link href="/app/connect">Settings</s-link>
-        <s-link href="/app/simple-profit">Simple Profit (preview)</s-link>
         <s-link href="/app/help">Help</s-link>
+        <s-link href="/app/simple-profit">Simple Profit (preview)</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>
