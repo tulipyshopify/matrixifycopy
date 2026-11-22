@@ -12,7 +12,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
-import { findExact, publishFields, runCommand, searchTerm } from "./_content_helpers";
+import { findExact, publishFields, publishWarnings, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -84,6 +84,15 @@ const PAGE_BY_HANDLE = `#graphql
     pages(first: 50, after: $after, query: $query) {
       nodes { id handle title }
       pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+const PAGE_NOW = `#graphql
+  query ImportPageNow($id: ID!) {
+    page(id: $id) {
+      id handle title body templateSuffix isPublished publishedAt createdAt updatedAt
+      metafields(first: 100) { nodes { namespace key type value } }
     }
   }
 `;
@@ -190,6 +199,18 @@ export async function importPage(ctx: ImportContext, rows: Row[], command: Comma
   return runCommand(command, existing, {
     what: "Page",
     idOf: (p) => p.id,
+    dry: ctx.options.dryRun
+      ? {
+          row: top,
+          metafields: true,
+          name: (p) => p?.title ?? cell(top, "Title") ?? handle ?? "",
+          current: async (p) => {
+            const now = (await ctx.gql(PAGE_NOW, { id: p.id })).page ?? p;
+            return pageToRow({ ...now, metafields: now.metafields?.nodes }, new Set(["metafields"]));
+          },
+          warn: (row, store) => publishWarnings(row, store, "page"),
+        }
+      : undefined,
     prepare: async () => pageCreateInput(top),
     create: async (page) => ({ id: await createPage(ctx, page) }),
     update: async (p) => {

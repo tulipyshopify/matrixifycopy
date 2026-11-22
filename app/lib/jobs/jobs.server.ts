@@ -30,6 +30,15 @@ export function entityCatalog() {
   }));
 }
 
+/** Data types that need a permission of their own; without it they are left out instead of failing later. */
+const NEEDS_SCOPE: Record<string, string> = { payouts: "read_shopify_payments" };
+
+/** The data types this shop can export, given the permissions the app was granted there. */
+export function exportableEntities(scope: string | null | undefined) {
+  const granted = new Set((scope ?? "").split(",").map((x) => x.trim()));
+  return entityCatalog().filter((e) => e.canExport && (!NEEDS_SCOPE[e.key] || !scope || granted.has(NEEDS_SCOPE[e.key])));
+}
+
 export type EntityInfo = ReturnType<typeof entityCatalog>[number];
 
 const DATE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;

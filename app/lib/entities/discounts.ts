@@ -17,6 +17,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
+import { diffRows } from "./_content_helpers";
 
 /**
  * Discounts of every kind via `discountNodes` (code and automatic). The
@@ -270,6 +271,40 @@ const DISCOUNT_DETAIL = `#graphql
   ${ITEMS_FRAGMENT}
   ${CONTEXT_FRAGMENT}
   ${VALUE_FRAGMENT}
+`;
+
+/** The rest of a discount's settings, read only when a preview compares the file with the store. */
+const DISCOUNT_COMPARE = `#graphql
+  query DiscountCompare($id: ID!) {
+    discountNode(id: $id) {
+      id
+      discount {
+        __typename
+        ... on DiscountCodeBasic {
+          status startsAt endsAt usageLimit appliesOncePerCustomer
+          combinesWith { orderDiscounts productDiscounts shippingDiscounts }
+          minimumRequirement { __typename ... on DiscountMinimumQuantity { greaterThanOrEqualToQuantity } ... on DiscountMinimumSubtotal { greaterThanOrEqualToSubtotal { amount } } }
+        }
+        ... on DiscountAutomaticBasic {
+          status startsAt endsAt
+          combinesWith { orderDiscounts productDiscounts shippingDiscounts }
+          minimumRequirement { __typename ... on DiscountMinimumQuantity { greaterThanOrEqualToQuantity } ... on DiscountMinimumSubtotal { greaterThanOrEqualToSubtotal { amount } } }
+        }
+        ... on DiscountCodeFreeShipping {
+          status startsAt endsAt usageLimit appliesOncePerCustomer
+          combinesWith { orderDiscounts productDiscounts shippingDiscounts }
+          minimumRequirement { __typename ... on DiscountMinimumQuantity { greaterThanOrEqualToQuantity } ... on DiscountMinimumSubtotal { greaterThanOrEqualToSubtotal { amount } } }
+          maximumShippingPrice { amount }
+        }
+        ... on DiscountAutomaticFreeShipping {
+          status startsAt endsAt
+          combinesWith { orderDiscounts productDiscounts shippingDiscounts }
+          minimumRequirement { __typename ... on DiscountMinimumQuantity { greaterThanOrEqualToQuantity } ... on DiscountMinimumSubtotal { greaterThanOrEqualToSubtotal { amount } } }
+          maximumShippingPrice { amount }
+        }
+      }
+    }
+  }
 `;
 
 /**
@@ -939,6 +974,84 @@ function checkContinuationRows(rows: Row[]) {
   });
 }
 
+/** Things a discount is allowed to be, but rarely on purpose. */
+export function discountWarnings(top: Row, store: Row | null, type: DiscountType): string[] {
+  const now = (col: string) => cell(top, col) ?? store?.[col] ?? "";
+  const out: string[] = [];
+  const everyone = ["", "all"].includes(now("Customer Selection").toLowerCase());
+  const noEnd = !now("Ends At");
+  const noLimit = !now("Usage Limit");
+  const noMinimum = !now("Minimum Requirement");
+  const open = [noEnd ? "no end date" : "", noLimit ? "no limit on how often it is used" : ""].filter(Boolean).join(" and ");
+  if (type === "Basic") {
+    const valueType = now("Value Type").toLowerCase();
+    const value = Math.abs(Number(now("Value")));
+    const everything = ["", "all"].includes(now("Applies To").toLowerCase());
+    if (valueType === "percentage" && value >= 100 && everyone && (noEnd || noLimit)) {
+      out.push(`100% off ${everything ? "everything" : "the chosen products"} for every customer, with ${open}: anyone with this discount gets ${everything ? "the whole order" : "them"} free.`);
+    } else if (valueType === "percentage" && value >= 70 && everyone && everything && noEnd && noLimit) {
+      out.push(`${value}% off everything for every customer, with ${open}. Check this is meant.`);
+    }
+  } else if (type === "Free Shipping" && everyone && noEnd && noLimit && noMinimum && !now("Maximum Shipping Price")) {
+    out.push("Free shipping for every customer on any order, with no end date, no minimum and no limit on the delivery price.");
+  }
+  if (store && (store.Status ?? "") === "active" && cell(top, "Ends At") && Date.parse(cell(top, "Ends At")!) < Date.now()) {
+    out.push("This discount is running now and the new end date is in the past: it stops working straight away.");
+  }
+  return out;
+}
+
+async function previewDiscount(
+  ctx: ImportContext,
+  rows: Row[],
+  command: Command,
+  type: DiscountType,
+  method: Method,
+  existing: ExistingDiscount | null,
+  codes: string[],
+): Promise<ItemResult> {
+  const top = rows[0];
+  const replacing = command === "REPLACE" && !!existing;
+  // Everything a real import checks before it writes.
+  discountInput(top, type, method, replacing ? null : existing, codes[0]);
+  metafieldsFromRow(top);
+  const title = cell(top, "Title") ?? existing?.discount?.title ?? codes[0] ?? "";
+  const skip = ["Status", "Code", "Additional Code", "Type", "Method"];
+  if (!existing) {
+    const changes = [`${type} discount, ${method === "Code" ? `code ${codes[0] ?? "(none)"}` : "applied automatically"}`];
+    for (const col of Object.keys(top)) {
+      const v = cell(top, col);
+      if (v && !["ID", "Command", "Title", "Row #", "Top Row", ...skip].includes(col)) changes.push(`${col}: ${v.length > 70 ? `${v.slice(0, 67)}…` : v}`);
+    }
+    if (codes.length > 1) changes.push(`Codes: ${codes.length} in all`);
+    return { status: "OK", command, title, preview: { action: "create", changes, warnings: discountWarnings(top, null, type), creates: 1 } };
+  }
+  const more = (await ctx.gql(DISCOUNT_COMPARE, { id: existing.id })).discountNode?.discount ?? {};
+  const store = discountToRows({ id: existing.id, discount: { ...existing.discount, ...more }, codes: existing.codes.map((code) => ({ code })) }, new Set())[0];
+  const d = diffRows(top, store, { skip });
+  const known = new Set(existing.codes.map((c) => c.toLowerCase()));
+  const added = [...new Set(codes)].filter((c) => !known.has(c.toLowerCase()));
+  if (method === "Code" && added.length && !replacing) d.changes.push(`Codes: adds ${added.length} (${added.slice(0, 5).join(", ")}${added.length > 5 ? "…" : ""})`);
+  const warnings = discountWarnings(top, replacing ? null : store, type);
+  if (replacing) {
+    const lost = existing.codes.length - existing.codes.filter((c) => codes.some((x) => x.toLowerCase() === c.toLowerCase())).length;
+    return {
+      status: "OK",
+      command,
+      id: existing.id,
+      title,
+      preview: {
+        action: "replace",
+        changes: [`Deletes the discount "${title}" and creates it again from the file${lost > 0 ? `: ${lost} of its codes are not in the file and stop working` : ""}. Its usage count starts again from zero.`, ...d.changes],
+        warnings,
+        deletes: 1,
+        creates: 1,
+      },
+    };
+  }
+  return { status: "OK", command, id: existing.id, title, preview: { action: d.changes.length ? "update" : "none", changes: d.changes, warnings, ...(d.clears.length ? { clears: d.clears } : {}) } };
+}
+
 export async function importDiscount(ctx: ImportContext, rows: Row[], command: Command): Promise<ItemResult> {
   const top = rows[0];
   checkContinuationRows(rows);
@@ -952,6 +1065,11 @@ export async function importDiscount(ctx: ImportContext, rows: Row[], command: C
 
   if (command === "DELETE") {
     if (!existing) return { status: "Failed", command, message: "Discount not found" };
+    if (ctx.options.dryRun) {
+      const title = existing.discount?.title ?? codes[0] ?? "";
+      const n = existing.codes.length;
+      return { status: "OK", command, id: existing.id, title, preview: { action: "delete", changes: [`Deletes the discount "${title}"${n ? ` and its ${n === 1 ? "code" : `${n} codes`}` : ""}. Customers can no longer use it.`], warnings: [], deletes: 1 } };
+    }
     await deleteDiscount(ctx.gql, existing);
     return { status: "OK", command, id: existing.id, message: "Deleted" };
   }
@@ -972,6 +1090,13 @@ export async function importDiscount(ctx: ImportContext, rows: Row[], command: C
 
   if (command === "NEW" && existing) return { status: "Failed", command, id: existing.id, message: "Discount already exists" };
   if (command === "UPDATE" && !existing) return { status: "Failed", command, message: "Discount not found" };
+
+  if (ctx.options.dryRun) {
+    if (existing && command !== "REPLACE" && (existing.type !== type || existing.method !== effMethod)) {
+      return { status: "Failed", command, id: existing.id, message: `Existing discount is ${existing.type} (${existing.method}); use REPLACE to change it to ${type} (${effMethod})` };
+    }
+    return previewDiscount(ctx, rows, command, type, effMethod, existing, codes);
+  }
 
   let target = existing;
   let built: Record<string, any> | undefined;

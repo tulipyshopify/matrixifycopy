@@ -127,6 +127,16 @@ const METAOBJECT_BY_HANDLE = `#graphql
   }
 `;
 
+const METAOBJECT_NOW = `#graphql
+  query ImportMetaobjectNow($id: ID!) {
+    metaobject(id: $id) {
+      id handle type displayName updatedAt
+      capabilities { publishable { status } }
+      fields { key type value }
+    }
+  }
+`;
+
 const METAOBJECT_UPSERT = `#graphql
   mutation ImportMetaobjectUpsert($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
     metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
@@ -239,6 +249,21 @@ async function importOne(ctx: ImportContext, rows: Row[], command: Command): Pro
   return runCommand(command, existing, {
     what: "Metaobject",
     idOf: (m) => m.id,
+    dry: ctx.options.dryRun
+      ? {
+          row,
+          skip: ["Definition: Type", "Definition: Name"],
+          name: (m) => m?.handle ?? handle ?? "",
+          current: async (m) => {
+            const now = (await ctx.gql(METAOBJECT_NOW, { id: m.id })).metaobject ?? m;
+            return metaobjectToRow(now, await needsType());
+          },
+          warn: (file, store) =>
+            store && (cell(file, "Status") ?? "").toLowerCase() === "draft" && (store.Status ?? "").toLowerCase() === "active"
+              ? ["This entry is active now and would become a draft: it disappears from the shop wherever it is shown."]
+              : [],
+        }
+      : undefined,
     prepare: async () => {
       const def = await needsType();
       const notes: string[] = [];

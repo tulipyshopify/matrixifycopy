@@ -3,7 +3,7 @@ import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { userOf } from "../lib/user.server";
-import { createExportJob, createSchedule, editSchedule, entityCatalog, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
+import { createExportJob, createSchedule, editSchedule, exportableEntities, scheduleForEdit, latestExportPreset, listPresets, parseExportConfig } from "../lib/jobs/jobs.server";
 import { ExportForm, type ExportPayload } from "../components/ExportForm";
 import { askedExport } from "../lib/ai/assistant.server";
 import { fixExport } from "../lib/check/check.server";
@@ -21,7 +21,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (editing) {
     const { config, ...schedule } = editing;
     return {
-      entities: entityCatalog().filter((e) => e.canExport),
+      entities: exportableEntities(session.scope),
       presets: await listPresets(session.shop, user),
       latest: { entities: config.entities ?? [], format: schedule.format },
       editing: schedule,
@@ -29,7 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
   return {
     editing: null,
-    entities: entityCatalog().filter((e) => e.canExport),
+    entities: exportableEntities(session.scope),
     presets: await listPresets(session.shop, user),
     // What the form starts from, by name, so "Preset" doesn't say "Latest export" for a template.
     startName: params.get("check")

@@ -184,7 +184,7 @@ export function ImportForm({
             <>
           <s-drop-zone
             label={`Your sheet, and its images if it has any (up to ${maxUploadMb} MB in all)`}
-            accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
+            accept=".xlsx,.xlsm,.csv,.tsv,.txt,.zip,.xls,.xlsb,.ods,.numbers,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
             multiple
             onInput={(ev: any) => pickFiles(ev.currentTarget.files)}
             onChange={(ev: any) => pickFiles(ev.currentTarget.files)}

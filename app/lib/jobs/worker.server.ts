@@ -56,9 +56,23 @@ const isLarge = (job: { inputFile?: string | null }) => {
     return false;
   }
 };
+/** An export of at most this many items is "small": it runs beside a long export instead of waiting behind it. */
+const SMALL_EXPORT_ITEMS = 500;
+const isSmallExport = (job: { type: string; config?: string | null }) => {
+  if (job.type !== "export") return false;
+  try {
+    const cfg = JSON.parse(job.config ?? "{}");
+    const parts: any[] = Array.isArray(cfg?.entities) ? cfg.entities : [];
+    // Every data type in it is limited, and together they stay small.
+    const limits = parts.map((p) => Number(p?.options?.limit ?? 0));
+    return limits.length > 0 && limits.every((n) => n > 0) && limits.reduce((a, b) => a + b, 0) <= SMALL_EXPORT_ITEMS;
+  } catch {
+    return false;
+  }
+};
 // Large previews have a lane of their own (one at a time); small ones keep their slots and are never stuck behind a large one.
 const slot = (job: { shop: string; type: string; config?: string | null; inputFile?: string | null }) =>
-  `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? (isLarge(job) ? "preview-large" : "preview") : job.type}`;
+  `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? (isLarge(job) ? "preview-large" : "preview") : isSmallExport(job) ? "export-small" : job.type}`;
 const slotFree = (key: string) => (runningShops.get(key) ?? 0) < (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1);
 const takeSlot = (key: string) => runningShops.set(key, (runningShops.get(key) ?? 0) + 1);
 const freeSlot = (key: string) => {

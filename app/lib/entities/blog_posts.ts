@@ -15,7 +15,7 @@ import {
   toGid,
 } from "../core/util";
 import { writeMetafields } from "../core/lookups";
-import { cachedPromise, findExact, publishFields, runCommand, searchTerm } from "./_content_helpers";
+import { cachedPromise, fileNameFromUrl, findExact, publishFields, publishWarnings, runCommand, searchTerm } from "./_content_helpers";
 
 // --- Columns --------------------------------------------------------------------
 
@@ -236,6 +236,18 @@ const SHOP_NAME = `#graphql
   query ImportBlogPostShopName { shop { name } }
 `;
 
+const ARTICLE_NOW = `#graphql
+  query ImportArticleNow($id: ID!) {
+    article(id: $id) {
+      id handle title body summary tags templateSuffix isPublished publishedAt createdAt updatedAt
+      author { name }
+      image { url altText }
+      blog { id handle title }
+      metafields(first: 100) { nodes { namespace key type value } }
+    }
+  }
+`;
+
 const ARTICLE_CREATE = `#graphql
   mutation ImportArticleCreate($article: ArticleCreateInput!) {
     articleCreate(article: $article) {
@@ -400,6 +412,22 @@ export async function importBlogPost(ctx: ImportContext, rows: Row[], command: C
   return runCommand(command, existing, {
     what: "Blog post",
     idOf: (a) => a.id,
+    dry: ctx.options.dryRun
+      ? {
+          row: top,
+          metafields: true,
+          name: (a) => a?.title ?? cell(top, "Title") ?? cell(top, "Handle") ?? "",
+          current: async (a) => {
+            const now = (await ctx.gql(ARTICLE_NOW, { id: a.id })).article ?? a;
+            const store = articleToRow({ ...now, metafields: now.metafields?.nodes }, new Set(["metafields"]));
+            // Shopify keeps its own copy of the image: the same file name is the same image.
+            const src = cell(top, "Image Src");
+            if (src && fileNameFromUrl(src) === fileNameFromUrl(store["Image Src"])) store["Image Src"] = src;
+            return store;
+          },
+          warn: (row, store) => publishWarnings(row, store, "blog post"),
+        }
+      : undefined,
     prepare: () => articleCreateInput(ctx, top),
     create: async (article) => ({ id: await createArticle(ctx, article) }),
     update: async (a) => {

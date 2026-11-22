@@ -44,7 +44,10 @@ describe("image files: what they are and whether Shopify takes them", () => {
   });
 
   it("judges size, pixels and contents", () => {
-    expect(judgeImage("a.png", 2_000_000, png(1200, 800))).toEqual({ problem: null, warning: null });
+    expect(judgeImage("a.png", 900_000, png(1200, 1200))).toEqual({ problem: null, warning: null });
+    expect(judgeImage("a.png", 900_000, png(1200, 800)).warning).toMatch(/a.png is not square \(1,200 × 800\)/);
+    expect(judgeImage("a.jpg", 900_000, jpeg(3000, 900)).warning).toMatch(/much wider than tall/);
+    expect(judgeImage("a.png", 2_000_000, png(1200, 1200)).warning).toMatch(/2.0 MB PNG: for a photo, JPEG/);
     expect(judgeImage("a.png", 24_000_000, null).problem).toMatch(/is 24 MB; Shopify accepts images up to 21 MB/);
     expect(judgeImage("a.jpg", 5_000_000, jpeg(6000, 5000)).problem).toMatch(/6,000 × 5,000 pixels; Shopify accepts up to 25 megapixels/);
     expect(judgeImage("a.jpg", 900, strToU8("<html>")).problem).toMatch(/is not an image Shopify can use/);

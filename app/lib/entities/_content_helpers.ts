@@ -1,6 +1,6 @@
-import type { Command, Gql, ItemResult, Row } from "../core/types";
+import type { Command, Gql, ItemPreview, ItemResult, Row } from "../core/types";
 import { ImportError } from "../core/types";
-import { cell, parseBool } from "../core/util";
+import { cell, has, parseBool, parseMetafieldColumn, splitTags } from "../core/util";
 
 /**
  * Small helpers shared by the content entities (pages, blog posts, redirects,
@@ -96,6 +96,182 @@ export interface CommandOps<E, I> {
   remove: (existing: E) => Promise<void>;
   /** Optional override for REPLACE (default: remove then create). */
   replace?: (existing: E) => Promise<Done & { message?: string }>;
+  /** Set in a dry run: the item is compared with the store, field by field, and nothing is written. */
+  dry?: DryCompare<E>;
+}
+
+export interface DryCompare<E> {
+  /** The file's top row for this item. */
+  row: Row;
+  /** The item as it is in the store now, in the same columns an export gives. */
+  current: (existing: E) => Promise<Row>;
+  name: (existing: E | null) => string;
+  /** Columns that are not compared (set by Shopify, or only used to find the item). */
+  skip?: string[];
+  /** Compare metafield columns too (the store row holds the item's metafields). */
+  metafields?: boolean;
+  /** Extra warnings, given the file's row and the store's (null for a new item). */
+  warn?: (row: Row, store: Row | null) => string[];
+}
+
+const NOT_COMPARED = new Set(["ID", "Command", "Created At", "Updated At", "Row #", "Top Row", "Used Count", "Summary", "Display Name"]);
+const DATE_LIKE = /^\d{4}-\d\d-\d\d/;
+const NUMBER_LIKE = /^-?\d+(\.\d+)?$/;
+
+function shown(v: string): string {
+  if (v === "") return "(empty)";
+  const flat = v.replace(/\s+/g, " ");
+  return flat.length > 70 ? `${flat.slice(0, 67)}…` : flat;
+}
+
+function listOf(v: string): string {
+  return v.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).sort().join(",");
+}
+
+/** True when two cells mean the same thing, however they are written (TRUE / true, 10 / 10.0, two spellings of one date). */
+export function sameCell(a: string, b: string): boolean {
+  if (a === b) return true;
+  const x = a.trim();
+  const y = b.trim();
+  if (x === y) return true;
+  const yesNo = (v: string) => (/^(true|yes|y|on)$/i.test(v) ? true : /^(false|no|n|off)$/i.test(v) ? false : undefined);
+  const bx = yesNo(x);
+  const by = yesNo(y);
+  if (bx !== undefined && by !== undefined) return bx === by;
+  if (NUMBER_LIKE.test(x) && NUMBER_LIKE.test(y)) return Number(x) === Number(y);
+  if (DATE_LIKE.test(x) && DATE_LIKE.test(y)) {
+    const dx = Date.parse(x);
+    const dy = Date.parse(y);
+    if (!Number.isNaN(dx) && !Number.isNaN(dy)) return dx === dy;
+  }
+  if (x.length < 40 && y.length < 40 && x.toLowerCase() === y.toLowerCase()) return true;
+  if ((x.includes(",") || y.includes(",")) && x.length < 2000 && listOf(x) === listOf(y)) return true;
+  return false;
+}
+
+/**
+ * Compares a file row with the same item as the store has it now (both in
+ * export columns). Only cells the file would write are compared: a column the
+ * file lacks, or a blank that is left alone, changes nothing.
+ */
+export function diffRows(file: Row, store: Row, opts: { skip?: string[]; metafields?: boolean } = {}): { changes: string[]; clears: string[] } {
+  const changes: string[] = [];
+  const clears: string[] = [];
+  const skip = new Set(opts.skip ?? []);
+  let storeMetafields: Map<string, string> | undefined;
+  for (const col of Object.keys(file)) {
+    if (NOT_COMPARED.has(col) || skip.has(col) || /Command$/.test(col) || !has(file, col)) continue;
+    let next = (file[col] ?? "").trim();
+    let old: string;
+    if (Object.prototype.hasOwnProperty.call(store, col)) {
+      old = store[col] ?? "";
+    } else {
+      const mf = parseMetafieldColumn(col);
+      if (!mf || !opts.metafields) continue;
+      // The same metafield may be headed with or without its type.
+      if (!storeMetafields) {
+        storeMetafields = new Map();
+        for (const c of Object.keys(store)) {
+          const m = parseMetafieldColumn(c);
+          if (m) storeMetafields.set(`${m.namespace}.${m.key}`, store[c] ?? "");
+        }
+      }
+      old = storeMetafields.get(`${mf.namespace}.${mf.key}`) ?? "";
+    }
+    if (col === "Handle" && !next) continue;
+    if (col === "Tags") {
+      const mode = (cell(file, "Tags Command") ?? "REPLACE").toUpperCase();
+      const had = splitTags(old);
+      const given = splitTags(next);
+      const lower = (t: string[]) => new Set(t.map((x) => x.toLowerCase()));
+      const result =
+        mode === "MERGE" ? [...had, ...given.filter((t) => !lower(had).has(t.toLowerCase()))] : mode === "DELETE" ? had.filter((t) => !lower(given).has(t.toLowerCase())) : given;
+      const added = result.filter((t) => !lower(had).has(t.toLowerCase()));
+      const removed = had.filter((t) => !lower(result).has(t.toLowerCase()));
+      if (!added.length && !removed.length) continue;
+      changes.push(`Tags: ${[added.length ? `adds ${added.join(", ")}` : "", removed.length ? `removes ${removed.join(", ")}` : ""].filter(Boolean).join("; ")}`);
+      if (!result.length && had.length) clears.push("Tags");
+      continue;
+    }
+    if (sameCell(old, next)) continue;
+    if (next === "" && old !== "") clears.push(col);
+    if (old.length > 120 || next.length > 120) {
+      changes.push(next === "" ? `${col}: emptied (was ${old.length.toLocaleString("en-GB")} characters)` : `${col}: text changed (${old.length.toLocaleString("en-GB")} → ${next.length.toLocaleString("en-GB")} characters)`);
+    } else {
+      changes.push(`${col}: ${shown(old)} → ${shown(next)}`);
+    }
+  }
+  return { changes, clears };
+}
+
+/** What a new item would be given: the file's filled cells. */
+function filledCells(row: Row, skip: string[] = []): string[] {
+  const out: string[] = [];
+  for (const col of Object.keys(row)) {
+    if (NOT_COMPARED.has(col) || skip.includes(col) || /Command$/.test(col) || !has(row, col)) continue;
+    const v = (row[col] ?? "").trim();
+    if (!v) continue;
+    out.push(v.length > 120 ? `${col}: ${v.length.toLocaleString("en-GB")} characters` : `${col}: ${shown(v)}`);
+  }
+  return out;
+}
+
+/** A dry-run write is stopped by the importer; reaching it means the row passed every check before it. */
+function stoppedAtWrite(e: unknown): boolean {
+  return /^Dry run stopped at /.test((e as any)?.message ?? "");
+}
+
+async function dryCommand<E, I>(command: Command, existing: E | null, ops: CommandOps<E, I>, dry: DryCompare<E>): Promise<ItemResult> {
+  const what = ops.what.toLowerCase();
+  const done = (preview: ItemPreview, e: E | null = existing): ItemResult => ({ status: "OK", command, id: e ? ops.idOf(e) : undefined, title: dry.name(e) || undefined, preview });
+  const creates = async (): Promise<ItemResult> => {
+    try {
+      await ops.prepare();
+    } catch (e) {
+      // Preparing may create something the item needs (a blog for its post); the rest was checked.
+      if (!stoppedAtWrite(e)) throw e;
+    }
+    return done({ action: "create", changes: filledCells(dry.row, dry.skip), warnings: dry.warn?.(dry.row, null) ?? [], creates: 1 }, null);
+  };
+  switch (command) {
+    case "DELETE":
+      if (!existing) return { status: "Failed", command, message: `${ops.what} not found` };
+      return done({ action: "delete", changes: [`Deletes the ${what} "${dry.name(existing)}".`], warnings: [], deletes: 1 });
+    case "NEW":
+      if (existing) return { status: "Failed", command, id: ops.idOf(existing), message: `${ops.what} already exists` };
+      return creates();
+    case "REPLACE": {
+      if (!existing) return creates();
+      if (!ops.replace) await ops.prepare();
+      const store = await dry.current(existing);
+      const d = diffRows(dry.row, store, dry);
+      return done({
+        action: "replace",
+        changes: [`Deletes the ${what} "${dry.name(existing)}" and creates it again from the file: anything the file leaves out is lost.`, ...d.changes],
+        warnings: dry.warn?.(dry.row, store) ?? [],
+        deletes: 1,
+        creates: 1,
+      });
+    }
+    case "UPDATE":
+    case "MERGE": {
+      if (!existing) {
+        if (command === "UPDATE") return { status: "Failed", command, message: `${ops.what} not found` };
+        return creates();
+      }
+      // Runs the update up to its first write, so a row that would be refused is reported as such.
+      try {
+        await ops.update(existing);
+      } catch (e) {
+        if (!stoppedAtWrite(e)) throw e;
+      }
+      const store = await dry.current(existing);
+      const d = diffRows(dry.row, store, dry);
+      return done({ action: d.changes.length ? "update" : "none", changes: d.changes, warnings: dry.warn?.(dry.row, store) ?? [], ...(d.clears.length ? { clears: d.clears } : {}) });
+    }
+    default:
+      return { status: "Skipped", command };
+  }
 }
 
 function msg(base: string, notes?: string[]) {
@@ -109,6 +285,7 @@ function msg(base: string, notes?: string[]) {
  * deletes the old one, then creates.
  */
 export async function runCommand<E, I>(command: Command, existing: E | null, ops: CommandOps<E, I>): Promise<ItemResult> {
+  if (ops.dry) return dryCommand(command, existing, ops, ops.dry);
   switch (command) {
     case "DELETE": {
       if (!existing) return { status: "Failed", command, message: `${ops.what} not found` };
@@ -156,4 +333,21 @@ export function publishFields(row: Row): Record<string, unknown> {
   const at = cell(row, "Published At");
   if (at && published !== false) f.publishDate = at;
   return f;
+}
+
+/** Warnings about what visitors would stop or start seeing. */
+export function publishWarnings(row: Row, store: Row | null, what: string): string[] {
+  const out: string[] = [];
+  let published: boolean | undefined;
+  try {
+    published = parseBool(cell(row, "Published"));
+  } catch {
+    published = undefined;
+  }
+  if (store && published === false && parseBool(store.Published) === true) out.push(`This ${what} is live now and would be hidden from the shop.`);
+  if (store && published === true && parseBool(store.Published) === false) out.push(`This ${what} is hidden now and would go live.`);
+  const handle = cell(row, "Handle");
+  if (store && handle && store.Handle && handle !== store.Handle) out.push(`The address changes from /${store.Handle} to /${handle}. A redirect from the old address is added.`);
+  if (store && cell(row, "Body HTML") === "" && (store["Body HTML"] ?? "") !== "") out.push(`The ${what}'s text would be emptied.`);
+  return out;
 }
