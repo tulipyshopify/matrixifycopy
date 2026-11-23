@@ -180,3 +180,22 @@ describe("B29: OpenDocument spreadsheets (.ods)", () => {
     await expect(readWorkbook(file, "old.xls")).rejects.toThrow(/older Excel file \(.xls\).*Save as/);
   });
 });
+
+describe("B2: stock is read for many products in one request", () => {
+  it("a preview of 12 products with a stock column asks for their stock in far fewer than 12 requests", async () => {
+    const names = Array.from({ length: 12 }, (_, i) => `p${i}`);
+    const store = fakeStore(names.map((h, i) => product(h, `Product ${i}`, [variant(`S${i}`, "10.00", {}, { stock: { Shop: i } })])), ["Shop"]);
+    let stockRequests = 0;
+    const gql = (async (q: string, v: any) => {
+      if (/ImportStockNow/.test(q)) stockRequests++;
+      return store.gql(q, v);
+    }) as any;
+    const sheet = { name: "Products", headers: ["Handle", "Variant SKU", "Inventory Available: Shop"], rows: names.map((h, i) => ({ Handle: h, "Variant SKU": `S${i}`, "Inventory Available: Shop": String(i + 5) })) };
+    const [s] = await preview([sheet], gql);
+    expect(s).toMatchObject({ ok: 12, failed: 0 });
+    expect(s.preview!.every((p) => p.action === "update")).toBe(true);
+    expect(s.preview![3].changes.join(" ")).toMatch(/3 → 8/);
+    expect(stockRequests).toBeGreaterThan(0);
+    expect(stockRequests).toBeLessThanOrEqual(4);
+  });
+});

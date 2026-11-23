@@ -575,7 +575,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         batched = true;
       }
     }
-    await mapLimit(batched ? [] : items, Math.max(1, ctx.options.concurrency ?? 4), async (item, index) => {
+    await mapLimit(batched ? [] : items, Math.max(1, ctx.options.concurrency ?? (ctx.options.dryRun ? 8 : 4)), async (item, index) => {
       let result: ItemResult;
       let command: Command = defaultCommand;
       if (cancelled || (args.isCancelled && (await args.isCancelled()))) {

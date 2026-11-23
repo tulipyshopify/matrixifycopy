@@ -1726,12 +1726,14 @@ export function ExportForm({
   latest = null,
   editing = null,
   startName = "Latest export",
+  scheduleFirst = false,
 }: {
   entities: EntityInfo[];
   presets?: SavedPreset[];
   latest?: PresetData | null;
   /** What `latest` is, for the Preset list: "Latest export", "Template: Prices"… */
   startName?: string;
+  scheduleFirst?: boolean;
   /** An existing schedule being changed; `latest` then holds its set-up. */
   editing?: ScheduleBeingEdited | null;
 }) {
@@ -1754,7 +1756,7 @@ export function ExportForm({
     latest?.format === "csv" ? "csv" : "xlsx",
   );
   const [name, setName] = useState(editing?.name ?? "");
-  const [scheduled, setScheduled] = useState(!!editing);
+  const [scheduled, setScheduled] = useState(!!editing || !!scheduleFirst);
   const [intervalMinutes, setIntervalMinutes] = useState(editing?.intervalMinutes ?? 1440);
   const [uploadUrl, setUploadUrl] = useState(editing?.uploadUrl ?? "");
   // Off unless asked for: the link lets anyone who has it download the file.

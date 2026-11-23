@@ -263,6 +263,8 @@ export interface RunnerDeps {
   onChanges?: (entries: ChangeEntry[]) => Promise<void>;
   /** The store's saved column layouts, for files in someone else's layout. */
   layouts?: () => Promise<ColumnLayout[]>;
+  /** The shop keeps its product images square: ones that are not are pointed out. */
+  squareImages?: () => Promise<boolean>;
   /** Checks an image link loads and is an image (see ImportContext.checkImageUrl). */
   checkImageUrl?: (url: string) => Promise<string | null>;
 }
@@ -443,6 +445,8 @@ export async function executeJob(
     const uploaded = isZip ? ((await zipEntries(job.inputFile).catch(() => null)) ?? []).filter((e) => IMAGE_FILE.test(e.name) && !e.name.startsWith("__MACOSX") && !path.basename(e.name).startsWith(".")) : [];
     const images: LocalImages = { refs: new Map(), unused: [] };
     const judged = new Map<string, Promise<{ problem: string | null; warning: string | null; located?: boolean }>>();
+    let squareSetting: Promise<boolean> | undefined;
+    const squareWanted = () => (squareSetting ??= deps.squareImages?.().catch(() => false) ?? Promise.resolve(false));
     let locationsRemoved = 0;
     const judge = (address: string) => {
       if (!judged.has(address)) {
@@ -455,7 +459,7 @@ export async function executeJob(
             const head = ref.file.size <= MAX_IMAGE_BYTES ? await readZipEntryHead(job.inputFile!, ref.file.name).catch(() => null) : null;
             // Whether the photo says where it was taken (checked on a copy: nothing is changed here).
             const located = head ? stripLocation(new Uint8Array(head)) : false;
-            return { ...judgeImage(ref.typed, ref.file.size, head), located };
+            return { ...judgeImage(ref.typed, ref.file.size, head, { square: await squareWanted() }), located };
           })(),
         );
       }

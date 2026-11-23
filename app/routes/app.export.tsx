@@ -29,6 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
   return {
     editing: null,
+    scheduleFirst: params.get("scheduled") === "1",
     entities: exportableEntities(session.scope),
     presets: await listPresets(session.shop, user),
     // What the form starts from, by name, so "Preset" doesn't say "Latest export" for a template.
@@ -94,12 +95,12 @@ export default function NewExport() {
   const data = useLoaderData<typeof loader>();
   const { entities, presets, latest, editing } = data;
   return (
-    <s-page heading={editing ? `Edit schedule: ${editing.name}` : "New export"} inlineSize="large">
+    <s-page heading={editing ? `Edit schedule: ${editing.name}` : "scheduleFirst" in data && data.scheduleFirst ? "New scheduled export" : "New export"} inlineSize="large">
       <s-link slot="breadcrumb-actions" href={editing ? "/app/schedules" : "/app"}>
         {editing ? "Schedules" : "Home"}
       </s-link>
       <div className="bp-column">
-        <ExportForm key={editing?.id ?? "new"} entities={entities} presets={presets} latest={latest} editing={editing} startName={"startName" in data ? data.startName : undefined} />
+        <ExportForm key={editing?.id ?? "new"} entities={entities} presets={presets} latest={latest} editing={editing} startName={"startName" in data ? data.startName : undefined} scheduleFirst={"scheduleFirst" in data && !!data.scheduleFirst} />
       </div>
     </s-page>
   );

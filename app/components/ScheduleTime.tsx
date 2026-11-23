@@ -48,10 +48,10 @@ export function ScheduleTimeFields({
       ) : null}
       <s-text-field
         label="Time (optional)"
-        placeholder="07:30"
+        placeholder="Starts now"
         value={runAt}
         error={valid ? undefined : "Use 24-hour HH:MM, for example 07:30"}
-        details={`Runs at this time${zone ? ` (${zone} time)` : ""}. Leave empty to start now and repeat from then.`}
+        details={runAt.trim() ? `Runs at this time${zone ? ` (${zone} time)` : ""}.` : `Empty: the first run starts as soon as you save, and it repeats from then. To run at a set time, type it as HH:MM, for example 07:30${zone ? ` (${zone} time)` : ""}.`}
         onInput={(ev: any) => onChange({ runAt: ev.currentTarget.value })}
       />
     </s-grid>

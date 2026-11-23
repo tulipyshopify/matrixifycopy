@@ -76,7 +76,7 @@ export default function Schedules() {
 
   return (
     <s-page heading="Automations">
-      <s-button slot="primary-action" onClick={() => navigate("/app/export")}>
+      <s-button slot="primary-action" onClick={() => navigate("/app/export?scheduled=1")}>
         New scheduled export
       </s-button>
       <s-button
@@ -98,10 +98,10 @@ export default function Schedules() {
           <s-table>
             <s-table-header-row>
               <s-table-header listSlot="primary">Name</s-table-header>
+              <s-table-header>Actions</s-table-header>
               <s-table-header>Last run</s-table-header>
               <s-table-header>Repeats</s-table-header>
               <s-table-header>Next run</s-table-header>
-              <s-table-header>Actions</s-table-header>
             </s-table-header-row>
             <s-table-body>
               {schedules.map((s) => (
@@ -213,46 +213,6 @@ export default function Schedules() {
                     </s-stack>
                   </s-table-cell>
                   <s-table-cell>
-                    {s.health.last ? (
-                      <s-stack direction="block" gap="small-500">
-                        <s-link href={`/app/jobs/${s.health.last.id}`}>
-                          <s-badge
-                            tone={
-                              s.health.last.status === "failed"
-                                ? "critical"
-                                : s.health.last.problems
-                                  ? "critical"
-                                  : s.health.last.status === "cancelled"
-                                    ? "warning"
-                                    : "success"
-                            }
-                          >
-                            {s.health.last.status === "failed"
-                              ? "Failed"
-                              : s.health.last.problems
-                                ? `${s.health.last.problems} problems`
-                                : s.health.last.status === "cancelled"
-                                  ? "Cancelled"
-                                  : "OK"}
-                          </s-badge>
-                        </s-link>
-                        <s-text tone="neutral">
-                          {formatDate(s.health.last.finishedAt)}
-                        </s-text>
-                      </s-stack>
-                    ) : (
-                      <s-text tone="neutral">Not run yet</s-text>
-                    )}
-                  </s-table-cell>
-                  <s-table-cell>{s.repeats}</s-table-cell>
-                  <s-table-cell>
-                    {s.enabled ? (
-                      formatDate(s.nextRunAt)
-                    ) : (
-                      <s-badge>Paused</s-badge>
-                    )}
-                  </s-table-cell>
-                  <s-table-cell>
                     <s-stack direction="inline" gap="small-200">
                       <s-button
                         variant="secondary"
@@ -294,6 +254,46 @@ export default function Schedules() {
                           : "Delete"}
                       </s-button>
                     </s-stack>
+                  </s-table-cell>
+                  <s-table-cell>
+                    {s.health.last ? (
+                      <s-stack direction="block" gap="small-500">
+                        <s-link href={`/app/jobs/${s.health.last.id}`}>
+                          <s-badge
+                            tone={
+                              s.health.last.status === "failed"
+                                ? "critical"
+                                : s.health.last.problems
+                                  ? "critical"
+                                  : s.health.last.status === "cancelled"
+                                    ? "warning"
+                                    : "success"
+                            }
+                          >
+                            {s.health.last.status === "failed"
+                              ? "Failed"
+                              : s.health.last.problems
+                                ? `${s.health.last.problems} problems`
+                                : s.health.last.status === "cancelled"
+                                  ? "Cancelled"
+                                  : "OK"}
+                          </s-badge>
+                        </s-link>
+                        <s-text tone="neutral">
+                          {formatDate(s.health.last.finishedAt)}
+                        </s-text>
+                      </s-stack>
+                    ) : (
+                      <s-text tone="neutral">Not run yet</s-text>
+                    )}
+                  </s-table-cell>
+                  <s-table-cell>{s.repeats}</s-table-cell>
+                  <s-table-cell>
+                    {s.enabled ? (
+                      formatDate(s.nextRunAt)
+                    ) : (
+                      <s-badge>Paused</s-badge>
+                    )}
                   </s-table-cell>
                 </s-table-row>
               ))}

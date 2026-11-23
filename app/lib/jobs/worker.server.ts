@@ -199,6 +199,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
       checkImageUrl,
       checkExclusions: () => checkExclusions(job.shop),
       layouts: () => listLayouts(job.shop),
+      squareImages: async () => !!(await prisma.shopSetting.findUnique({ where: { shop: job.shop }, select: { squareImages: true } }))?.squareImages,
       onChanges: (entries) => recordChanges(job.shop, job.id, entries),
       timezone: () => shopTimezone(gql),
       // A change asked for in plain English builds its file: keep it, so

@@ -21,7 +21,7 @@ const LARGE_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Too small to look sharp on a product page. */
 const SMALL_IMAGE_SIDE = 400;
 /** A PNG this large is almost always a photo that would be far smaller as a JPEG. */
-const LARGE_PNG_BYTES = 1024 * 1024;
+const LARGE_PNG_BYTES = 500 * 1024;
 
 export const IMAGE_FILE = /\.(jpe?g|png|gif|webp|heic|heif)$/i;
 /** Picture formats people have on disk that a shop can't use as they are. */
@@ -85,7 +85,7 @@ export function imageInfo(b: Uint8Array): ImageInfo {
 }
 
 /** Why an image file can't be used (null when it can), and anything worth pointing out. */
-export function judgeImage(name: string, size: number, head: Uint8Array | null): { problem: string | null; warning: string | null } {
+export function judgeImage(name: string, size: number, head: Uint8Array | null, opts: { square?: boolean } = {}): { problem: string | null; warning: string | null } {
   if (size > MAX_IMAGE_BYTES) return { problem: `is ${mb(size)}; Shopify accepts images up to ${mb(MAX_IMAGE_BYTES)}. Save it smaller (for the web, 2,000 to 3,000 pixels wide is plenty) and upload again`, warning: null };
   if (size === 0) return { problem: "is an empty file", warning: null };
   const info = head ? imageInfo(head) : { type: null as ImageInfo["type"] };
@@ -98,14 +98,15 @@ export function judgeImage(name: string, size: number, head: Uint8Array | null):
   const notes: string[] = [];
   if (info.cmyk) notes.push(`${name} is in print colours (CMYK), which shops and browsers show with wrong colours: save it as RGB`);
   if (info.width && info.height && Math.max(info.width, info.height) < SMALL_IMAGE_SIDE) notes.push(`${name} is only ${info.width} × ${info.height} pixels and will look blurred on a product page`);
-  if (info.width && info.height) {
+  // Only for shops that keep their product pictures square (a setting): others use any shape on purpose.
+  if (opts.square && info.width && info.height) {
     const ratio = info.width / info.height;
     // Shop themes crop or pad product pictures to one shape; a very long or wide one loses its edges.
     if (ratio > 2 || ratio < 0.5) notes.push(`${name} is ${info.width.toLocaleString("en")} × ${info.height.toLocaleString("en")} pixels, much ${ratio > 1 ? "wider than tall" : "taller than wide"}: most themes will crop it or show it small`);
-    else if (Math.abs(ratio - 1) > 0.05) notes.push(`${name} is not square (${info.width.toLocaleString("en")} × ${info.height.toLocaleString("en")}): fine if all this product's pictures share the shape, uneven in a grid if they don't`);
+    else if (Math.abs(ratio - 1) > 0.05) notes.push(`${name} is not square (${info.width.toLocaleString("en")} × ${info.height.toLocaleString("en")})`);
   }
   if (size > LARGE_IMAGE_BYTES) notes.push(`${name} is ${mb(size)}: it will be accepted, but is much larger than a shop page needs`);
-  else if (info.type === "png" && size > LARGE_PNG_BYTES) notes.push(`${name} is a ${mb(size)} PNG: for a photo, JPEG gives the same picture at a fraction of the size (keep PNG for logos and images with transparency)`);
+  else if (info.type === "png" && size > LARGE_PNG_BYTES) notes.push(`${name} is a ${size < 1024 * 1024 ? `${Math.round(size / 1024)} KB` : mb(size)} PNG: for a photo, JPEG gives the same picture at a fraction of the size (keep PNG for logos and images with transparency)`);
   return { problem: null, warning: notes.length ? notes.join("; ") : null };
 }
 

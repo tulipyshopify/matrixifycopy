@@ -45,6 +45,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     emailAvailable: emailAvailable(),
     failStop: await failStopPercent(session.shop),
     undoOnStop: await undoOnStop(session.shop),
+    squareImages: !!(await prisma.shopSetting.findUnique({ where: { shop: session.shop }, select: { squareImages: true } }))?.squareImages,
     history: await historyDays(session.shop),
     historyChoices: HISTORY_CHOICES,
     expiryChoices: EXPIRY_CHOICES,
@@ -91,7 +92,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (form.get("intent") === "defaults") {
       const failStopPercent = [0, 5, 10, 25].includes(Number(form.get("failStop"))) ? Number(form.get("failStop")) : 5;
       const days = HISTORY_CHOICES.includes(Number(form.get("history"))) ? Number(form.get("history")) : 90;
-      await prisma.shopSetting.upsert({ where: { shop: session.shop }, create: { shop: session.shop, failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true" }, update: { failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true" } });
+      await prisma.shopSetting.upsert({ where: { shop: session.shop }, create: { shop: session.shop, failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true", squareImages: form.get("squareImages") === "true" }, update: { failStopPercent, historyDays: days, undoOnStop: form.get("undoOnStop") === "true", squareImages: form.get("squareImages") === "true" } });
       return { saved: "Saved." };
     }
     if (form.get("intent") === "revoke") {
@@ -146,9 +147,10 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { me, keyAdmins: admins, mayFull, types, unusedDays, keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections, layouts } = useLoaderData<typeof loader>();
+  const { me, keyAdmins: admins, mayFull, types, unusedDays, keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, squareImages: squareSaved, connections, layouts } = useLoaderData<typeof loader>();
   const [code, setCode] = useState("");
   const [undoStop, setUndoStop] = useState(undoSaved);
+  const [square, setSquare] = useState(squareSaved);
   const [emailList, setEmailList] = useState(emails);
   const [stopAt, setStopAt] = useState(String(failStop));
   const [days, setDays] = useState(String(history));
@@ -350,8 +352,14 @@ export default function Connect() {
             disabled={stopAt === "0"}
             onChange={(ev: any) => setUndoStop(!!ev.currentTarget.checked)}
           />
+          <s-checkbox
+            label="Product images should be square"
+            details="On: an imported image file that is not square is pointed out in the preview. Off: any shape passes without a note."
+            checked={square}
+            onChange={(ev: any) => setSquare(!!ev.currentTarget.checked)}
+          />
           <s-stack direction="inline">
-            <s-button disabled={fetcher.state !== "idle" || (stopAt === String(failStop) && days === String(history) && undoStop === undoSaved)} onClick={() => fetcher.submit({ intent: "defaults", failStop: stopAt, history: days, undoOnStop: String(undoStop) }, { method: "post" })}>
+            <s-button disabled={fetcher.state !== "idle" || (stopAt === String(failStop) && days === String(history) && undoStop === undoSaved && square === squareSaved)} onClick={() => fetcher.submit({ intent: "defaults", failStop: stopAt, history: days, undoOnStop: String(undoStop), squareImages: String(square) }, { method: "post" })}>
               Save
             </s-button>
           </s-stack>

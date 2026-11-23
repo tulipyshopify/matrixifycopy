@@ -1504,10 +1504,47 @@ export const metafieldMap = (nodes: any[] | undefined): MetafieldsNow =>
 /** Stock per inventory item: location id -> quantity name -> number. */
 type StockNow = Map<string, Map<string, { name: string; quantities: Record<string, number> }>>;
 
+/**
+ * Gathers the lookups that items checked side by side ask for in the same
+ * moment into shared requests: eight products each asking for their variants'
+ * stock become one request for all of them, not eight.
+ */
+function gathered<T>(ctx: ImportContext, kind: string, size: number, run: (ids: string[]) => Promise<Map<string, T>>): (ids: string[]) => Promise<Map<string, T>> {
+  type Waiting = { ids: string[]; resolve: (m: Map<string, T>) => void; reject: (e: unknown) => void };
+  const key = `gathered:${kind}`;
+  let state = ctx.cache.get(key) as { queue: Waiting[]; timer: ReturnType<typeof setTimeout> | null } | undefined;
+  if (!state) ctx.cache.set(key, (state = { queue: [], timer: null }));
+  const st = state;
+  const flush = () => {
+    st.timer = null;
+    const batch = st.queue.splice(0);
+    const ids = [...new Set(batch.flatMap((w) => w.ids))];
+    void (async () => {
+      try {
+        const all = new Map<string, T>();
+        for (let i = 0; i < ids.length; i += size) for (const [k, v] of await run(ids.slice(i, i + size))) all.set(k, v);
+        for (const w of batch) w.resolve(new Map(w.ids.filter((id) => all.has(id)).map((id) => [id, all.get(id)!])));
+      } catch (e) {
+        for (const w of batch) w.reject(e);
+      }
+    })();
+  };
+  return (ids) =>
+    new Promise((resolve, reject) => {
+      st.queue.push({ ids, resolve, reject });
+      // A short wait lets the other items being checked join in; a full request goes at once.
+      if (st.queue.reduce((n, w) => n + w.ids.length, 0) >= size) {
+        if (st.timer) clearTimeout(st.timer);
+        flush();
+      } else if (!st.timer) st.timer = setTimeout(flush, 15);
+    });
+}
+
 async function fetchStock(ctx: ImportContext, inventoryItemIds: string[], names: string[]): Promise<StockNow> {
-  const out: StockNow = new Map();
-  for (let i = 0; i < inventoryItemIds.length; i += 20) {
-    const d = await ctx.gql(STOCK_NOW, { ids: inventoryItemIds.slice(i, i + 20), names });
+  const kinds = [...names].sort();
+  const load = gathered<Map<string, { name: string; quantities: Record<string, number> }>>(ctx, `stock:${kinds.join(",")}`, 20, async (ids) => {
+    const out: StockNow = new Map();
+    const d = await ctx.gql(STOCK_NOW, { ids, names: kinds });
     for (const node of d?.nodes ?? []) {
       if (!node?.id) continue;
       const levels = new Map<string, { name: string; quantities: Record<string, number> }>();
@@ -1516,8 +1553,20 @@ async function fetchStock(ctx: ImportContext, inventoryItemIds: string[], names:
       }
       out.set(node.id, levels);
     }
-  }
-  return out;
+    return out;
+  });
+  return load(inventoryItemIds);
+}
+
+async function fetchVariantMetafields(ctx: ImportContext, variantIds: string[], keys: string[]): Promise<Map<string, MetafieldsNow>> {
+  const wanted = [...keys].sort();
+  const load = gathered<MetafieldsNow>(ctx, `variant-metafields:${wanted.join(",")}`, 50, async (ids) => {
+    const out = new Map<string, MetafieldsNow>();
+    const d = await ctx.gql(VARIANT_METAFIELDS_NOW, { ids, keys: wanted });
+    for (const n of d?.nodes ?? []) if (n?.id) out.set(n.id, metafieldMap(n.metafields?.nodes));
+    return out;
+  });
+  return load(variantIds);
 }
 
 /** Products that have a variant with this exact SKU (cached per import). */
@@ -1817,29 +1866,14 @@ async function planUpdate(ctx: ImportContext, existing: ExistingProduct, rows: R
   }
 
   // Current values the plain variant query doesn't carry: variant metafields and stock.
-  let variantMetafields: Map<string, MetafieldsNow> | null = null;
+  // Both are asked for at once, and shared with the other products being checked at the same moment.
   const variantKeys = metafieldKeys(rows, "Variant Metafield");
-  if (variantKeys.length && matched.length) {
-    try {
-      variantMetafields = new Map();
-      for (let i = 0; i < matched.length; i += 50) {
-        const d = await ctx.gql(VARIANT_METAFIELDS_NOW, { ids: matched.slice(i, i + 50).map((m) => m.existing.id), keys: variantKeys });
-        for (const n of d?.nodes ?? []) if (n?.id) variantMetafields.set(n.id, metafieldMap(n.metafields?.nodes));
-      }
-    } catch {
-      variantMetafields = null;
-    }
-  }
   const withStock = matched.filter(({ spec }) => spec.inventory.length || spec.adjustments.length || spec.totalQty !== undefined || spec.adjust);
-  let stock: StockNow | null = null;
-  if (withStock.length) {
-    const kinds = [...new Set(["available", ...withStock.flatMap(({ spec }) => [...spec.inventory, ...spec.adjustments].map((x) => (x.kind === "on_hand" ? "on_hand" : x.kind)))])];
-    try {
-      stock = await fetchStock(ctx, withStock.map((m) => m.existing.inventoryItem.id), kinds);
-    } catch {
-      stock = null;
-    }
-  }
+  const kinds = [...new Set(["available", ...withStock.flatMap(({ spec }) => [...spec.inventory, ...spec.adjustments].map((x) => (x.kind === "on_hand" ? "on_hand" : x.kind)))])];
+  const [variantMetafields, stock]: [Map<string, MetafieldsNow> | null, StockNow | null] = await Promise.all([
+    variantKeys.length && matched.length ? fetchVariantMetafields(ctx, matched.map((m) => m.existing.id), variantKeys).catch(() => null) : null,
+    withStock.length ? fetchStock(ctx, withStock.map((m) => m.existing.inventoryItem.id), kinds).catch(() => null) : null,
+  ]);
   const locations = withStock.length || plan.toCreate.some((v) => v.totalQty !== undefined || v.adjust) ? (await getLocations(ctx.gql, ctx.cache)).filter((l) => l.isActive) : [];
 
   for (const { spec, existing: ex } of matched) {
