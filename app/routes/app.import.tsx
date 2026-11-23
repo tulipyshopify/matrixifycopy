@@ -94,7 +94,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const file = form.get("file");
     if (!(file instanceof File) || !file.size) throw new Error("Choose a file to import");
     // Other spreadsheet formats are let through to the reader, which says how to save each as one that is read.
-    if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new Error("Upload an Excel file (.xlsx), a CSV or tab-separated file (.csv, .tsv, .txt), or a ZIP of those");
+    if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new Error("Upload an Excel file (.xlsx), an OpenDocument spreadsheet (.ods), a CSV or tab-separated file (.csv, .tsv, .txt), or a ZIP of those");
     // Image files selected with the sheet travel with it as one ZIP, which the import reads like any other.
     const pictures = form.getAll("image").filter((p): p is File => p instanceof File && p.size > 0);
     if (pictures.length) {

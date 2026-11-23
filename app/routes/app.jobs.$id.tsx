@@ -262,7 +262,7 @@ export default function JobDetail() {
                     Results file
                   </s-button>
                 ) : null}
-                <s-button href="/app/history">What changed</s-button>
+                <s-button href={`/app/history?job=${job.id}`}>What changed</s-button>
               </div>
             </div>
           );
@@ -404,11 +404,12 @@ export default function JobDetail() {
         <s-section heading="Ask someone to check this preview">
           <s-stack direction="block" gap="small">
             {share.replies.map((r: any) => (
-              <s-banner key={r.at} tone={r.verdict === "approve" ? "success" : "warning"} heading={`${r.name} ${r.verdict === "approve" ? "approved this preview" : "asked for changes"}`}>
+              <s-banner key={r.at} tone={r.verdict === "approve" ? "info" : "warning"} heading={`Through the shared link, someone giving the name "${r.name}" ${r.verdict === "approve" ? "approved this preview" : "asked for changes"}`}>
                 <s-text>
                   {formatDate(r.at)}
                   {r.note ? `: “${r.note}”` : ""}
                 </s-text>
+                <s-text color="subdued">Name not verified: it was typed in, and anyone who has the link can answer under any name. Check with the person if it matters. This answer applies nothing.</s-text>
               </s-banner>
             ))}
             <s-text color="subdued">

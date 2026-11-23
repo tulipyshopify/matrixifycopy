@@ -148,3 +148,35 @@ describe("supplier files: against the shop", () => {
     expect((s.warnings ?? [])[0]).toMatch(/No column of this sheet says which product each row is.*use "Match columns"/);
   });
 });
+
+describe("B29: OpenDocument spreadsheets (.ods)", () => {
+  it("reads the sheets of an .ods: numbers as stored, repeated cells, empty rows to the bottom ignored", async () => {
+    const { zipSync, strToU8 } = await import("fflate");
+    const cell = (v: string) => `<table:table-cell office:value-type="string"><text:p>${v}</text:p></table:table-cell>`;
+    const num = (v: string, shown: string) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${shown}</text:p></table:table-cell>`;
+    const content = `<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="o" xmlns:table="t" xmlns:text="x"><office:body><office:spreadsheet>
+      <table:table table:name="Products"><table:table-column table:number-columns-repeated="3"/>
+        <table:table-row>${cell("Handle")}${cell("Variant SKU")}${cell("Variant Price")}<table:table-cell table:number-columns-repeated="1021"/></table:table-row>
+        <table:table-row>${cell("bin")}${cell("B1 &amp; co")}${num("12.5", "£12.50")}</table:table-row>
+        <table:table-row><table:table-cell office:value-type="string"><text:p>tub<text:s text:c="2"/>x</text:p></table:table-cell><table:table-cell/>${num("6", "6.00")}</table:table-row>
+        <table:table-row table:number-rows-repeated="1048570"><table:table-cell table:number-columns-repeated="1024"/></table:table-row>
+      </table:table>
+      <table:table table:name="Empty"><table:table-row><table:table-cell/></table:table-row></table:table>
+    </office:spreadsheet></office:body></office:document-content>`;
+    const file = path.join(dir, "list.ods");
+    fs.writeFileSync(file, zipSync({ mimetype: strToU8("application/vnd.oasis.opendocument.spreadsheet"), "content.xml": strToU8(content) }));
+    const sheets = await readWorkbook(file, "list.ods");
+    expect(sheets.map((s) => s.name)).toEqual(["Products"]);
+    expect(sheets[0].headers).toEqual(["Handle", "Variant SKU", "Variant Price"]);
+    expect(sheets[0].rows).toEqual([
+      { Handle: "bin", "Variant SKU": "B1 & co", "Variant Price": "12.5" },
+      { Handle: "tub  x", "Variant SKU": "", "Variant Price": "6" },
+    ]);
+  });
+
+  it("an old .xls is still refused, with what to do", async () => {
+    const file = path.join(dir, "old.xls");
+    fs.writeFileSync(file, "x");
+    await expect(readWorkbook(file, "old.xls")).rejects.toThrow(/older Excel file \(.xls\).*Save as/);
+  });
+});

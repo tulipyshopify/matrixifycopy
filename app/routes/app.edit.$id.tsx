@@ -128,6 +128,9 @@ export default function EditTable() {
     });
   };
 
+  // The fill box belongs to the column in hand: moving to another column empties it.
+  const fillFor = active?.column ?? "";
+  useEffect(() => setFill(""), [fillFor]);
   const fillColumn = () => {
     if (!active) return;
     setValues((cur) => {
@@ -229,7 +232,7 @@ export default function EditTable() {
                     const v = value(r.i, c.column);
                     if (!can) return <td key={c.column} className="bp-grid-na" aria-label="Set on the product's first row" />;
                     return (
-                      <td key={c.column} className={`${isChanged(r.i, c.column) ? "bp-grid-changed" : ""}${on ? " bp-grid-on" : ""}`} onClick={() => (on ? null : (setActive({ i: r.i, column: c.column }), setFill(v)))}>
+                      <td key={c.column} className={`${isChanged(r.i, c.column) ? "bp-grid-changed" : ""}${on ? " bp-grid-on" : ""}`} onClick={() => (on ? null : setActive({ i: r.i, column: c.column }))}>
                         {on ? (
                           <input
                             ref={input}

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router";
 
 /**
  * Small pieces shared by the app's screens: line icons drawn in the app's own
@@ -77,9 +78,9 @@ export function SubNav({ items, current }: { items: Array<{ href: string; label:
   return (
     <nav className="bp-seg" aria-label="Section">
       {items.map((i) => (
-        <a key={i.href} href={i.href} className={i.href === current ? "bp-seg-on" : ""} aria-current={i.href === current ? "page" : undefined}>
+        <Link key={i.href} to={i.href} className={i.href === current ? "bp-seg-on" : ""} aria-current={i.href === current ? "page" : undefined}>
           {i.label}
-        </a>
+        </Link>
       ))}
     </nav>
   );
@@ -97,7 +98,7 @@ export const JOB_PAGES = [
 /** One of the home screen's ways in. */
 export function ActionTile({ href, icon, title, note, primary }: { href: string; icon: string; title: string; note: string; primary?: boolean }) {
   return (
-    <a href={href} className={`bp-act${primary ? " bp-act-primary" : ""}`}>
+    <Link to={href} className={`bp-act${primary ? " bp-act-primary" : ""}`}>
       <span className="bp-act-icon">
         <Icon name={icon} />
       </span>
@@ -108,14 +109,14 @@ export function ActionTile({ href, icon, title, note, primary }: { href: string;
       <span className="bp-act-go">
         <Icon name="arrow" size={16} />
       </span>
-    </a>
+    </Link>
   );
 }
 
 /** A status figure on the home screen: what it is, how it stands, and where to act on it. */
 export function StatTile({ href, icon, label, value, note, tone = "idle" }: { href: string; icon: string; label: string; value: string; note?: string; tone?: "ok" | "warn" | "bad" | "idle" }) {
   return (
-    <a href={href} className={`bp-stat bp-stat-${tone}`}>
+    <Link to={href} className={`bp-stat bp-stat-${tone}`}>
       <span className="bp-stat-icon">
         <Icon name={icon} size={18} />
       </span>
@@ -124,7 +125,7 @@ export function StatTile({ href, icon, label, value, note, tone = "idle" }: { hr
         <span className="bp-stat-value">{value}</span>
         {note ? <span className="bp-stat-note">{note}</span> : null}
       </span>
-    </a>
+    </Link>
   );
 }
 

@@ -10,8 +10,11 @@ import { formatDate } from "../components/jobs";
 import { EmptyState, JOB_PAGES, SubNav } from "../components/ui";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const q = new URL(request.url).searchParams.get("q") ?? "";
-  return { q, days: RETENTION_DAYS, entries: await searchHistory(session.shop, q, 100) };
+  const params = new URL(request.url).searchParams;
+  const q = params.get("q") ?? "";
+  const job = params.get("job") ?? "";
+  const entries = await searchHistory(session.shop, q, job ? 500 : 100, job);
+  return { q, job, jobName: job ? (entries[0]?.jobName ?? "") : "", days: RETENTION_DAYS, entries };
 };
 
 const ACTIONS: Record<string, { label: string; tone: "info" | "warning" | "critical" | "neutral" }> = {
@@ -23,7 +26,7 @@ const ACTIONS: Record<string, { label: string; tone: "info" | "warning" | "criti
 };
 
 export default function History() {
-  const { q, days, entries } = useLoaderData<typeof loader>();
+  const { q, job, jobName, days, entries } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [text, setText] = useState(q);
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -49,13 +52,13 @@ export default function History() {
               <s-button variant="primary" onClick={() => go(text)}>
                 Search
               </s-button>
-              {q ? <s-button onClick={() => (setText(""), go(""))}>Show everything</s-button> : null}
+              {q || job ? <s-button onClick={() => (setText(""), go(""))}>Show everything</s-button> : null}
             </s-grid>
           </form>
         </s-stack>
       </s-section>
 
-      <s-section heading={q ? `Changes to "${q}"` : "Latest changes"} padding="none">
+      <s-section heading={job ? `What ${jobName ? `"${jobName}"` : "this job"} changed` : q ? `Changes to "${q}"` : "Latest changes"} padding="none">
         {entries.length ? (
           <div className="bp-rows" role="list">
             {entries.map((e) => {

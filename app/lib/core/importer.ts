@@ -678,8 +678,11 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
         if (result.preview?.clears?.length) risk.clearing++;
         if (result.preview?.warnings?.length) risk.warned++;
       }
-      done++;
-      args.progress?.(done, total);
+      // Items passed over after a cancel or a stop were not worked on: the count stays where the work stopped.
+      if (!(cancelled && result.status === "Skipped")) {
+        done++;
+        args.progress?.(done, total);
+      }
       emitPartial();
     });
 

@@ -628,10 +628,10 @@ export function ImportReview({
               </s-banner>
             ) : null}
             {changingSheets.length && !changingSheets.some((sh) => UNDOABLE.has(sh.entity ?? "")) ? null : (
-            <s-banner tone={deletesIncluded && deletesIncluded >= applying ? "warning" : "success"} heading={deletesIncluded && deletesIncluded >= applying ? "Deletions can't be undone from here" : `You can undo this until ${undoUntil(undoDays)}`}>
+            <s-banner tone={deletesIncluded && deletesIncluded >= applying ? "warning" : "success"} heading={deletesIncluded && deletesIncluded >= applying ? `Deleted items can be created again until ${undoUntil(undoDays)}, not truly restored` : `You can undo this until ${undoUntil(undoDays)}`}>
               <s-text>
                 What each item looked like is recorded before it is changed (undo removes new products; other new items, such as customers or pages, have to be removed by hand), and kept on Bulkport's server for {undoDays} days. "Undo this import" on the job's page then opens a preview of putting it back.
-                {deletesIncluded ? " A deleted product can't be undone that way: restore it from a backup." : ""}
+                {deletesIncluded ? " Undoing a deletion creates the item again from that record: it gets a new ID, and what Shopify ties to the old one (a product's sales history and reviews, a customer's orders) does not come back." : ""}
               </s-text>
             </s-banner>
             )}

@@ -188,7 +188,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
     file = new File([input.csv], /\.csv$/i.test(name) ? name : `${name}.csv`, { type: "text/csv" });
   }
   if (!file || !file.size) throw new ApiError(400, "Send a file, the CSV text, or a link to import");
-  if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new ApiError(400, "The file must be .xlsx, .csv, .tsv, .txt or .zip");
+  if (!/\.(xlsx|xlsm|csv|tsv|txt|zip|xls|xlsb|ods|numbers)$/i.test(file.name)) throw new ApiError(400, "The file must be .xlsx, .ods, .csv, .tsv, .txt or .zip");
   if (file.size > MAX_API_UPLOAD_MB * 1024 * 1024) throw new ApiError(413, `The file is larger than ${MAX_API_UPLOAD_MB} MB`);
   const job = await createImportJob(auth.shop, file, options);
   // The same preview sent twice in a row (a retry, an assistant asking again) is one job, not two.

@@ -28,11 +28,11 @@ export interface HistoryEntry {
 }
 
 /** Changes, newest first: all of them, or those of the items a search matches (handle, ID, SKU, email or part of a title). */
-export async function searchHistory(shop: string, query: string, limit = 100): Promise<HistoryEntry[]> {
+export async function searchHistory(shop: string, query: string, limit = 100, jobId = ""): Promise<HistoryEntry[]> {
   const q = query.trim().toLowerCase().slice(0, 200);
   const id = q.replace(/^gid:\/\/shopify\/\w+\//, "");
   const rows = await prisma.changeLog.findMany({
-    where: q ? { shop, OR: [{ itemKey: { contains: q } }, ...(/^\d+$/.test(id) ? [{ itemId: id }] : []), { title: { contains: query.trim().slice(0, 200) } }] } : { shop },
+    where: jobId ? { shop, jobId } : q ? { shop, OR: [{ itemKey: { contains: q } }, ...(/^\d+$/.test(id) ? [{ itemId: id }] : []), { title: { contains: query.trim().slice(0, 200) } }] } : { shop },
     orderBy: { createdAt: "desc" },
     take: Math.min(500, Math.max(1, limit)),
   });

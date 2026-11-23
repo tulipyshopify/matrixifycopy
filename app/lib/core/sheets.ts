@@ -960,13 +960,80 @@ async function readXlsx(input: string | Buffer, what: string): Promise<Sheet[]> 
   }
 }
 
+// --- OpenDocument spreadsheets (.ods: LibreOffice, and Google Sheets' other download) ----------
+
+/** Text of an .ods cell: its paragraphs, one per line, without the formatting inside them. */
+function odsText(inner: string): string {
+  const paragraphs = [...inner.matchAll(/<text:p\b[^>]*?(?:\/>|>([\s\S]*?)<\/text:p>)/g)].map((m) =>
+    xmlText(
+      (m[1] ?? "")
+        .replace(/<office:annotation[\s\S]*?<\/office:annotation>/g, "")
+        .replace(/<text:s\b([^>]*)\/>/g, (_, a: string) => " ".repeat(Math.min(100, Number(/text:c="(\d+)"/.exec(a)?.[1]) || 1)))
+        .replace(/<text:tab\b[^>]*\/>/g, "\t")
+        .replace(/<text:line-break\b[^>]*\/>/g, "\n")
+        .replace(/<[^>]+>/g, ""),
+    ),
+  );
+  return paragraphs.join("\n");
+}
+
+function odsSheets(zip: Uint8Array, what: string): Sheet[] {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unpack(zip, what, (n) => n === "content.xml");
+  } catch (e: any) {
+    if (/unpacks to/.test(String(e?.message))) throw e;
+    throw new FileError(`${what} is damaged or is not a real OpenDocument spreadsheet, so it couldn't be opened. Save it again from the program it came from (or as .xlsx) and upload that copy.`);
+  }
+  const content = files["content.xml"];
+  if (!content) throw new FileError(`${what} is not a readable OpenDocument spreadsheet (it has no contents). Save it again from the program it came from, or as .xlsx, and upload that copy.`);
+  const xml = decodeText(content).text;
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml.slice(0, 4000))) throw new FileError(`${what} declares its own text shortcuts ("entities"), which are never read, for safety. Save it as .xlsx and upload that copy.`);
+  if (/manifest:encryption-data|<office:document-content[^>]*encrypted/i.test(xml.slice(0, 2000))) throw new FileError(`${what} is password-protected. Remove the password, save and upload again.`);
+  const sheets: Sheet[] = [];
+  for (const t of xml.matchAll(/<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/g)) {
+    const name = xmlAttr(` ${t[1]}`, "name") ?? `Sheet${sheets.length + 1}`;
+    const matrix: string[][] = [];
+    for (const r of t[2].matchAll(/<table:table-row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-row>)/g)) {
+      const cells: string[] = [];
+      for (const c of (r[2] ?? "").matchAll(/<table:(covered-)?table-cell\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:(?:covered-)?table-cell>)/g)) {
+        const attrs = ` ${c[2]}`;
+        const type = xmlAttr(attrs, "value-type");
+        let value = "";
+        if (!c[1]) {
+          // Numbers as stored, not as shown ("12.5", not "£12.50"); dates as written in the file.
+          if (type === "float" || type === "currency" || type === "percentage") value = xmlAttr(attrs, "value") ?? odsText(c[3] ?? "");
+          else if (type === "date") value = (xmlAttr(attrs, "date-value") ?? odsText(c[3] ?? "")).replace(/T00:00:00(\.0+)?$/, "");
+          else if (type === "boolean") value = xmlAttr(attrs, "boolean-value") === "true" ? "TRUE" : "FALSE";
+          else value = odsText(c[3] ?? "");
+        }
+        // The same cell written once for a run of columns; a run of empty ones at the end is just the sheet's width.
+        const repeat = Math.min(value === "" ? 16_384 : 1_000, Number(xmlAttr(attrs, "number-columns-repeated")) || 1);
+        for (let k = 0; k < repeat; k++) cells.push(value);
+      }
+      while (cells.length && cells[cells.length - 1] === "") cells.pop();
+      const repeat = Number(xmlAttr(` ${r[1]}`, "number-rows-repeated")) || 1;
+      // Empty rows repeated to the bottom of the sheet are not rows of data.
+      const times = cells.length ? Math.min(repeat, 100_000) : Math.min(repeat, 1);
+      for (let k = 0; k < times; k++) matrix.push(k === 0 ? cells : [...cells]);
+      if (matrix.length > EXCEL_MAX_ROWS) throw new FileError(`The sheet "${name}" of ${what} has more than ${EXCEL_MAX_ROWS.toLocaleString("en-GB")} rows. Split it into smaller files.`);
+    }
+    if (!matrix.some((row) => row.length)) continue;
+    const { headers, rows, notes } = rowsFromMatrix(matrix);
+    const sheet: Sheet = { name, headers, rows };
+    if (notes.length) sheet.notes = notes;
+    sheets.push(sheet);
+  }
+  if (!sheets.length) throw new FileError(`${what} has no sheets with cells in it.`);
+  return sheets;
+}
+
 const TEXT_TYPES = new Set([".csv", ".txt", ".tsv"]);
 const EXCEL_TYPES = new Set([".xlsx", ".xlsm"]);
 /** Spreadsheet formats that aren't read, each with how to get a file that is. */
 const SAVE_AS: Record<string, string> = {
   ".xls": "This is an older Excel file (.xls). Open it in Excel and choose File › Save as › Excel Workbook (.xlsx), then upload that copy.",
   ".xlsb": "This is a binary Excel file (.xlsb). Open it in Excel and choose File › Save as › Excel Workbook (.xlsx), then upload that copy.",
-  ".ods": "This is an OpenDocument spreadsheet (.ods). Open it in LibreOffice or Google Sheets and save it as Excel (.xlsx) or CSV, then upload that copy.",
   ".numbers": "This is an Apple Numbers file. In Numbers choose File › Export To › Excel (or CSV), then upload that copy.",
   ".gsheet": "This is a shortcut to a Google Sheet, not the sheet itself. In Google Sheets choose File › Download › Microsoft Excel (.xlsx), then upload that file.",
 };
@@ -993,6 +1060,11 @@ async function readWorkbookFiles(filePath: string, originalName: string): Promis
   const baseName = path.basename(originalName, ext);
   const what = `"${path.basename(originalName)}"`;
   if (EXCEL_TYPES.has(ext)) return readXlsx(filePath, what);
+  if (ext === ".ods") {
+    const size = (await fs.promises.stat(filePath)).size;
+    if (size > MAX_UNPACKED_BYTES) throw new FileError(`${what} is ${mb(size)}, more than the ${mb(MAX_UNPACKED_BYTES)} that is read from one upload. Split it into smaller files and import them one after another.`);
+    return odsSheets(new Uint8Array(await fs.promises.readFile(filePath)), what);
+  }
   if (TEXT_TYPES.has(ext)) {
     const size = (await fs.promises.stat(filePath)).size;
     if (size > MAX_UNPACKED_BYTES) throw new FileError(`${what} is ${mb(size)}, more than the ${mb(MAX_UNPACKED_BYTES)} that is read from one upload. Split it into smaller files and import them one after another.`);
@@ -1006,7 +1078,7 @@ async function readWorkbookFiles(filePath: string, originalName: string): Promis
     const readable = (name: string) => {
       if (name.endsWith("/") || name.startsWith("__MACOSX") || path.basename(name).startsWith(".")) return false;
       const e = path.extname(name).toLowerCase();
-      return TEXT_TYPES.has(e) || EXCEL_TYPES.has(e);
+      return TEXT_TYPES.has(e) || EXCEL_TYPES.has(e) || e === ".ods";
     };
     let names: string[] = [];
     try {
@@ -1023,7 +1095,7 @@ async function readWorkbookFiles(filePath: string, originalName: string): Promis
       if (e === ".zip") skipped.push(`"${path.basename(name)}" was skipped: ZIP files inside a ZIP are not read. Unpack it and upload its files directly.`);
       else if (SAVE_AS[e]) skipped.push(`"${path.basename(name)}" was skipped. ${SAVE_AS[e]}`);
     }
-    const workbooks = Object.keys(files).filter((n) => EXCEL_TYPES.has(path.extname(n).toLowerCase())).length;
+    const workbooks = Object.keys(files).filter((n) => EXCEL_TYPES.has(path.extname(n).toLowerCase()) || /\.ods$/i.test(n)).length;
     for (const [name, data] of Object.entries(files)) {
       const e = path.extname(name).toLowerCase();
       const file = path.basename(name);
@@ -1033,7 +1105,7 @@ async function readWorkbookFiles(filePath: string, originalName: string): Promis
           sheet.file = file;
           sheets.push(sheet);
         } else {
-          for (const sheet of await readXlsx(Buffer.from(data.buffer, data.byteOffset, data.byteLength), `"${file}"`)) {
+          for (const sheet of e === ".ods" ? odsSheets(data, `"${file}"`) : await readXlsx(Buffer.from(data.buffer, data.byteOffset, data.byteLength), `"${file}"`)) {
             sheet.file = file;
             // Several workbooks often use the same sheet names: say which file each came from.
             if (workbooks > 1) sheet.label = `${file} › ${sheet.name}`;
@@ -1047,7 +1119,7 @@ async function readWorkbookFiles(filePath: string, originalName: string): Promis
       }
     }
     if (!sheets.length) {
-      throw new FileError(skipped.length ? `Nothing in ${what} could be read. ${skipped.join(" ")}` : `${what} has no spreadsheet files in it (.xlsx, .csv, .tsv or .txt).`);
+      throw new FileError(skipped.length ? `Nothing in ${what} could be read. ${skipped.join(" ")}` : `${what} has no spreadsheet files in it (.xlsx, .ods, .csv, .tsv or .txt).`);
     }
     if (skipped.length) (sheets[0].notes ??= []).unshift(...skipped);
     return sheets;
