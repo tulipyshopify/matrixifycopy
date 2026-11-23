@@ -31,6 +31,28 @@ import { ApiError } from "./keys.server";
  * the key allows imports AND the caller asks for it explicitly.
  */
 
+/** A shop (the app itself asking) or a key, which may be limited to some data types. */
+type Who = string | KeyAuth;
+const shopOf = (who: Who) => (typeof who === "string" ? who : who.shop);
+const limitOf = (who: Who): string[] | null => (typeof who === "string" ? null : who.entities?.length ? who.entities : null);
+const sheetNames = (keys: string[]) => keys.map((k) => ENTITIES.find((e) => e.key === k)?.sheet ?? k).join(", ");
+
+/** The data types a job holds: an export's sheets, or what an import's sheets were read as. */
+function jobEntities(job: { type: string; config: string; stats: string }): string[] {
+  try {
+    if (job.type === "export") return ((JSON.parse(job.config)?.entities ?? []) as Array<{ entity?: string }>).map((e) => String(e.entity ?? "")).filter(Boolean);
+    return ((JSON.parse(job.stats || "[]") ?? []) as Array<{ entity?: string | null }>).map((s) => s?.entity ?? "").filter(Boolean) as string[];
+  } catch {
+    return [];
+  }
+}
+
+/** A key limited to some data types reads only jobs that hold nothing else. */
+function allowedJob(who: Who, job: { type: string; config: string; stats: string }): boolean {
+  const limit = limitOf(who);
+  return !limit || jobEntities(job).every((k) => limit.includes(k));
+}
+
 export const MAX_API_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 200);
 
 /** Sheets (data types) with their columns, optional column groups and filters. */
@@ -108,8 +130,11 @@ export async function startExport(auth: KeyAuth, input: ExportRequest) {
     if (e instanceof ApiError) throw e;
     throw new ApiError(400, e.message);
   }
+  const limit = limitOf(auth);
+  const refused = limit ? config.entities.map((e) => e.entity).filter((k) => !limit.includes(k)) : [];
+  if (refused.length) throw new ApiError(403, `This access key is limited to ${sheetNames(limit!)}: it may not export ${sheetNames(refused)}.`);
   const job = await createExportJob(auth.shop, config, input.format === "xlsx" ? "xlsx" : "csv", input.name || `Via ${auth.name}`);
-  return jobView(auth.shop, job.id);
+  return jobView(auth, job.id);
 }
 
 export interface ImportRequest {
@@ -142,7 +167,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
   if (input.apply) assertCanImport(auth);
   let options;
   try {
-    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : "UPDATE", dryRun: !input.apply, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined, blanks: input.blankCells === "clear" ? "clear" : "leave" });
+    options = parseImportOptions({ defaultCommand: input.command ? String(input.command).toUpperCase() : "UPDATE", dryRun: !input.apply, onlyEntities: limitOf(auth) ?? undefined, batch: !!input.batch, concurrency: input.concurrency ? Number(input.concurrency) : undefined, blanks: input.blankCells === "clear" ? "clear" : "leave" });
   } catch (e: any) {
     throw new ApiError(400, e.message);
   }
@@ -155,7 +180,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
     }
     if (!SOURCE_PROTOCOLS.includes(url.protocol)) throw new ApiError(400, "The link must start with https://, ftp://, sftp:// or webdavs://");
     const job = await createUrlImportJob(auth.shop, url.toString(), options);
-    return jobView(auth.shop, job.id);
+    return jobView(auth, job.id);
   }
   let file = input.file;
   if (!file && typeof input.csv === "string" && input.csv.trim()) {
@@ -171,10 +196,10 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
     const same = await sameUploadBefore(auth.shop, job).catch(() => null);
     if (same) {
       await discardJob(auth.shop, job.id);
-      return { ...(await jobView(auth.shop, same.id)), note: "This is the same file with the same settings as a preview started a moment ago: that job is returned, and no second one was started." };
+      return { ...(await jobView(auth, same.id)), note: "This is the same file with the same settings as a preview started a moment ago: that job is returned, and no second one was started." };
     }
   }
-  return jobView(auth.shop, job.id);
+  return jobView(auth, job.id);
 }
 
 /**
@@ -185,7 +210,7 @@ export async function startImport(auth: KeyAuth, input: ImportRequest) {
  */
 export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = false, warnings: "confirm" | "skip" | null = null) {
   assertCanImport(auth);
-  const preview = await findJob(auth.shop, id);
+  const preview = await findJob(auth, id);
   const needs = applyNeeds(preview.stats);
   if (needs.deletes && !confirmDeletes) {
     throw new ApiError(409, `This preview would permanently delete ${needs.deletes} item${needs.deletes === 1 ? "" : "s"}. To go ahead, confirm the deletions (API: "confirm_deletes": true; command line: --confirm-deletes).`);
@@ -214,28 +239,29 @@ export async function applyPreview(auth: KeyAuth, id: string, confirmDeletes = f
     if (total && warnings === "skip") {
       if (total > listed) throw new Error(`This file is too large for the preview to list every flagged row (${listed} of ${total} listed), so they can't be left out one by one. Split the file, or confirm the warnings.`);
       const job = await applyDryRun(auth.shop, id, "trusted", flagged);
-      return jobView(auth.shop, job.id);
+      return jobView(auth, job.id);
     }
     const job = await applyDryRun(auth.shop, id, "trusted");
-    return jobView(auth.shop, job.id);
+    return jobView(auth, job.id);
   } catch (e: any) {
     throw new ApiError(409, e.message);
   }
 }
 
 export async function cancel(auth: KeyAuth, id: string) {
-  const job = await findJob(auth.shop, id);
+  const job = await findJob(auth, id);
   // Nothing to stop: say so, rather than answer as if it had been cancelled.
   if (!["queued", "running", "uploading"].includes(job.status)) {
     return { ...view(job), note: `This job had already ${job.status === "finished" ? "finished" : job.status === "failed" ? "failed" : "been cancelled"}; nothing was cancelled.` };
   }
   await cancelJob(auth.shop, id);
-  return jobView(auth.shop, id);
+  return jobView(auth, id);
 }
 
-async function findJob(shop: string, id: string) {
-  const job = await prisma.job.findFirst({ where: { id: String(id), shop, kind: "job" } });
+async function findJob(who: Who, id: string) {
+  const job = await prisma.job.findFirst({ where: { id: String(id), shop: shopOf(who), kind: "job" } });
   if (!job) throw new ApiError(404, "No such job");
+  if (!allowedJob(who, job)) throw new ApiError(403, `This access key is limited to ${sheetNames(limitOf(who)!)}, and this job holds other data (${sheetNames(jobEntities(job))}).`);
   return job;
 }
 
@@ -276,30 +302,32 @@ function view(job: JobRow) {
 
 export type JobView = ReturnType<typeof view>;
 
-export async function jobView(shop: string, id: string) {
-  return view(await findJob(shop, id));
+export async function jobView(who: Who, id: string) {
+  return view(await findJob(who, id));
 }
 
-export async function listJobViews(shop: string, limit = 20) {
+export async function listJobViews(who: Who, limit = 20) {
+  const shop = shopOf(who);
   const jobs = await prisma.job.findMany({
     where: { shop, kind: "job" },
     orderBy: { createdAt: "desc" },
     take: Math.min(100, Math.max(1, Math.floor(Number(limit)) || 20)),
   });
-  return jobs.map(view);
+  return jobs.filter((j) => allowedJob(who, j)).map(view);
 }
 
 /** What a preview would change, per sheet (the first items; the result file has every row). */
-export async function previewItems(shop: string, id: string, limit = 50) {
-  const job = await findJob(shop, id);
+export async function previewItems(who: Who, id: string, limit = 50) {
+  const shop = shopOf(who);
+  const job = await findJob(who, id);
   if (!(job.type === "import" && isDryRunConfig(job.config))) throw new ApiError(409, "This job is not an import preview");
   const sheets = await readPreview(shop, id);
   return sheets.map((s) => ({ sheet: s.sheet, recognised_as: s.entity, items: s.items.slice(0, limit) }));
 }
 
 /** The result file on disk, for download. */
-export async function resultFile(shop: string, id: string) {
-  const job = await findJob(shop, id);
+export async function resultFile(who: Who, id: string) {
+  const job = await findJob(who, id);
   if (!job.resultFile) throw new ApiError(job.status === "finished" ? 410 : 409, job.status === "finished" ? "The result file is no longer kept" : "The job has no result yet");
   const file = resolveStored(job.resultFile);
   if (!fs.existsSync(file)) throw new ApiError(410, "The result file is no longer kept");
@@ -307,8 +335,8 @@ export async function resultFile(shop: string, id: string) {
 }
 
 /** The first rows of a result, as data (for assistants; people download the file). */
-export async function resultRows(shop: string, id: string, limit = 20, sheet?: string) {
-  const { file, name } = await resultFile(shop, id);
+export async function resultRows(who: Who, id: string, limit = 20, sheet?: string) {
+  const { file, name } = await resultFile(who, id);
   const rows = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 20));
   const sheets = await readWorkbook(file, name);
   return sheets

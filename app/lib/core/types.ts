@@ -211,6 +211,8 @@ export interface ImportOptions {
    * schedules made before this choice existed): a blank cell empties the field.
    */
   blanks?: "leave" | "clear";
+  /** Only sheets of these data types are imported (an access key limited to some types). */
+  onlyEntities?: string[];
 }
 
 export interface ImportContext {

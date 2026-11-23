@@ -117,10 +117,10 @@ export const TOOLS: Tool[] = [
     readOnly: true,
     run: async (auth, { job_id, wait_seconds }) => {
       const until = Date.now() + Math.min(25, Math.max(0, Number(wait_seconds ?? 20))) * 1000;
-      let job = await jobView(auth.shop, job_id);
+      let job = await jobView(auth, job_id);
       while (!DONE.has(job.status) && Date.now() < until) {
         await wait(1000);
-        job = await jobView(auth.shop, job_id);
+        job = await jobView(auth, job_id);
       }
       return job;
     },
@@ -131,7 +131,7 @@ export const TOOLS: Tool[] = [
     description: "Recent exports and imports of the store, newest first.",
     inputSchema: obj({ limit: { type: "number", description: "Default 10, max 100" } }),
     readOnly: true,
-    run: async (auth, { limit }) => ({ jobs: await listJobViews(auth.shop, limit ?? 10) }),
+    run: async (auth, { limit }) => ({ jobs: await listJobViews(auth, limit ?? 10) }),
   },
   {
     name: "get_preview",
@@ -139,7 +139,7 @@ export const TOOLS: Tool[] = [
     description: "For a finished import preview: per sheet, what each row would do (create, update, delete, fail) and the values it would send.",
     inputSchema: obj({ job_id: { type: "string" }, limit: { type: "number", description: "Items per sheet, default 50" } }, ["job_id"]),
     readOnly: true,
-    run: async (auth, { job_id, limit }) => ({ sheets: await previewItems(auth.shop, job_id, Math.min(200, Number(limit) || 50)) }),
+    run: async (auth, { job_id, limit }) => ({ sheets: await previewItems(auth, job_id, Math.min(200, Number(limit) || 50)) }),
   },
   {
     name: "read_result",
@@ -147,7 +147,7 @@ export const TOOLS: Tool[] = [
     description: "The first rows of a finished job's result file as data. For the whole file, give the user the job's result_url.",
     inputSchema: obj({ job_id: { type: "string" }, rows: { type: "number", description: "Rows per sheet, default 20, max 200" }, sheet: { type: "string" } }, ["job_id"]),
     readOnly: true,
-    run: async (auth, { job_id, rows, sheet }) => ({ sheets: await resultRows(auth.shop, job_id, rows ?? 20, sheet) }),
+    run: async (auth, { job_id, rows, sheet }) => ({ sheets: await resultRows(auth, job_id, rows ?? 20, sheet) }),
   },
   {
     name: "cancel_job",

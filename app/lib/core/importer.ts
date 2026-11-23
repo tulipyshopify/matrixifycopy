@@ -416,6 +416,12 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       );
       continue;
     }
+    if (ctx.options.onlyEntities?.length && !ctx.options.onlyEntities.includes(entity.key)) {
+      // Not this key's to read either: the sheet is listed without its data type.
+      summary.entity = null;
+      await skip(`this import was started with an access key that is not allowed to import ${entity.sheet}. Use a key that covers ${entity.sheet}, or import the file in the app.`);
+      continue;
+    }
     if (!entity.import) {
       await skip(`${entity.sheet} are export-only, nothing imported.`);
       continue;

@@ -202,6 +202,7 @@ export function parseImportOptions(raw: unknown): ImportOptions {
   if (input.concurrency) o.concurrency = Math.min(8, Math.max(1, Math.floor(Number(input.concurrency))));
   // Blank cells leave fields alone unless the person chose otherwise ([clear] in a cell always empties it).
   o.blanks = input.blanks === "clear" ? "clear" : "leave";
+  if (Array.isArray(input.onlyEntities) && input.onlyEntities.length) o.onlyEntities = input.onlyEntities.map(String).filter((k) => ENTITIES.some((e) => e.key === k));
   return o;
 }
 

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import prisma from "../../db.server";
-import { createKey, revokeKey } from "./keys.server";
+import { SIGNED_IN, createKey, revokeKey } from "./keys.server";
 
 /**
  * Sign-in for assistants (MCP clients such as Claude and ChatGPT) without a
@@ -143,7 +143,7 @@ async function issue(grant: { id: string; shop: string | null; clientName: strin
   if (!grant.shop) throw new OAuthError("invalid_grant", "This connection was never approved");
   if (grant.keyId) await revokeKey(grant.shop, grant.keyId);
   // Preview-only, like every assistant connection: exports and import previews, never a change to the store.
-  const { key, row } = await createKey(grant.shop, `${grant.clientName || "Assistant"} (signed in)`, "preview", TOKEN_DAYS);
+  const { key, row } = await createKey(grant.shop, `${grant.clientName || "Assistant"} (signed in)`, "preview", TOKEN_DAYS, { createdBy: SIGNED_IN });
   const refresh = random();
   await prisma.oAuthGrant.update({ where: { id: grant.id }, data: { keyId: row.id, refreshHash: sha(refresh) } });
   return { access_token: key, token_type: "Bearer", expires_in: TOKEN_DAYS * 86400, refresh_token: refresh, scope: "bulkport" };

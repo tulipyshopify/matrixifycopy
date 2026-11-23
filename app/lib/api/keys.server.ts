@@ -13,13 +13,16 @@ const hashKey = (key: string) => crypto.createHash("sha256").update(key).digest(
 
 export type KeyScope = "read" | "preview" | "full";
 export const EXPIRY_CHOICES = [30, 90, 365, 0];
+/** An assistant's sign-in (ChatGPT, Claude) left unused this long stops working: removing the app over there doesn't tell us. */
+export const UNUSED_SIGN_IN_DAYS = 14;
+export const SIGNED_IN = "An assistant's sign-in";
 
 /**
  * `scope`: "read" exports and reads only; "preview" also makes import
  * previews; "full" can also import for real. `expiresInDays` 0 = no expiry.
  * (A boolean is still accepted for the scope: true = full, false = preview.)
  */
-export async function createKey(shop: string, name: string, scopeOrCanImport: KeyScope | boolean, expiresInDays = 0) {
+export async function createKey(shop: string, name: string, scopeOrCanImport: KeyScope | boolean, expiresInDays = 0, more: { entities?: string[] | null; createdBy?: string } = {}) {
   const scope: KeyScope = typeof scopeOrCanImport === "boolean" ? (scopeOrCanImport ? "full" : "preview") : scopeOrCanImport;
   const canImport = scope === "full";
   const clean = name.trim().slice(0, 60);
@@ -29,7 +32,7 @@ export async function createKey(shop: string, name: string, scopeOrCanImport: Ke
   }
   const key = KEY_PREFIX + crypto.randomBytes(32).toString("base64url");
   const row = await prisma.apiKey.create({
-    data: { shop, name: clean, prefix: key.slice(0, 9), hash: hashKey(key), canImport, readOnly: scope === "read", expiresAt: expiresInDays > 0 ? new Date(Date.now() + expiresInDays * 86400_000) : null },
+    data: { shop, name: clean, prefix: key.slice(0, 9), hash: hashKey(key), canImport, readOnly: scope === "read", entities: more.entities?.length ? [...new Set(more.entities)].join(",") : null, createdBy: (more.createdBy ?? "").slice(0, 80), expiresAt: expiresInDays > 0 ? new Date(Date.now() + expiresInDays * 86400_000) : null },
   });
   return { key, row };
 }
@@ -59,6 +62,31 @@ export interface KeyAuth {
   canImport: boolean;
   /** Exports and reading only. */
   readOnly: boolean;
+  /** The data types the key is limited to; null or absent = all. */
+  entities?: string[] | null;
+}
+
+/** Who may create full keys in a shop: the listed people, or anyone while the list is empty. */
+export async function keyAdmins(shop: string): Promise<string[]> {
+  const s = await prisma.shopSetting.findUnique({ where: { shop }, select: { keyAdmins: true } });
+  return (s?.keyAdmins ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+export function mayCreateFullKeys(admins: string[], user: string): boolean {
+  return !admins.length || (!!user && admins.includes(user));
+}
+
+/** Changes the list. Only someone on it may, once it has anyone on it. */
+export async function setKeyAdmins(shop: string, user: string, next: string[]) {
+  const now = await keyAdmins(shop);
+  if (!user) throw new Error("Shopify did not say who you are, so this can't be changed from here. Open the app from the Shopify admin and try again.");
+  if (!mayCreateFullKeys(now, user)) throw new Error("Only the people who may create full keys can change who they are.");
+  const clean = [...new Set(next.map((x) => x.trim()).filter((x) => /^\d{1,20}$/.test(x)))].slice(0, 30);
+  // Whoever restricts it stays on the list: nobody locks everyone out by accident.
+  if (clean.length && !clean.includes(user)) clean.unshift(user);
+  const value = clean.join(",");
+  await prisma.shopSetting.upsert({ where: { shop }, create: { shop, keyAdmins: value }, update: { keyAdmins: value } });
+  return clean;
 }
 
 /** Requests per key per minute; a runaway script or agent can't flood the app. */
@@ -112,6 +140,11 @@ export async function checkKey(key: string | null | undefined, now = Date.now(),
     return failed(from, now);
   }
   if (row.expiresAt && row.expiresAt.getTime() < now) throw new ApiError(401, "This access key has expired. Create a new one in the app's Settings.");
+  if ((row.createdBy === SIGNED_IN || / \(signed in\)$/.test(row.name)) && now - (row.lastUsedAt ?? row.createdAt).getTime() > UNUSED_SIGN_IN_DAYS * 86400_000) {
+    await prisma.apiKey.updateMany({ where: { id: row.id, revokedAt: null }, data: { revokedAt: new Date(now) } }).catch(() => {});
+    await prisma.oAuthGrant.deleteMany({ where: { keyId: row.id } }).catch(() => {});
+    throw new ApiError(401, `This sign-in was not used for ${UNUSED_SIGN_IN_DAYS} days and has ended. Connect the assistant to the shop again.`);
+  }
   const h = hits.get(row.id);
   if (!h || now - h.start >= 60_000) hits.set(row.id, { start: now, n: 1 });
   else if (++h.n > RATE_LIMIT) throw new ApiError(429, "Too many requests. Wait a minute and try again.");
@@ -119,7 +152,7 @@ export async function checkKey(key: string | null | undefined, now = Date.now(),
   if (!row.lastUsedAt || now - row.lastUsedAt.getTime() > 60_000) {
     await prisma.apiKey.update({ where: { id: row.id }, data: { lastUsedAt: new Date(now) } }).catch(() => {});
   }
-  return { shop: row.shop, keyId: row.id, name: row.name, canImport: row.canImport, readOnly: row.readOnly };
+  return { shop: row.shop, keyId: row.id, name: row.name, canImport: row.canImport, readOnly: row.readOnly, entities: row.entities ? row.entities.split(",").filter(Boolean) : null };
 }
 
 /** The key from "Authorization: Bearer bp_…". */

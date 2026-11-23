@@ -5,7 +5,9 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { EXPIRY_CHOICES, createKey, listKeys, revokeKeyAndSignIn, type KeyScope } from "../lib/api/keys.server";
+import { EXPIRY_CHOICES, UNUSED_SIGN_IN_DAYS, createKey, keyAdmins, listKeys, mayCreateFullKeys, revokeKeyAndSignIn, setKeyAdmins, type KeyScope } from "../lib/api/keys.server";
+import { userOf } from "../lib/user.server";
+import { ENTITIES } from "../lib/entities";
 import { alertEmails, alertWebhookSet, emailAvailable, likelyTypo, saveAlertEmails, saveAlertWebhook, sendAlert, sendTestEmail } from "../lib/jobs/alerts.server";
 import { HISTORY_CHOICES, failStopPercent, historyDays, undoOnStop } from "../lib/jobs/jobs.server";
 import prisma from "../db.server";
@@ -26,9 +28,17 @@ function cliChecksum(): string {
 import { formatDate } from "../components/jobs";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  const { session } = auth;
   const keys = await listKeys(session.shop);
+  const me = userOf(auth);
+  const admins = await keyAdmins(session.shop);
   return {
+    me,
+    keyAdmins: admins,
+    mayFull: mayCreateFullKeys(admins, me),
+    unusedDays: UNUSED_SIGN_IN_DAYS,
+    types: ENTITIES.filter((e) => e.export || e.import).map((e) => ({ key: e.key, sheet: e.sheet })),
     appUrl: (process.env.SHOPIFY_APP_URL ?? "").replace(/\/+$/, ""),
     alerts: await alertWebhookSet(session.shop),
     emails: (await alertEmails(session.shop)).join(", "),
@@ -41,12 +51,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cliSha: cliChecksum(),
     connections: await listConnections(session.shop),
     layouts: (await listLayouts(session.shop)).map((l) => ({ id: l.id, name: l.name, entity: l.entity, columns: Object.values(l.map).filter(Boolean).length, savedAt: l.savedAt })),
-    keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, readOnly: k.readOnly, expiresAt: k.expiresAt, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
+    keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, canImport: k.canImport, readOnly: k.readOnly, types: k.entities ? k.entities.split(",").map((x) => ENTITIES.find((e) => e.key === x)?.sheet ?? x) : null, createdBy: k.createdBy, expiresAt: k.expiresAt, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })),
   };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  const { session } = auth;
   const form = await request.formData();
   try {
     if (form.get("intent") === "alerts") {
@@ -87,8 +98,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await revokeKeyAndSignIn(session.shop, String(form.get("id")));
       return { ok: true as const };
     }
+    const me = userOf(auth);
+    if (form.get("intent") === "keyAdmins") {
+      const mode = String(form.get("mode"));
+      const list = mode === "anyone" ? [] : [me, ...String(form.get("ids") ?? "").split(/[\s,;]+/)];
+      const now = await setKeyAdmins(session.shop, me, list);
+      return { saved: now.length ? `Only ${now.length === 1 ? "you" : `these ${now.length} people`} can create full keys now.` : "Anyone who can open the app can create full keys again." };
+    }
     const scope = (["read", "preview", "full"].includes(String(form.get("scope"))) ? String(form.get("scope")) : "preview") as KeyScope;
-    const { key, row } = await createKey(session.shop, String(form.get("name") ?? ""), scope, Number(form.get("expires")) || 0);
+    if (scope === "full" && !mayCreateFullKeys(await keyAdmins(session.shop), me)) {
+      throw new Error("Full keys (which import for real, unattended) can only be created by the people chosen for that in this shop. Ask one of them, or create a key that prepares previews.");
+    }
+    const all = ENTITIES.map((e) => e.key);
+    const chosen = String(form.get("types") ?? "").split(",").filter((k) => all.includes(k));
+    const { key, row } = await createKey(session.shop, String(form.get("name") ?? ""), scope, Number(form.get("expires")) || 0, { entities: chosen.length && chosen.length < all.length ? chosen : null, createdBy: me ? `Staff member ${me}` : "" });
     return { created: { key, name: row.name, canImport: row.canImport, readOnly: row.readOnly } };
   } catch (e: any) {
     if (e instanceof Response) throw e;
@@ -123,7 +146,7 @@ function Code({ text }: { text: string }) {
 }
 
 export default function Connect() {
-  const { keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections, layouts } = useLoaderData<typeof loader>();
+  const { me, keyAdmins: admins, mayFull, types, unusedDays, keys, appUrl, alerts, emails, emailAvailable: canEmail, failStop, history, historyChoices, expiryChoices, cliSha, undoOnStop: undoSaved, connections, layouts } = useLoaderData<typeof loader>();
   const [code, setCode] = useState("");
   const [undoStop, setUndoStop] = useState(undoSaved);
   const [emailList, setEmailList] = useState(emails);
@@ -131,6 +154,9 @@ export default function Connect() {
   const [days, setDays] = useState(String(history));
   const [scope, setScope] = useState("preview");
   const [expires, setExpires] = useState("90");
+  const [limited, setLimited] = useState(false);
+  const [keyTypes, setKeyTypes] = useState<string[]>(["products"]);
+  const [adminIds, setAdminIds] = useState(admins.filter((a) => a !== me).join(", "));
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const sk = mounted ? "c" : "s";
@@ -184,9 +210,21 @@ export default function Connect() {
             <s-table-body>
               {keys.map((k) => (
                 <s-table-row key={k.id}>
-                  <s-table-cell>{k.name}</s-table-cell>
+                  <s-table-cell>
+                    {k.name}
+                    {k.createdBy ? (
+                      <div>
+                        <s-text color="subdued">Made by {k.createdBy}</s-text>
+                      </div>
+                    ) : null}
+                  </s-table-cell>
                   <s-table-cell>{k.prefix}…</s-table-cell>
-                  <s-table-cell>{k.canImport ? <s-badge tone="warning">Import for real</s-badge> : k.readOnly ? <s-badge>Read only</s-badge> : <s-badge tone="info">Export and preview</s-badge>}</s-table-cell>
+                  <s-table-cell>
+                    {k.canImport ? <s-badge tone="warning">Import for real</s-badge> : k.readOnly ? <s-badge>Read only</s-badge> : <s-badge tone="info">Export and preview</s-badge>}
+                    <div>
+                      <s-text color="subdued">{k.types ? `Only ${k.types.join(", ")}` : "All data types"}</s-text>
+                    </div>
+                  </s-table-cell>
                   <s-table-cell>{k.expiresAt ? formatDate(k.expiresAt) : "Never"}</s-table-cell>
                   <s-table-cell>{k.lastUsedAt ? formatDate(k.lastUsedAt) : "Never"}</s-table-cell>
                   <s-table-cell>
@@ -207,7 +245,9 @@ export default function Connect() {
             <s-select key={`scope-${sk}`} label="What it may do" value={scope} onChange={(ev: any) => setScope(ev.currentTarget.value)}>
               <s-option value="read">Read only: export and read results</s-option>
               <s-option value="preview">Export, and prepare import previews</s-option>
-              <s-option value="full">Full: also import for real, unattended</s-option>
+              <s-option value="full" disabled={!mayFull}>
+                {mayFull ? "Full: also import for real, unattended" : "Full: only chosen people can create these"}
+              </s-option>
             </s-select>
             <s-select key={`exp-${sk}`} label="Expires" value={expires} onChange={(ev: any) => setExpires(ev.currentTarget.value)}>
               {expiryChoices.map((d) => (
@@ -217,11 +257,24 @@ export default function Connect() {
               ))}
             </s-select>
           </s-grid>
+          <s-checkbox
+            label="Limit this key to some kinds of data"
+            details="For example products only: the key then can't export, preview, import or read anything about customers or orders."
+            checked={limited}
+            onChange={(ev: any) => setLimited(!!ev.currentTarget.checked)}
+          />
+          {limited ? (
+            <s-grid gridTemplateColumns="repeat(auto-fill, minmax(170px, 1fr))" gap="small-200 base">
+              {types.map((t) => (
+                <s-checkbox key={t.key} label={t.sheet} checked={keyTypes.includes(t.key)} onChange={(ev: any) => setKeyTypes(ev.currentTarget.checked ? [...keyTypes, t.key] : keyTypes.filter((x) => x !== t.key))} />
+              ))}
+            </s-grid>
+          ) : null}
           <s-button
             variant="primary"
-            disabled={!name.trim() || fetcher.state !== "idle"}
+            disabled={!name.trim() || fetcher.state !== "idle" || (limited && !keyTypes.length)}
             onClick={() => {
-              fetcher.submit({ intent: "create", name, scope, expires }, { method: "post" });
+              fetcher.submit({ intent: "create", name, scope, expires, types: limited ? keyTypes.join(",") : "" }, { method: "post" });
               setName("");
             }}
           >
@@ -229,8 +282,43 @@ export default function Connect() {
           </s-button>
         </s-stack>
         <s-paragraph>
-          <s-text color="subdued">A key gives access to this store's data. Treat it like a password, and revoke it here if it leaks or is no longer used.</s-text>
+          <s-text color="subdued">
+            A key gives access to this store's data. Treat it like a password, and revoke it here if it leaks or is no longer used. Removing the app in ChatGPT or Claude doesn't disconnect it here: press Revoke. An assistant's sign-in that goes unused for {unusedDays} days stops working by itself.
+          </s-text>
         </s-paragraph>
+        <s-divider />
+        <s-stack gap="small-200">
+          <s-heading>Who can create full keys</s-heading>
+          <s-text>
+            {admins.length
+              ? mayFull
+                ? `Only ${admins.length === 1 ? "you" : `you and ${admins.length - 1} other${admins.length === 2 ? "" : "s"}`} can create keys that import for real.`
+                : "Only chosen people can create keys that import for real. You are not one of them."
+              : "At the moment anyone who can open this app can create a key that imports for real, unattended."}
+          </s-text>
+          {mayFull && me ? (
+            <>
+              <s-text-field
+                label="Other people who may (their Shopify user numbers, separated by commas)"
+                details={`Each person finds their own number on this page. Yours is ${me}.`}
+                value={adminIds}
+                onInput={(ev: any) => setAdminIds(ev.currentTarget.value)}
+              />
+              <s-stack direction="inline" gap="small">
+                <s-button disabled={fetcher.state !== "idle"} onClick={() => fetcher.submit({ intent: "keyAdmins", mode: "list", ids: adminIds }, { method: "post" })}>
+                  {admins.length ? "Save the list" : "Only I (and these people) may create full keys"}
+                </s-button>
+                {admins.length ? (
+                  <s-button variant="tertiary" disabled={fetcher.state !== "idle"} onClick={() => fetcher.submit({ intent: "keyAdmins", mode: "anyone" }, { method: "post" })}>
+                    Let anyone again
+                  </s-button>
+                ) : null}
+              </s-stack>
+            </>
+          ) : me ? (
+            <s-text color="subdued">Your Shopify user number is {me}: give it to someone who may, to be added.</s-text>
+          ) : null}
+        </s-stack>
       </s-section>
 
       <s-section heading="Import safety and history">

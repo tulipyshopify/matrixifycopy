@@ -55,11 +55,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     const [a, b, c] = parts(params);
     const url = new URL(request.url);
     if (a === "sheets" && !c) return json(b ? sheetList(decodeURIComponent(b)) : { sheets: sheetList() });
-    if (a === "jobs" && !b) return json({ jobs: await listJobViews(auth.shop, Number(url.searchParams.get("limit") ?? 20)) });
-    if (a === "jobs" && b && !c) return json(await jobView(auth.shop, b));
-    if (a === "jobs" && c === "preview") return json({ sheets: await previewItems(auth.shop, b, Number(url.searchParams.get("limit") ?? 50)) });
+    if (a === "jobs" && !b) return json({ jobs: await listJobViews(auth, Number(url.searchParams.get("limit") ?? 20)) });
+    if (a === "jobs" && b && !c) return json(await jobView(auth, b));
+    if (a === "jobs" && c === "preview") return json({ sheets: await previewItems(auth, b, Number(url.searchParams.get("limit") ?? 50)) });
     if (a === "jobs" && c === "result") {
-      const { file, name } = await resultFile(auth.shop, b);
+      const { file, name } = await resultFile(auth, b);
       const stat = await fs.promises.stat(file);
       return new Response(Readable.toWeb(fs.createReadStream(file)) as ReadableStream, {
         headers: {

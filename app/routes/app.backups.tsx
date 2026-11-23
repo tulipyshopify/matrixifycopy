@@ -157,6 +157,12 @@ export default function Backups() {
   const [destPassword, setDestPassword] = useState("");
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // The restore choices open below a long list: bring them into view, or the button seems to do nothing.
+  useEffect(() => {
+    if (!confirm) return;
+    const t = setTimeout(() => document.getElementById("bp-restore")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    return () => clearTimeout(t);
+  }, [confirm]);
   const busy = fetcher.state !== "idle";
   const running = data.backups.some((b) => isActive(b.status));
   const total = data.backups.reduce((n, b) => n + b.size, 0);
@@ -353,8 +359,8 @@ export default function Backups() {
                         </s-button>
                       ) : null}
                       {b.status === "finished" && b.link ? (
-                        <s-button variant="tertiary" onClick={() => setConfirm(confirm === b.id ? null : b.id)}>
-                          Restore…
+                        <s-button variant={confirm === b.id ? "primary" : "tertiary"} onClick={() => setConfirm(confirm === b.id ? null : b.id)}>
+                          {confirm === b.id ? "Choosing what to restore ↓" : "Restore…"}
                         </s-button>
                       ) : null}
                     </s-stack>
@@ -366,6 +372,7 @@ export default function Backups() {
           </s-table>
         )}
       </s-section>
+      <div id="bp-restore" style={{ scrollMarginTop: "16px" }} />
       {confirm && data.backups.some((b) => b.id === confirm) ? (
         <s-section heading={`Restore from the backup of ${formatDate(data.backups.find((b) => b.id === confirm)!.createdAt)}`}>
           <s-stack direction="block" gap="base">

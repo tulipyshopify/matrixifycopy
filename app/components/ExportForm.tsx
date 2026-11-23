@@ -1757,7 +1757,8 @@ export function ExportForm({
   const [scheduled, setScheduled] = useState(!!editing);
   const [intervalMinutes, setIntervalMinutes] = useState(editing?.intervalMinutes ?? 1440);
   const [uploadUrl, setUploadUrl] = useState(editing?.uploadUrl ?? "");
-  const [publicLink, setPublicLink] = useState(true);
+  // Off unless asked for: the link lets anyone who has it download the file.
+  const [publicLink, setPublicLink] = useState(false);
   const [runAt, setRunAt] = useState(editing?.runAt ?? "");
   const [weekday, setWeekday] = useState(editing?.weekday ?? 1);
 
@@ -2043,15 +2044,13 @@ export function ExportForm({
               />
               {publicLink ? (
                 <s-text
-                  tone={
-                    selected.some((e) => PERSONAL_DATA.includes(e.key))
-                      ? "critical"
-                      : "neutral"
-                  }
+                  tone={selected.some((e) => PERSONAL_DATA.includes(e.key)) ? "critical" : selected.some((e) => ["products", "orders", "draft_orders", "discounts", "payouts"].includes(e.key)) ? "caution" : "neutral"}
                 >
                   {selected.some((e) => PERSONAL_DATA.includes(e.key))
                     ? "This export contains customer data. Anyone who has the link can download names, emails and addresses without logging in. Turn the link off unless you need it."
-                    : "Anyone who has the link can download the file without logging in. You'll find the link on the Schedules page."}
+                    : selected.some((e) => ["products", "orders", "draft_orders", "discounts", "payouts"].includes(e.key))
+                      ? "Anyone who has the link can download the file without logging in. A product export holds cost prices and stock; orders and discounts are business figures too. Leave the link off unless something outside Shopify must fetch the file. You'll find the link on the Automations page."
+                      : "Anyone who has the link can download the file without logging in. You'll find the link on the Automations page."}
                 </s-text>
               ) : null}
                 </>

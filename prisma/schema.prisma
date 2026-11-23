@@ -142,6 +142,10 @@ model ShopSetting {
   backupBucket String?
   /// Saved ways of reading other people's files: which of their columns is which of ours (JSON list).
   columnLayouts String @default("[]")
+  /// Shopify user numbers of the people who may create full access keys (comma separated); empty = anyone who can open the app.
+  keyAdmins String @default("")
+  /// Product images are meant to be square: note the ones that are not.
+  squareImages Boolean @default(false)
   updatedAt   DateTime @updatedAt
 }
 
@@ -194,6 +198,10 @@ model ApiKey {
   canImport  Boolean   @default(false)
   /// Exports and reading only: no import previews either.
   readOnly   Boolean   @default(false)
+  /// Data types this key is limited to (comma separated keys); null = all.
+  entities   String?
+  /// Who made the key (a staff member's name or number, or the assistant that signed in).
+  createdBy  String    @default("")
   expiresAt  DateTime?
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
