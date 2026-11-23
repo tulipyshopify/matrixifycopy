@@ -126,7 +126,10 @@ describe("round A: risky changes are flagged", () => {
 
 describe("round A: detection, exports, undo", () => {
   it("A13: a supplier's price list is not taken for a Menus file", () => {
-    expect(detectEntity({ name: "Sheet1", headers: ["Product Code", "Item Description", "Cost Price", "RRP"] }, ENTITIES)).toBeNull();
+    expect(detectEntity({ name: "Sheet1", headers: ["Product Code", "Item Description", "Cost Price", "RRP"] }, ENTITIES)?.key).toBe("products");
+    // "Code" is a discount's column too: beside a barcode and a price it is a product code.
+    expect(detectEntity({ name: "Sheds", headers: ["Code", "Description", "Barcode", "2026 Trade Price", "RRP"] }, ENTITIES)?.key).toBe("products");
+    expect(detectEntity({ name: "Sheet1", headers: ["Code", "Title", "Value Type", "Value"] }, ENTITIES)?.key).toBe("discounts");
     // Real files are still recognised from their columns.
     expect(detectEntity({ name: "Sheet1", headers: ["Handle", "Title", "Variant SKU", "Variant Price"] }, ENTITIES)?.key).toBe("products");
     expect(detectEntity({ name: "Sheet1", headers: ["ID", "Handle", "Title", "Item: Title", "Item: Type", "Item: URL"] }, ENTITIES)?.key).toBe("menus");

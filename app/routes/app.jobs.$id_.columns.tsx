@@ -1,49 +1,103 @@
 import { useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useLocation, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { matchLayout, oddMatches, suggestColumn } from "../lib/core/layouts";
+import { createGql } from "../lib/core/gql";
+import { looksLikeStock, matchLayout, oddMatches, stockColumn, stockFromText, suggestAll } from "../lib/core/layouts";
+import { getLocations } from "../lib/core/lookups";
 import { detectEntity } from "../lib/core/registry";
 import { ENTITIES, getEntity } from "../lib/entities";
 import { getJob, rerunJob } from "../lib/jobs/jobs.server";
 import { listLayouts, saveLayout } from "../lib/jobs/layouts.server";
-import { readImportSheets } from "../lib/jobs/runner.server";
+import { headerRowFromLayouts, layoutKeys, readImportSheets } from "../lib/jobs/runner.server";
 
 /** Columns that are worked out by Shopify or the app: never a target for someone's data. */
 const NOT_A_TARGET = /^(Row #|Top Row|Created At|Updated At|URL|Total Inventory Qty|Category: Name|Image Width|Image Height|Variant Inventory Item ID|Orders Count|Total Spent|State|Verified Email|Products Count|Import Result|Import Comment)$|: Updated At$/;
 
+/** "0:14,2:0": the row of column names chosen by hand, per sheet (by its position in the file). */
+function chosenRows(v: string | null): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const part of (v ?? "").split(",")) {
+    const m = /^(\d+):(\d+)$/.exec(part.trim());
+    if (m) out.set(Number(m[1]), Number(m[2]));
+  }
+  return out;
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const job = await getJob(session.shop, params.id!);
   if (job.type !== "import" || !job.inputFile) throw new Response("This job has no file to match columns for", { status: 404 });
   const layouts = await listLayouts(session.shop);
-  let sheets: Array<{ sheet: string; headers: string[]; samples: Record<string, string[]>; rows: number; entity: string; map: Record<string, string>; layout: string | null }> = [];
+  const chosen = chosenRows(new URL(request.url).searchParams.get("rows"));
+  let locations: string[] = [];
+  try {
+    const gql = createGql(async (query, variables) => (await admin.graphql(query, { variables })).json(), () => {}, 2);
+    locations = (await getLocations(gql, new Map())).filter((l) => l.isActive).map((l) => l.name);
+  } catch {
+    // Without them stock can still be matched to the product's total.
+  }
+  const fileName = job.inputName ?? job.name ?? "";
+  let sheets: Array<{
+    index: number;
+    sheet: string;
+    headers: string[];
+    samples: Record<string, string[]>;
+    rows: number;
+    entity: string;
+    map: Record<string, string>;
+    layout: string | null;
+    headerRow: number;
+    rowChosen: boolean;
+    top: Array<{ row: number; cells: string[] }>;
+    textStock: string[];
+    skipUnknown: boolean;
+    inStockQty: number | null;
+  }> = [];
   let error: string | null = null;
   try {
-    // The file as it is, before any saved matching is applied.
-    const read = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, {} as any);
-    sheets = read.slice(0, 10).map((s) => {
+    // The file as it is, before any saved matching is applied; its row of column names as chosen here, else as saved, else as found.
+    const fromLayouts = headerRowFromLayouts(layouts);
+    const read = await readImportSheets({ inputFile: job.inputFile, inputName: job.inputName }, {} as any, () => {}, [], { headerRow: (top, i) => chosen.get(i) ?? fromLayouts?.(top, i) });
+    sheets = read.slice(0, 12).map((s, index) => {
       const saved = matchLayout(s.headers, layouts);
       const entity = (saved ? getEntity(saved.entity) : null) ?? detectEntity(s, ENTITIES);
       const usable = entity?.import ? entity : getEntity("products")!;
-      const map: Record<string, string> = {};
-      const taken = new Set<string>();
-      const savedByHeader = new Map(Object.entries(saved?.map ?? {}).map(([k, v]) => [k.toLowerCase().trim(), v]));
-      for (const h of s.headers) {
-        const kept = savedByHeader.get(h.toLowerCase().trim());
-        const to = kept !== undefined ? kept : (suggestColumn(usable, h) ?? "");
-        map[h] = to && !taken.has(to) ? to : "";
-        if (map[h]) taken.add(map[h]);
+      const map = suggestAll(usable, s.headers, { locations, fileName: `${fileName} ${s.name}` });
+      if (saved) {
+        const savedByHeader = new Map(Object.entries(saved.map).map(([k, v]) => [k.toLowerCase().trim(), v]));
+        const taken = new Set<string>();
+        for (const h of s.headers) {
+          const kept = savedByHeader.get(h.toLowerCase().trim());
+          if (kept !== undefined) map[h] = kept;
+        }
+        // A saved match wins over a fresh suggestion for the same column of ours.
+        for (const h of s.headers) {
+          if (map[h] && taken.has(map[h])) map[h] = "";
+          if (map[h]) taken.add(map[h]);
+        }
       }
+      const headers = s.headers.slice(0, 300);
       return {
+        index,
         sheet: s.label ?? s.name,
-        headers: s.headers.slice(0, 300),
-        samples: Object.fromEntries(s.headers.slice(0, 300).map((h) => [h, s.rows.map((r) => r[h]).filter(Boolean).slice(0, 3).map((v) => (v.length > 60 ? `${v.slice(0, 57)}…` : v))])),
+        headers,
+        samples: Object.fromEntries(headers.map((h) => [h, s.rows.map((r) => r[h]).filter(Boolean).slice(0, 3).map((v) => (v.length > 60 ? `${v.slice(0, 57)}…` : v))])),
         rows: s.rows.length,
         entity: usable.key,
         map,
         layout: saved?.name ?? null,
+        headerRow: s.headerRow ?? 1,
+        rowChosen: chosen.has(index) || saved?.headerRow !== undefined,
+        top: (s.top ?? [])
+          .map((cells, i) => ({ row: i + 1, cells: cells.filter((c) => c.trim()).slice(0, 6) }))
+          .filter((r) => r.cells.length)
+          .slice(0, 30),
+        // Columns that read like stock but hold words ("IN STOCK") in the first rows.
+        textStock: headers.filter((h) => looksLikeStock(h) && s.rows.slice(0, 200).some((r) => ["in", "out", "unknown"].includes(stockFromText(r[h] ?? "", null).read))),
+        skipUnknown: saved ? saved.skipUnknown !== false : true,
+        inStockQty: saved?.inStockQty ?? null,
       };
     });
   } catch (e: any) {
@@ -53,7 +107,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     job: { id: job.id, name: job.inputName ?? job.name },
     sheets,
     error,
-    entities: ENTITIES.filter((e) => e.import).map((e) => ({ key: e.key, sheet: e.sheet, keyColumns: e.import!.keyColumns, columns: e.columns.filter((c) => !NOT_A_TARGET.test(c)) })),
+    locations,
+    fileName,
+    entities: ENTITIES.filter((e) => e.import).map((e) => {
+      const columns = e.columns.filter((c) => !NOT_A_TARGET.test(c));
+      // Stock is held per location: one choice for each.
+      const at = e.key === "products" ? columns.indexOf("Variant Inventory Qty") : -1;
+      if (at >= 0 && locations.length) columns.splice(at, 1, ...locations.map(stockColumn));
+      return { key: e.key, sheet: e.sheet, keyColumns: layoutKeys(e.key), columns };
+    }),
   };
 };
 
@@ -61,7 +123,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);
   const form = await request.formData();
   try {
-    const sheets = JSON.parse(String(form.get("sheets") ?? "[]")) as Array<{ name: string; entity: string; map: Record<string, string>; confirmedOdd?: boolean }>;
+    const sheets = JSON.parse(String(form.get("sheets") ?? "[]")) as Array<{ name: string; entity: string; map: Record<string, string>; confirmedOdd?: boolean; headerRow?: number; skipUnknown?: boolean; inStockQty?: number | null }>;
     if (!sheets.length) throw new Error("Nothing to save");
     for (const s of sheets) await saveLayout(session.shop, s);
     const job = await rerunJob(session.shop, params.id!);
@@ -72,11 +134,29 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 };
 
-export default function MatchColumns() {
-  const { job, sheets, error, entities } = useLoaderData<typeof loader>();
+/** How a column of ours is shown in the list of choices. */
+const shownColumn = (c: string) => (c.startsWith("Inventory Available: ") ? `Available stock at ${c.slice("Inventory Available: ".length)}` : c);
+
+export default function MatchColumnsPage() {
+  // A different row of column names is a different table: start from what the reader then finds.
+  const { search } = useLocation();
+  return <MatchColumns key={search} />;
+}
+
+function MatchColumns() {
+  const { job, sheets, error, entities, locations, fileName } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
+  const { search } = useLocation();
+  const pickRow = (index: number, row: number) => {
+    const q = new URLSearchParams(search);
+    const rows = new Map((q.get("rows") ?? "").split(",").filter(Boolean).map((p) => p.split(":").map(Number) as [number, number]));
+    rows.set(index, row);
+    q.set("rows", [...rows.entries()].map(([i, r]) => `${i}:${r}`).join(","));
+    navigate(`?${q.toString()}`, { replace: true });
+  };
   const fetcher = useFetcher<{ error?: string }>();
   const base = job.name.replace(/\.[a-z]+$/i, "").replace(/[_-]+/g, " ").trim() || "Supplier file";
-  const [state, setState] = useState(() => sheets.map((s) => ({ entity: s.entity, map: s.map, name: s.layout ?? (sheets.length > 1 ? `${base} (${s.sheet})` : base), on: true, confirmedOdd: false })));
+  const [state, setState] = useState(() => sheets.map((s) => ({ entity: s.entity, map: s.map, name: s.layout ?? (sheets.length > 1 ? `${base} (${s.sheet})` : base), on: true, confirmedOdd: false, skipUnknown: s.skipUnknown, inStockQty: s.inStockQty === null ? "" : String(s.inStockQty) })));
   const busy = fetcher.state !== "idle";
   const patch = (i: number, p: Partial<(typeof state)[number]>) => setState((cur) => cur.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
@@ -112,9 +192,9 @@ export default function MatchColumns() {
                     value={st.entity}
                     onChange={(ev: any) => {
                       const key = String(ev.currentTarget.value);
-                      const cols = new Set(entities.find((e) => e.key === key)?.columns ?? []);
-                      // Matches that don't exist for the new data type are dropped.
-                      patch(i, { entity: key, map: Object.fromEntries(Object.entries(st.map).map(([h, to]) => [h, cols.has(to) ? to : ""])) });
+                      const next = entities.find((e) => e.key === key);
+                      // A different kind of data: the columns are looked at afresh for it.
+                      patch(i, { entity: key, map: next ? suggestAll(next, s.headers, { locations, fileName: `${fileName} ${s.sheet}` }) : {} });
                     }}
                   >
                     {entities.map((e) => (
@@ -125,6 +205,49 @@ export default function MatchColumns() {
                   </s-select>
                   <s-text-field label="Save this matching as" details="For example the supplier's name" value={st.name} onInput={(ev: any) => patch(i, { name: String(ev.currentTarget.value) })} />
                 </s-grid>
+                {s.top.length ? (
+                  <s-select
+                    label="The column names are in"
+                    details={s.headerRow > 1 ? `Rows above row ${s.headerRow} (a title, an address) are not imported.` : "Change this if the names shown below are not the file's column names."}
+                    value={String(s.headerRow)}
+                    onChange={(ev: any) => pickRow(s.index, Number(ev.currentTarget.value))}
+                  >
+                    {s.top.map((r) => (
+                      <s-option key={r.row} value={String(r.row)}>
+                        Row {r.row}: {r.cells.join(" · ").slice(0, 90)}
+                      </s-option>
+                    ))}
+                    <s-option value="0">No row holds column names (call them Column A, B, C…)</s-option>
+                  </s-select>
+                ) : null}
+                {entity.key === "products" ? (
+                  <s-checkbox
+                    label="Skip rows for products that are not in my shop"
+                    details="A supplier's list usually holds much you don't sell. Skipped rows are counted, not reported as failures."
+                    checked={st.skipUnknown}
+                    onChange={(ev: any) => patch(i, { skipUnknown: !!ev.currentTarget.checked })}
+                  />
+                ) : null}
+                {s.headers.some((h) => /^(Inventory Available: |Variant Inventory Qty$)/.test(st.map[h] ?? "") && s.textStock.includes(h)) ? (
+                  <s-number-field
+                    label={'Stock written as "IN STOCK" counts as'}
+                    details={'Leave empty to leave the stock of those rows as it is. "OUT OF STOCK" is always read as 0.'}
+                    min={0}
+                    value={st.inStockQty}
+                    onInput={(ev: any) => {
+                      const v = String(ev.currentTarget.value);
+                      patch(i, { inStockQty: v });
+                    }}
+                  />
+                ) : null}
+                {entity.key === "products" && locations.length > 1 && s.headers.some((h) => looksLikeStock(h) && !st.map[h]) ? (
+                  <s-banner tone="info" heading="Which location is this stock for?">
+                    <s-text>
+                      {s.headers.filter((h) => looksLikeStock(h) && !st.map[h]).map((h) => `"${h}"`).join(", ")} looks like stock. Choose "Available stock at …" for the location it belongs to ({locations.slice(0, 6).join(", ")}
+                      {locations.length > 6 ? "…" : ""}), or leave it as "Not imported".
+                    </s-text>
+                  </s-banner>
+                ) : null}
                 <s-text color="subdued">
                   {s.rows.toLocaleString("en")} rows · {matched} of {s.headers.length} columns matched
                   {s.layout ? ` · currently read with "${s.layout}"` : ""}
@@ -166,7 +289,7 @@ export default function MatchColumns() {
                         <option value="">Not imported</option>
                         {entity.columns.map((c) => (
                           <option key={c} value={c}>
-                            {c}
+                            {shownColumn(c)}
                             {entity.keyColumns.includes(c) ? " (identifies the row)" : ""}
                           </option>
                         ))}
@@ -198,7 +321,21 @@ export default function MatchColumns() {
             variant="primary"
             loading={busy}
             disabled={busy || !state.some((x) => x.on)}
-            onClick={() => fetcher.submit({ sheets: JSON.stringify(state.filter((x) => x.on).map((x) => ({ name: x.name, entity: x.entity, map: x.map, confirmedOdd: x.confirmedOdd }))) }, { method: "post" })}
+            onClick={() => fetcher.submit({ sheets: JSON.stringify(
+                  state
+                    .map((x, i) => ({ x, s: sheets[i] }))
+                    .filter(({ x }) => x.on)
+                    .map(({ x, s }) => ({
+                      name: x.name,
+                      entity: x.entity,
+                      map: x.map,
+                      confirmedOdd: x.confirmedOdd,
+                      skipUnknown: x.skipUnknown,
+                      inStockQty: x.inStockQty === "" ? null : Number(x.inStockQty),
+                      // Saved only when it was set by hand: otherwise the reader finds the row by itself.
+                      ...(s.rowChosen ? { headerRow: s.headerRow } : {}),
+                    })),
+                ) }, { method: "post" })}
           >
             Save and preview again
           </s-button>

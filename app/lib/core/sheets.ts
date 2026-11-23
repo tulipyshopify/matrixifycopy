@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -22,6 +23,12 @@ export interface Sheet {
   entity?: string;
   /** Columns a saved layout sets aside: kept in the sheet, not imported and not reported as unknown. */
   ignoredColumns?: string[];
+  /** The row of the file the column names were taken from (1 = the first; 0 = the sheet has none). */
+  headerRow?: number;
+  /** The first rows of the sheet as they are in the file, for choosing that row by hand. */
+  top?: string[][];
+  /** Rows whose item isn't in the shop are skipped, not failed (set by a saved column matching). */
+  skipMissing?: boolean;
   /** Row number in the file of each row, when the rows are a part of a larger sheet (default: position + 2). */
   rowNumbers?: number[];
 }
@@ -84,6 +91,21 @@ export function looksLikeFormula(v: string): boolean {
 /** Whole-cell Excel error values: a broken formula's result, never real data. */
 export const EXCEL_ERROR = /^#(N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NULL!|NUM!|SPILL!|CALC!|GETTING_DATA)$/i;
 
+/** How many rows of the top of a sheet are kept for showing and for choosing the row of column names. */
+const TOP_ROWS = 40;
+
+export interface ReadOptions {
+  /**
+   * Says which row holds a sheet's column names, given the top of the sheet
+   * and the sheet's position in the file: a row number (1 = the first row),
+   * 0 for "no such row", or undefined to let the reader find it.
+   */
+  headerRow?: (top: string[][], sheetIndex: number) => number | undefined;
+}
+
+const READING = new AsyncLocalStorage<ReadOptions & { sheets: number }>();
+const TOPS = new WeakMap<Row[], { headerRow: number; top: string[][]; rowNumbers?: number[] }>();
+
 interface MatrixOptions {
   /** Matrix indexes of rows the workbook hides (hidden by hand or by a filter). */
   hidden?: Set<number>;
@@ -96,19 +118,92 @@ function plural(n: number, one: string, many = `${one}s`): string {
 function rowsFromMatrix(matrix: string[][], opts: MatrixOptions = {}): { headers: string[]; rows: Row[]; notes: string[] } {
   const notes: string[] = [];
   const filled = (r: string[] | undefined) => (r ? r.reduce((n, c) => n + ((c ?? "").trim() !== "" ? 1 : 0), 0) : 0);
-  let headerIdx = matrix.findIndex((r) => filled(r) > 0);
-  if (headerIdx < 0) return { headers: [], rows: [], notes };
-  // A title line above the table ("Price list – November"): one filled cell,
-  // followed by a row with several. The column names are in that later row.
-  for (let tries = 0; tries < 5 && filled(matrix[headerIdx]) === 1; tries++) {
-    let next = headerIdx + 1;
-    while (next < matrix.length && next <= headerIdx + 5 && filled(matrix[next]) === 0) next++;
-    if (next >= matrix.length || filled(matrix[next]) < 2) break;
-    const title = matrix[headerIdx].find((c) => (c ?? "").trim())!.trim();
-    notes.push(`Row ${headerIdx + 1} ("${title.length > 60 ? `${title.slice(0, 57)}…` : title}") was read as a title line, not as column names. The column names were taken from row ${next + 1}.`);
-    headerIdx = next;
+  const firstFilled = matrix.findIndex((r) => filled(r) > 0);
+  if (firstFilled < 0) return { headers: [], rows: [], notes };
+  const read = READING.getStore();
+  const sheetIndex = read ? read.sheets++ : 0;
+  // The top of the sheet as it is in the file, for choosing the row of column names by hand.
+  const top: string[][] = [];
+  for (let i = 0; i < Math.min(matrix.length, TOP_ROWS); i++) top.push((matrix[i] ?? []).slice(0, 40).map((c) => ((c ?? "").length > 60 ? `${c.slice(0, 57)}…` : (c ?? ""))));
+  let headerIdx = firstFilled;
+  let lettered = false;
+  const chosen = read?.headerRow?.(top, sheetIndex);
+  if (chosen === 0) {
+    // No row of column names at all: the columns are called by their letters.
+    lettered = true;
+    const width = Math.max(...matrix.slice(firstFilled, firstFilled + 200).map((r) => r?.length ?? 0));
+    const usual = usualWidth(matrix, firstFilled, filled);
+    while (headerIdx < matrix.length - 1 && filled(matrix[headerIdx]) < Math.max(2, Math.ceil(usual * 0.5)) && headerIdx < firstFilled + 60) headerIdx++;
+    if (filled(matrix[headerIdx]) < 2) headerIdx = firstFilled;
+    matrix.splice(headerIdx, 0, Array.from({ length: width }, (_, j) => `Column ${columnLetter(j)}`));
+    notes.push("This sheet was read as having no row of column names, as you chose: its columns are called by their letters.");
+  } else if (chosen && chosen >= 1 && chosen <= matrix.length && filled(matrix[chosen - 1]) > 0) {
+    headerIdx = chosen - 1;
+    if (headerIdx !== firstFilled) notes.push(`The column names were taken from row ${chosen}, as chosen for this file; the rows above it are not imported.`);
+  } else {
+    // Rows above the table (a title, a supplier's name and address): the column names are in the
+    // first row that is about as wide as the table and holds words, not numbers.
+    const usual = usualWidth(matrix, firstFilled, filled);
+    const need = Math.max(2, Math.ceil(usual * 0.6));
+    const namesLike = (r: string[] | undefined) => {
+      const n = filled(r);
+      if (!r || n < need) return false;
+      return r.filter((c) => (c ?? "").trim() !== "" && looksLikeName(c)).length / n >= 0.8;
+    };
+    if (!namesLike(matrix[firstFilled])) {
+      let found = -1;
+      for (let i = firstFilled + 1; i < Math.min(matrix.length, firstFilled + 60); i++) {
+        if (namesLike(matrix[i])) {
+          found = i;
+          break;
+        }
+      }
+      if (found > 0) {
+        const above = [];
+        for (let i = firstFilled; i < found; i++) if (filled(matrix[i]) > 0) above.push(i);
+        const title = matrix[firstFilled].find((c) => (c ?? "").trim())!.trim();
+        const quoted = `"${title.length > 60 ? `${title.slice(0, 57)}…` : title}"`;
+        notes.push(
+          above.length === 1
+            ? `Row ${firstFilled + 1} (${quoted}) was read as a title line, not as column names. The column names were taken from row ${found + 1}.`
+            : `Rows ${firstFilled + 1} to ${found} (starting ${quoted}) are above the table, a title or an address: they were not read as column names or as data. The column names were taken from row ${found + 1}.`,
+        );
+        headerIdx = found;
+      }
+    }
+    // A title line above the table ("Price list – November"): one filled cell,
+    // followed by a row with several. The column names are in that later row.
+    for (let tries = 0; headerIdx === firstFilled && tries < 5 && filled(matrix[headerIdx]) === 1; tries++) {
+      let next = headerIdx + 1;
+      while (next < matrix.length && next <= headerIdx + 5 && filled(matrix[next]) === 0) next++;
+      if (next >= matrix.length || filled(matrix[next]) < 2) break;
+      const title = matrix[headerIdx].find((c) => (c ?? "").trim())!.trim();
+      notes.push(`Row ${headerIdx + 1} ("${title.length > 60 ? `${title.slice(0, 57)}…` : title}") was read as a title line, not as column names. The column names were taken from row ${next + 1}.`);
+      headerIdx = next;
+      break;
+    }
   }
-  const raw = matrix[headerIdx].map((h) => (h ?? "").replace(/[​⁠﻿]/g, "").replace(/ /g, " ").trim());
+  const raw = matrix[headerIdx].map((h) => (h ?? "").replace(/[​⁠﻿]/g, "").replace(/ /g, " ").trim());
+  // A column with values but no name is still a column (a supplier's codes often sit in one): it gets its letter.
+  const lettersGiven: string[] = [];
+  const widest = Math.max(raw.length, ...matrix.slice(headerIdx + 1, headerIdx + 201).map((r) => r?.length ?? 0));
+  for (let j = 0; j < widest; j++) {
+    if (raw[j]) continue;
+    let withValue = 0;
+    let seenRows = 0;
+    for (let i = headerIdx + 1; i < Math.min(matrix.length, headerIdx + 201); i++) {
+      if (!filled(matrix[i])) continue;
+      seenRows++;
+      if ((matrix[i]?.[j] ?? "").trim() !== "") withValue++;
+    }
+    // A stray value or two to the side of the table is not a column.
+    if (withValue >= 3 && withValue >= seenRows * 0.3) {
+      raw[j] = `Column ${columnLetter(j)}`;
+      lettersGiven.push(columnLetter(j));
+    }
+  }
+  for (let j = 0; j < raw.length; j++) raw[j] ??= "";
+  if (lettersGiven.length && !lettered) notes.push(`${plural(lettersGiven.length, "column")} with no name in the row of column names ${lettersGiven.length === 1 ? "holds" : "hold"} values: ${lettersGiven.length === 1 ? "it is" : "they are"} called "Column ${lettersGiven.slice(0, 5).join('", "Column ')}" here.`);
   // De-duplicate repeated headers ("Tags", "Tags (2)") so no data is lost.
   const seen = new Map<string, number>();
   const repeated = new Set<string>();
@@ -163,6 +258,8 @@ function rowsFromMatrix(matrix: string[][], opts: MatrixOptions = {}): { headers
     return own;
   };
   let repeatedHeaders = 0;
+  // Where each row is in the file, kept only once that stops being "position + 2" (rows above the table, blank rows).
+  let fileRows: number[] | undefined;
   let overflow = 0;
   let hiddenRows = 0;
   const unnamed = new Set<number>();
@@ -181,6 +278,8 @@ function rowsFromMatrix(matrix: string[][], opts: MatrixOptions = {}): { headers
     for (let j = 0; j < width; j++) if (!headers[j] && (r[j] ?? "").trim() !== "") unnamed.add(j);
     if (opts.hidden?.has(i)) hiddenRows++;
     rowNumber = i + 1;
+    if (rowNumber !== rows.length + 2 && !fileRows) fileRows = rows.map((_, k) => k + 2);
+    fileRows?.push(rowNumber);
     rows.push(make(r, share));
   }
   if (repeatedHeaders) notes.push(`The row of column names appears ${plural(repeatedHeaders, "more time")} further down the sheet. ${repeatedHeaders === 1 ? "That row was" : "Those rows were"} skipped, not imported as data.`);
@@ -191,7 +290,29 @@ function rowsFromMatrix(matrix: string[][], opts: MatrixOptions = {}): { headers
   if (found.invisible) notes.push(`${plural(found.invisible, "cell")} ${found.invisible === 1 ? "contains" : "contain"} an invisible character, such as a zero-width space (first: ${found.invisibleAt}). In ID, handle, SKU and barcode columns it was removed; elsewhere it is imported as it is.`);
   if (found.bidi) notes.push(`${plural(found.bidi, "cell")} ${found.bidi === 1 ? "contains" : "contain"} a hidden character that reverses the direction of text (first: ${found.bidiAt}). It can make text read differently from what is stored and is rarely meant in shop data. Check ${found.bidi === 1 ? "that cell" : "those cells"} before importing.`);
   if (found.formula) notes.push(`${plural(found.formula, "cell")} ${found.formula === 1 ? "starts" : "start"} like a spreadsheet formula (first: ${found.formulaAt}). ${found.formula === 1 ? "It is" : "They are"} imported as plain text, never run. Check that this text is meant to be there.`);
-  return { headers: headers.filter(Boolean), rows, notes };
+  const out = { headers: headers.filter(Boolean), rows, notes };
+  TOPS.set(rows, { headerRow: lettered ? 0 : headerIdx + 1, top, rowNumbers: lettered ? fileRows?.map((n) => n - 1) : fileRows });
+  return out;
+}
+
+/** How many filled cells the table's rows usually have: towards the upper end over its first rows, as the rows above a table are the narrow ones. */
+function usualWidth(matrix: string[][], from: number, filled: (r: string[] | undefined) => number): number {
+  const counts: number[] = [];
+  for (let i = from; i < Math.min(matrix.length, from + 300); i++) {
+    const n = filled(matrix[i]);
+    if (n > 0) counts.push(n);
+  }
+  counts.sort((a, b) => a - b);
+  return counts[Math.floor(counts.length * 0.75)] ?? 0;
+}
+
+/** A cell that could be a column's name: words, not a number, a price or a date. */
+function looksLikeName(c: string): boolean {
+  const v = c.trim();
+  if (!v || v.length > 60) return false;
+  if (/^[-+]?[£$€]?\s*[\d.,\s]+%?$/.test(v)) return false;
+  if (/^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}/.test(v)) return false;
+  return true;
 }
 
 function columnLetter(index: number): string {
@@ -855,7 +976,19 @@ const SAVE_AS: Record<string, string> = {
  * after the file (so "Products.csv" is recognised as products); ZIP archives
  * may hold several CSV/XLSX files, each read on its own.
  */
-export async function readWorkbook(filePath: string, originalName = path.basename(filePath)): Promise<Sheet[]> {
+export async function readWorkbook(filePath: string, originalName = path.basename(filePath), opts: ReadOptions = {}): Promise<Sheet[]> {
+  const sheets = await READING.run({ ...opts, sheets: 0 }, () => readWorkbookFiles(filePath, originalName));
+  for (const sheet of sheets) {
+    const t = TOPS.get(sheet.rows);
+    if (!t) continue;
+    sheet.headerRow = t.headerRow;
+    sheet.top = t.top;
+    if (t.rowNumbers && !sheet.rowNumbers) sheet.rowNumbers = t.rowNumbers;
+  }
+  return sheets;
+}
+
+async function readWorkbookFiles(filePath: string, originalName: string): Promise<Sheet[]> {
   const ext = path.extname(originalName).toLowerCase();
   const baseName = path.basename(originalName, ext);
   const what = `"${path.basename(originalName)}"`;

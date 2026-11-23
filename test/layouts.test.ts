@@ -22,7 +22,13 @@ describe("column matching", () => {
   it("guesses our column from everyday names", () => {
     const p = getEntity("products")!;
     expect(suggestColumn(p, "Item Code")).toBe("Variant SKU");
-    expect(suggestColumn(p, "product_name")).toBe("Title");
+    // A supplier's name for a product is never offered as the shop's title.
+    expect(suggestColumn(p, "product_name")).toBeNull();
+    expect(suggestColumn(p, "Description")).toBeNull();
+    expect(suggestColumn(p, "2026 HD Trade Price")).toBe("Variant Cost");
+    expect(suggestColumn(p, "Quantity in Stock", { locations: ["Norfolk Leisure"] })).toBe("Inventory Available: Norfolk Leisure");
+    expect(suggestColumn(p, "Quantity in Stock", { locations: ["Shop", "Norfolk Leisure"], fileName: "norfolk-leisure-stock.xlsx" })).toBe("Inventory Available: Norfolk Leisure");
+    expect(suggestColumn(p, "Quantity in Stock", { locations: ["Shop", "Warehouse"] })).toBeNull();
     expect(suggestColumn(p, "RRP")).toBe("Variant Price");
     expect(suggestColumn(p, "EAN")).toBe("Variant Barcode");
     expect(suggestColumn(p, "Brand")).toBe("Vendor");
@@ -54,9 +60,11 @@ describe("column matching", () => {
         { "Item Code": "AC-200", "Product Name": "Willow Hurdle", RRP: "39.99", "Trade Price": "", "Pack Size": "6", EAN: "" },
       ],
     };
-    // Without the layout the sheet is not read as products.
+    // Without the layout the sheet is taken for products, but none of its columns is read.
     const before = await runImport({ ctx: { gql: store.gql, options: { dryRun: true, defaultCommand: "UPDATE" } as any, log: () => {}, cache: new Map() } as any, sheets: [JSON.parse(JSON.stringify(sheet))], entities: ENTITIES, log: () => {} });
-    expect(before[0].entity).not.toBe("products");
+    expect(before[0].entity).toBe("products");
+    expect(before[0]).toMatchObject({ ok: 0 });
+    expect((before[0].warnings ?? []).join()).toMatch(/is not a Products column and is ignored/);
 
     const note = applyLayout(sheet, supplier);
     expect(note).toMatch(/Read with your saved column matching "Acme price list": "Item Code" → Variant SKU, "Product Name" → Title, "RRP" → Variant Price/);

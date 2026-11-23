@@ -28,7 +28,13 @@ export function detectEntity(sheet: Pick<Sheet, "name"> & { headers?: string[] }
   const hasKey = (e: Entity | null | undefined) => !!e && (!e.import || e.import.keyColumns.some((k) => (sheet.headers ?? []).includes(k)));
   const scored = scoreByHeaders(sheet.headers ?? [], entities);
   const byHeaders = { confident: hasKey(scored.confident) ? scored.confident : null, guess: hasKey(scored.guess) ? scored.guess : null };
-  if (byHeaders.confident) return byHeaders.confident;
+  if (byHeaders.confident && !(byHeaders.confident.key === "discounts" && looksLikePriceList(sheet.headers ?? []))) return byHeaders.confident;
+  // A supplier's price or stock list (a code or barcode beside a price, a description or stock) is products,
+  // whatever one of its columns happens to be called ("Code" is also a discount's column).
+  if (looksLikePriceList(sheet.headers ?? [])) {
+    const products = entities.find((e) => e.key === "products");
+    if (products) return products;
+  }
   let best: { e: Entity; len: number } | null = null;
   for (const e of entities) {
     for (const n of namesOf(e)) {
@@ -36,6 +42,16 @@ export function detectEntity(sheet: Pick<Sheet, "name"> & { headers?: string[] }
     }
   }
   return best?.e ?? byHeaders.guess;
+}
+
+/** True for the columns of a supplier's list: something that names the product, and something about it. */
+export function looksLikePriceList(headers: string[]): boolean {
+  const h = headers.map((x) => x.toLowerCase().replace(/[\s_]+/g, " ").replace(/[^a-z0-9 ]/g, "").trim());
+  // A discount sheet says so in columns no price list has.
+  if (h.some((x) => /^(value type|method|starts at|ends at|usage limit|once per customer|combines with|applies to|minimum requirement|additional code)$/.test(x))) return false;
+  const names = h.some((x) => /^(code|sku|barcode|ean|ean13|gtin|upc|item no|item number|item code|product code|stock code|part no|part number|model|mpn)$/.test(x) || /\b(sku|barcode|ean|product code|item code|stock code)\b/.test(x));
+  const about = h.some((x) => /\b(price|rrp|cost|trade|description|product name|qty|quantity|stock|availability|pack size|carton)\b/.test(x));
+  return names && about;
 }
 
 /** Columns too common to tell data types apart. */
@@ -309,6 +325,9 @@ const COLUMN_ALIASES: Record<string, Record<string, string>> = {
     "variant grams": "Variant Weight",
     "seo title": "SEO Title",
     "seo description": "SEO Description",
+    // The plain names nearly every supplier and system uses for what identifies a product.
+    sku: "Variant SKU",
+    barcode: "Variant Barcode",
   },
   customers: {
     "customer id": "ID",

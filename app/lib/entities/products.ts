@@ -2345,8 +2345,68 @@ const VARIANTS_BY_SKU = `#graphql
   }
 `;
 
+const VARIANTS_BY_BARCODE = `#graphql
+  query ImportVariantsByBarcode($query: String!, $after: String) {
+    productVariants(first: 250, query: $query, after: $after) {
+      nodes { id barcode }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+/** Marks a row whose barcode no variant in the shop has. */
+const NO_SUCH_BARCODE = "0";
+
+/**
+ * Rows that name their product only by barcode (a supplier's list without the
+ * shop's SKUs) are given the Variant ID of the variant with that barcode,
+ * looked up 40 barcodes at a time. Returns how many rows were matched, and
+ * how many barcodes the shop doesn't have.
+ */
+export async function resolveBarcodes(gql: Gql, sheet: { headers: string[]; rows: Row[] }): Promise<{ matched: number; missing: number; twice: number } | null> {
+  if (!sheet.headers.includes("Variant Barcode")) return null;
+  const keys = ["ID", "Handle", "Variant ID", "Variant SKU"];
+  const needs = sheet.rows.filter((r) => (r["Variant Barcode"] ?? "").trim() && !keys.some((k) => (r[k] ?? "").trim()));
+  if (!needs.length) return null;
+  const clean = (v: string) => v.trim().replace(/^'/, "");
+  const wanted = [...new Set(needs.map((r) => clean(r["Variant Barcode"])))].filter((b) => /^[\w.\- ]{3,40}$/.test(b));
+  const found = new Map<string, string[]>();
+  for (let i = 0; i < wanted.length; i += 40) {
+    const query = wanted.slice(i, i + 40).map((b) => `barcode:"${b}"`).join(" OR ");
+    let after: string | null = null;
+    do {
+      const d: any = await gql(VARIANTS_BY_BARCODE, after ? { query, after } : { query });
+      for (const v of d.productVariants.nodes) {
+        if (!v.barcode) continue;
+        const list = found.get(v.barcode.trim()) ?? [];
+        list.push(gidToId(v.id));
+        found.set(v.barcode.trim(), list);
+      }
+      after = d.productVariants.pageInfo?.hasNextPage ? d.productVariants.pageInfo.endCursor : null;
+    } while (after);
+  }
+  if (!sheet.headers.includes("Variant ID")) sheet.headers.push("Variant ID");
+  let matched = 0;
+  let missing = 0;
+  let twice = 0;
+  for (const r of needs) {
+    const ids = found.get(clean(r["Variant Barcode"])) ?? [];
+    if (ids.length === 1) {
+      r["Variant ID"] = ids[0];
+      matched++;
+    } else {
+      // No variant, or several with one barcode: the row must not continue the row above it.
+      r["Variant ID"] = NO_SUCH_BARCODE;
+      if (ids.length > 1) twice++;
+      else missing++;
+    }
+  }
+  return { matched, missing, twice };
+}
+
 /** Product that owns a variant, looked up by Variant ID, else by exact SKU. */
 async function productIdForVariant(gql: Gql, variantId: string | undefined, sku: string | undefined): Promise<string | null> {
+  if (variantId === NO_SUCH_BARCODE) return null;
   if (variantId) {
     const v = (await gql(VARIANT_PRODUCT, { id: toGid("ProductVariant", variantId) })).productVariant;
     return v?.product?.id ?? null;
@@ -2388,7 +2448,7 @@ export async function importProduct(
       return {
         status: "Failed",
         command,
-        message: `No variant found with ${cell(top, "Variant ID") ? `Variant ID ${cell(top, "Variant ID")}` : `Variant SKU "${cell(top, "Variant SKU")}"`}`,
+        message: cell(top, "Variant ID") === NO_SUCH_BARCODE && cell(top, "Variant Barcode") ? `No variant found with the barcode "${cell(top, "Variant Barcode")}" (or several variants share it)` : `No variant found with ${cell(top, "Variant ID") ? `Variant ID ${cell(top, "Variant ID")}` : `Variant SKU "${cell(top, "Variant SKU")}"`}`,
       };
     }
   }

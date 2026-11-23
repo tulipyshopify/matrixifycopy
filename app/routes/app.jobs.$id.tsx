@@ -340,7 +340,7 @@ export default function JobDetail() {
         </s-banner>
       ) : null}
 
-      {dryRun && job.status === "finished" && links.input && (job.stats.some((x: any) => x?.entity === null && x?.skipped) || job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => /not .* columns? and (is|are) ignored/.test(w)))) ? (
+      {dryRun && job.status === "finished" && links.input && (job.stats.some((x: any) => x?.entity === null && x?.skipped) || job.stats.some((x: any) => (x?.warnings ?? []).some((w: string) => /not .* columns? and (is|are) ignored|use "Match columns"/.test(w)))) ? (
         <s-banner tone="warning" heading={job.stats.some((x: any) => x?.entity === null && x?.skipped) ? "Bulkport could not tell what this file holds" : "Some columns of this file were not recognised"}>
           <s-stack direction="block" gap="small">
             <s-text>If the file comes from a supplier or another system, its columns have their own names. Say once which column is which, and files like it are read correctly from then on.</s-text>

@@ -4,10 +4,11 @@ import v8 from "node:v8";
 import type { BulkRunner, ExportOptions, Gql, ImportOptions, Logger } from "../core/types";
 import { runExport, type ExportSummary } from "../core/exporter";
 import { runImport, type ImportSummary, type SheetEdits } from "../core/importer";
-import { createWorkbookOut, readWorkbook, readZipEntry, readZipEntryHead, unpackedSizes, zipEntries, type OutputFormat, type Sheet } from "../core/sheets";
+import { createWorkbookOut, readWorkbook, readZipEntry, readZipEntryHead, unpackedSizes, zipEntries, type OutputFormat, type ReadOptions, type Sheet } from "../core/sheets";
 import { IMAGE_FILE, MAX_IMAGE_BYTES, MIME, imageInfo, isLocalRef, judgeImage, localName, parkLocalImages, sendLocalImages, stripLocation, unparkRow, type LocalImages } from "../core/images";
 import { ImportError } from "../core/types";
 import { ENTITIES, getEntity } from "../entities";
+import { resolveBarcodes } from "../entities/products";
 import { applyLayout, matchLayout, type ColumnLayout } from "../core/layouts";
 import { backupDir, jobDir, tmpDir } from "./storage.server";
 import { generateChangeFile, type GenerateSpec } from "../ai/generate";
@@ -50,17 +51,45 @@ export async function readEdits(dir: string): Promise<SheetEdits> {
  * Reads an import's file into the sheets the import works on: the whole file,
  * or for a restore only the chosen items and fields.
  */
-export async function readImportSheets(job: { inputFile: string; inputName: string | null }, config: ImportConfig, log: (m: string) => void = () => {}, layouts: ColumnLayout[] = []): Promise<Sheet[]> {
+/** Key columns a saved matching may rest on: the data type's own, and for products a barcode (looked up in the shop). */
+export function layoutKeys(entityKey: string): string[] {
+  const keys = getEntity(entityKey)?.import?.keyColumns ?? [];
+  return entityKey === "products" ? [...keys, "Variant Barcode"] : keys;
+}
+
+/**
+ * Which row holds the column names, according to the saved matchings: one
+ * saved with a row of its own applies when that row of this file fits it.
+ */
+export function headerRowFromLayouts(layouts: ColumnLayout[]): ReadOptions["headerRow"] {
+  const own = layouts.filter((l) => l.headerRow !== undefined);
+  if (!own.length) return undefined;
+  return (top) => {
+    for (const l of own) {
+      if (l.headerRow === 0) {
+        const width = Math.max(0, ...top.map((r) => r.length));
+        const letters = Array.from({ length: width }, (_, j) => `Column ${String.fromCharCode(65 + (j % 26))}`).slice(0, 26);
+        if (matchLayout(letters, [l])) return 0;
+        continue;
+      }
+      const row = top[l.headerRow! - 1];
+      if (row && matchLayout(row.map((c) => c.trim()).filter(Boolean), [l])) return l.headerRow;
+    }
+    return undefined;
+  };
+}
+
+export async function readImportSheets(job: { inputFile: string; inputName: string | null }, config: ImportConfig, log: (m: string) => void = () => {}, layouts: ColumnLayout[] = [], read?: ReadOptions): Promise<Sheet[]> {
   log(`Reading ${job.inputName ?? path.basename(job.inputFile)}`);
   await assertFitsInMemory(job.inputFile, job.inputName ?? job.inputFile);
-  const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined);
+  const sheets = await readWorkbook(job.inputFile, job.inputName ?? undefined, read ?? { headerRow: headerRowFromLayouts(layouts) });
   log(`Found ${sheets.length} sheet(s): ${sheets.map((s) => `${s.name} (${s.rows.length} rows)`).join(", ")}`);
   // Files in someone else's layout are read with the column matching saved for them.
   if (layouts.length) {
     for (const sheet of sheets) {
       const layout = matchLayout(sheet.headers, layouts);
       if (!layout) continue;
-      const note = applyLayout(sheet, layout);
+      const note = applyLayout(sheet, layout, layoutKeys(layout.entity));
       (sheet.notes ??= []).push(note);
       log(`Sheet "${sheet.label ?? sheet.name}": ${note}`);
     }
@@ -469,7 +498,15 @@ export async function executeJob(
     const importGql: Gql = ((query: string, variables?: Record<string, unknown>) =>
       images.refs.size && variables && /^\s*(?:#graphql\s*)?mutation\b/.test(query) ? sendLocalImages(variables, sendImage).then((v) => deps.gql(query, v)) : deps.gql(query, variables)) as Gql;
     const imageNotes: string[] = [];
-    const prepareSheet = async (sheet: Sheet) => {
+    const prepareSheet = async (sheet: Sheet, entity?: { key: string }) => {
+      // A supplier's list that names products only by barcode: find which variant each barcode is.
+      if (entity?.key === "products") {
+        const b = await resolveBarcodes(deps.gql, sheet).catch(() => null);
+        if (b) {
+          const n = (x: number) => x.toLocaleString("en-GB");
+          (sheet.notes ??= []).push(`Rows without a SKU were matched to the shop by barcode: ${n(b.matched)} found${b.missing ? `, ${n(b.missing)} not in the shop` : ""}${b.twice ? `, ${n(b.twice)} with a barcode that several variants share (not imported: add the SKU)` : ""}.`);
+        }
+      }
       const before = images.refs.size;
       if (!parkLocalImages(sheet, uploaded, images)) return;
       const fresh = [...images.refs.keys()].slice(before);

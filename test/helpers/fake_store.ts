@@ -129,6 +129,10 @@ export function fakeStore(products: FakeProduct[], locationNames = ["Warehouse"]
       const p = products.find((x) => x.variants.some((y) => y.id === v.id));
       return { productVariant: p ? { id: v.id, product: { id: p.id } } : null };
     },
+    ImportVariantsByBarcode: (v) => {
+      const wanted = new Set([...String(v.query).matchAll(/barcode:"([^"]*)"/g)].map((m) => m[1]));
+      return { productVariants: { nodes: products.flatMap((p) => p.variants.filter((x) => x.barcode && wanted.has(x.barcode)).map((x) => ({ id: x.id, barcode: x.barcode }))), pageInfo: { hasNextPage: false } } };
+    },
     ImportVariantsBySku: (v) => {
       const sku = /sku:"(.*)"$/.exec(v.query)?.[1];
       return { productVariants: { nodes: products.flatMap((p) => p.variants.filter((x) => x.sku === sku).map((x) => ({ id: x.id, sku: x.sku, product: { id: p.id, handle: p.handle } }))), pageInfo: { hasNextPage: false } } };

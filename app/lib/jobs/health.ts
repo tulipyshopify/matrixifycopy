@@ -41,6 +41,9 @@ export function countProblems(stats: StatLike[]): { failed: number; unimported: 
   return { failed, unimported, sheets };
 }
 
+/** Notes that say how the file was read, not that something is wrong: they don't make a job "with warnings". */
+export const INFORMATION = /^(Blank cells in this sheet leave their fields as they are|Column names (from Shopify's own export )?were recognised|Checked which products exist|\d[\d,]* rows? (is|are) for (something|things) not in your shop)/;
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
 
 export function jobHealth(job: { type: string; status: string; error?: string | null; stats?: string | StatLike[] | null; dryRun?: boolean }): JobHealth {
@@ -65,7 +68,7 @@ export function jobHealth(job: { type: string; status: string; error?: string | 
   const problems = failed + unimported;
   if (!problems) {
     // Nothing failed, but something in the file was left out or not applied: not a plain green.
-    const notes = (Array.isArray(stats) ? stats : []).flatMap((s) => ((s as { warnings?: string[] }).warnings ?? []).filter((w) => !w.startsWith("Not imported: ")));
+    const notes = (Array.isArray(stats) ? stats : []).flatMap((s) => ((s as { warnings?: string[] }).warnings ?? []).filter((w) => !w.startsWith("Not imported: ") && !INFORMATION.test(w)));
     // A file with column names and nothing under them: say so, rather than "ready".
     const rows = (Array.isArray(stats) ? stats : []).reduce((n, s) => n + (Number((s as { items?: number }).items) || 0) + (Number((s as { skipped?: number }).skipped) || 0), 0);
     if (!rows && Array.isArray(stats) && stats.length && stats.every((s) => typeof (s as { items?: unknown }).items === "number")) return { level: "warning", label: "Nothing to import", problems: 0, summary: "The file has no rows under its column names, so there is nothing to import." };

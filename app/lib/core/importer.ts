@@ -11,6 +11,9 @@ export const RESULT_COLUMN = "Import Result";
 export const COMMENT_COLUMN = "Import Comment";
 
 /** Thrown by the dry-run API wrapper when an item reaches its first write. */
+/** A row that failed only because the shop has no such item. */
+const NOT_IN_SHOP = /^(Dry run: )?(No variant found|Product not found|Customer not found|\w[\w ]* not found)\b/;
+
 class DryRunStop extends Error {
   constructor(
     public operation: string,
@@ -420,7 +423,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     log(`Sheet "${sheet.name}": importing ${items.length} ${entity.sheet.toLowerCase()} (${sheet.rows.length} rows)`);
 
     // Columns the data type doesn't have are ignored: say so, with the likely intended name.
-    if (renamed.length) sheetWarnings.push(`Column names from Shopify's own export were recognised: ${renamed.join("; ")}.`);
+    if (renamed.length) sheetWarnings.push(`Column names were recognised: ${renamed.join("; ")}.`);
     const setAside = new Set(sheet.ignoredColumns ?? []);
     const unknown = unknownColumns(entity, sheet.headers).filter((u) => !setAside.has(u.header));
     // Near-misses and known Shopify columns are worth a line each; a long tail of unrelated columns is one line.
@@ -435,6 +438,10 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
       for (const u of rest) sheetWarnings.push(`Column "${shortName(u.header)}" is not a ${entity.sheet} column and is ignored.`);
     } else if (rest.length) {
       sheetWarnings.push(`${rest.length.toLocaleString("en-GB")} columns are not ${entity.sheet} columns and are ignored: ${rest.slice(0, 6).map((u) => `"${shortName(u.header)}"`).join(", ")} … "${shortName(rest[rest.length - 1].header)}".`);
+    }
+    // Nothing says which item each row is: almost always a file in someone else's layout.
+    if (!sheet.entity && !entity.import.keyColumns.some((k) => sheet.headers.includes(k))) {
+      sheetWarnings.unshift(`No column of this sheet says which ${entity.sheet.toLowerCase().replace(/s$/, "")} each row is (${entity.import.keyColumns.join(", ")}), so its rows can't be matched to the shop. If the file comes from a supplier or another system, use "Match columns" on this preview's page to say once which column is which.`);
     }
     for (const w of sheetWarnings) log(`Sheet "${sheet.name}": ${w}`);
     // Importers add to these as they go (each message once).
@@ -458,6 +465,7 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
 
     const results: Array<{ item: ImportItem; result: ItemResult }> = [];
     const previews = new Map<ImportItem, Pick<PreviewItem, "action" | "changes">>();
+    let notInShop = 0;
     const seen: Record<string, Record<string, string>> = {};
     const risk: ImportRisk = { creates: 0, updates: 0, deletes: 0, unchanged: 0, clearing: 0, warned: 0 };
     let cancelled = false;
@@ -620,6 +628,12 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
           };
         }
       }
+      // A supplier's list holds much the shop doesn't sell: those rows are passed over, not failures.
+      if (sheet.skipMissing && result.status === "Failed" && NOT_IN_SHOP.test(result.message ?? "")) {
+        result = { status: "Skipped", command, message: "Not in your shop: skipped" };
+        previews.delete(item);
+        notInShop++;
+      }
       // Keep what the preview needs; drop the rest so a large file doesn't pile up in memory.
       if (!ctx.options.dryRun) {
         result.preview = undefined;
@@ -664,6 +678,11 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
     });
 
     log(`Sheet "${sheet.name}": ${summary.ok} OK, ${summary.failed} failed, ${summary.skipped} skipped`);
+    if (notInShop) {
+      const line = `${notInShop.toLocaleString("en-GB")} ${notInShop === 1 ? "row is for something" : "rows are for things"} not in your shop: skipped, as this file's column matching says.`;
+      log(`Sheet "${sheet.name}": ${line}`);
+      sheetWarnings.push(line);
+    }
     if (sheetWarnings.length) summary.warnings = sheetWarnings;
     if (!undo.length && before.length && summary.ok > 0) {
       // An item this import deleted is put back by creating it again from its recorded copy (it gets a new ID).

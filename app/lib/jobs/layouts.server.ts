@@ -21,7 +21,7 @@ async function store(shop: string, layouts: ColumnLayout[]) {
 }
 
 /** Saves a column matching. One with the same name is replaced. */
-export async function saveLayout(shop: string, input: { name: string; entity: string; map: Record<string, string>; confirmedOdd?: boolean }): Promise<ColumnLayout> {
+export async function saveLayout(shop: string, input: { name: string; entity: string; map: Record<string, string>; confirmedOdd?: boolean; headerRow?: number; skipUnknown?: boolean; inStockQty?: number | null }): Promise<ColumnLayout> {
   const entity = getEntity(input.entity);
   if (!entity?.import) throw new Error("Choose what kind of data this sheet holds.");
   const name = String(input.name ?? "").trim().slice(0, 80);
@@ -40,12 +40,18 @@ export async function saveLayout(shop: string, input: { name: string; entity: st
   if (!used.size) throw new Error("Match at least one column.");
   const odd = oddMatches(map);
   if (odd.length && !input.confirmedOdd) throw new Error(`${odd.join(". ")}. Change the match, or tick the box to say it is right.`);
-  if (!entity.import.keyColumns.some((k) => used.has(k))) {
-    throw new Error(`Match a column that says which ${entity.sheet.toLowerCase().replace(/s$/, "")} each row is: ${entity.import.keyColumns.join(", or ")}.`);
+  const keys = entity.key === "products" ? [...entity.import.keyColumns, "Variant Barcode"] : entity.import.keyColumns;
+  if (!keys.some((k) => used.has(k))) {
+    throw new Error(`Match a column that says which ${entity.sheet.toLowerCase().replace(/s$/, "")} each row is: ${keys.join(", or ")}.`);
   }
   const layouts = (await listLayouts(shop)).filter((l) => l.name.toLowerCase() !== name.toLowerCase());
   if (layouts.length >= MAX_LAYOUTS) throw new Error(`At most ${MAX_LAYOUTS} column matchings can be saved. Remove one in Settings first.`);
   const layout: ColumnLayout = { id: crypto.randomBytes(6).toString("hex"), name, entity: entity.key, map, savedAt: new Date().toISOString() };
+  const row = Number(input.headerRow);
+  if (input.headerRow !== undefined && Number.isInteger(row) && row >= 0 && row <= 200) layout.headerRow = row;
+  if (input.skipUnknown === false) layout.skipUnknown = false;
+  const qty = input.inStockQty === null || input.inStockQty === undefined || (input.inStockQty as unknown) === "" ? null : Number(input.inStockQty);
+  if (qty !== null && Number.isFinite(qty) && qty >= 0 && qty <= 100000) layout.inStockQty = Math.round(qty);
   await store(shop, [...layouts, layout]);
   return layout;
 }

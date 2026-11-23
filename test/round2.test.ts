@@ -222,7 +222,7 @@ describe("round 2: checks on every import", () => {
 
   it("R23: Shopify's own export column names are read as the columns they mean", async () => {
     const p = await preview(products(["Handle", "Body (HTML)", "Variant SKU", "Cost per item", "Variant Grams", "Product Category", "Variant Fulfillment Service"], ["potato-barrel", "<p>New text</p>", "PB001", "12.50", "2500", "Home & Garden", "manual"]));
-    expect(p.warnings).toMatch(/Column names from Shopify's own export were recognised: "Body \(HTML\)" is read as "Body HTML"; "Cost per item" is read as "Variant Cost"; "Variant Grams" is read as "Variant Weight" \(in grams\)/);
+    expect(p.warnings).toMatch(/Column names were recognised: "Body \(HTML\)" is read as "Body HTML"; "Cost per item" is read as "Variant Cost"; "Variant Grams" is read as "Variant Weight" \(in grams\)/);
     expect(p.warnings).not.toMatch(/"Body \(HTML\)" is not a Products column/);
     expect(p.warnings).toMatch(/Column "Product Category" is not a Products column and is ignored. Use "Category: ID"/);
     const changes = p.row(2).changes.join("\n");
