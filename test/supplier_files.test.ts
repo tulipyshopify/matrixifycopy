@@ -199,3 +199,31 @@ describe("B2: stock is read for many products in one request", () => {
     expect(stockRequests).toBeLessThanOrEqual(4);
   });
 });
+
+describe("report 23 Nov, part B", () => {
+  const products = getEntity("products")!;
+
+  it("B33: beside an RRP, a supplier's plain Price is the cost, and matching it to the selling price is questioned", async () => {
+    const { oddMatches } = await import("../app/lib/core/layouts");
+    const map = suggestAll(products, ["Code", "Description", "Price", "RRP"]);
+    expect(map).toEqual({ Code: "Variant SKU", Description: "", Price: "Variant Cost", RRP: "Variant Price" });
+    expect(oddMatches(map)).toEqual([]);
+    expect(oddMatches({ Code: "Variant SKU", Price: "Variant Price", RRP: "" }).join(" ")).toMatch(/has both "Price" and "RRP".*would become trade prices/);
+    // A shop's own file with only a Price is still its selling price.
+    expect(suggestAll(products, ["SKU", "Price"])).toEqual({ SKU: "Variant SKU", Price: "Variant Price" });
+  });
+
+  it("B12: a date column is not taken for stock", async () => {
+    const { looksLikeStock } = await import("../app/lib/core/layouts");
+    expect(looksLikeStock("Next Availability Date")).toBe(false);
+    expect(looksLikeStock("Quantity in Stock")).toBe(true);
+  });
+
+  it("B17: a heading row is passed over, and rows of a file with no product column stay separate", async () => {
+    const store = fakeStore([product("arbour", "Arbour", [variant("AR-1", "100.00")])]);
+    const [s] = await preview([{ name: "Products", headers: ["Variant SKU", "Variant Price", "Variant Barcode"], rows: [{ "Variant SKU": "ARBOURS", "Variant Price": "", "Variant Barcode": "" }, { "Variant SKU": "AR-1", "Variant Price": "110", "Variant Barcode": "" }] }], store.gql);
+    expect(s).toMatchObject({ ok: 1, failed: 0, skipped: 1 });
+    const [t] = await preview([{ name: "PRODUCT LIST", headers: ["Item", "Availability"], rows: [{ Item: "X1", Availability: "IN STOCK" }, { Item: "X2", Availability: "IN STOCK" }, { Item: "X3", Availability: "OUT" }] }], store.gql);
+    expect(t.items).toBe(3);
+  });
+});

@@ -177,6 +177,8 @@ export function groupRows(rows: Row[], keyColumns: string[]): ImportItem[] {
   const items: ImportItem[] = [];
   const byKey = new Map<string, ImportItem>();
   let current: ImportItem | null = null;
+  // No row names its item at all (a file in someone else's layout): each row is on its own, not one long item.
+  const keyed = rows.some((row) => keyColumns.some((col) => cell(row, col)));
   rows.forEach((row, i) => {
     let key = "";
     for (const col of keyColumns) {
@@ -187,7 +189,7 @@ export function groupRows(rows: Row[], keyColumns: string[]): ImportItem[] {
       }
     }
     if (!key) {
-      if (current) {
+      if (current && keyed) {
         current.rows.push(row);
         current.rowIndexes.push(i);
         return;
@@ -633,6 +635,11 @@ export async function runImport(args: RunImportArgs): Promise<ImportSummary[]> {
             errors: e instanceof ImportErrors ? e.errors : undefined,
           };
         }
+      }
+      // A heading inside the table ("ARBOURS" alone on its row) names no item: passed over, not a failure.
+      if (result.status === "Failed" && NOT_IN_SHOP.test(result.message ?? "") && sheet.headers.length >= 3 && item.rows.length === 1 && Object.entries(item.rows[0]).filter(([k, v]) => k !== "Command" && (v ?? "").trim() !== "").length === 1) {
+        result = { status: "Skipped", command, message: "A row with a single value (a heading): skipped" };
+        previews.delete(item);
       }
       // A supplier's list holds much the shop doesn't sell: those rows are passed over, not failures.
       if (sheet.skipMissing && result.status === "Failed" && NOT_IN_SHOP.test(result.message ?? "")) {

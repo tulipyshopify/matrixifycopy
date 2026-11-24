@@ -86,7 +86,7 @@ const LOOSE: Array<[RegExp, string]> = [
   [/\b(rrp|srp|msrp|retail price|selling price)\b/, "Variant Price"],
 ];
 
-const NOT_STOCK = /\b(pack|carton|case|box|min|minimum|order|moq|outer|inner|per|pallet|code|status date|due)\b/;
+const NOT_STOCK = /\b(pack|carton|case|box|min|minimum|order|moq|outer|inner|per|pallet|code|date|due|next|eta|expected|lead|weeks?|days?)\b/;
 
 /** Our column a file's column most likely means; null when there is no good guess. */
 export function suggestColumn(entity: Pick<Entity, "key" | "columns">, header: string, hints: SuggestHints = {}): string | null {
@@ -141,8 +141,21 @@ export function suggestAll(entity: Pick<Entity, "key" | "columns">, headers: str
       if (map[h]) taken.add(map[h]);
     }
   }
+  // A list with both a "Price" and an "RRP" is a supplier's: its Price is what the shop pays, its RRP what shoppers pay.
+  if (entity.key === "products") {
+    const rrp = headers.find((h) => RRP_LIKE.test(norm(h)));
+    const plain = headers.find((h) => PLAIN_PRICE.test(norm(h)) && !RRP_LIKE.test(norm(h)));
+    if (rrp && plain && entity.columns.includes("Variant Cost") && entity.columns.includes("Variant Price")) {
+      for (const h of headers) if (h !== plain && h !== rrp && (map[h] === "Variant Cost" || map[h] === "Variant Price")) map[h] = "";
+      map[plain] = "Variant Cost";
+      map[rrp] = "Variant Price";
+    }
+  }
   return map;
 }
+
+const RRP_LIKE = /\b(rrp|srp|msrp|retail|selling price|sell price)\b/;
+const PLAIN_PRICE = /^(\d{4} )?(unit |your |our |list |each )?price( each| gbp| ex vat| exc vat| excl vat| ex)?$/;
 
 /** Stock written in words: what number it means (null: leave the stock as it is). */
 export function stockFromText(value: string, inStockQty: number | null | undefined): { qty: string; read: "number" | "out" | "in" | "unknown" } {
@@ -261,6 +274,11 @@ export function oddMatches(map: Record<string, string>): string[] {
     const charges = /\b(rrp|retail|selling|sell|srp|msrp)\b/.test(h);
     if (pays && (to === "Variant Price" || to === "Variant Compare At Price")) out.push(`"${from}" looks like what you pay the supplier, and is matched to ${to} (what shoppers pay). Prices in the shop would become cost prices`);
     if (charges && to === "Variant Cost") out.push(`"${from}" looks like a selling price, and is matched to Variant Cost`);
+    // A plain "Price" in a file that also has an RRP: the Price is the supplier's, not the shop's.
+    if (PLAIN_PRICE.test(norm(from)) && to === "Variant Price") {
+      const rrp = Object.keys(map).find((h) => h !== from && RRP_LIKE.test(norm(h)));
+      if (rrp) out.push(`This file has both "${from}" and "${rrp}", so "${from}" is most likely what you pay the supplier, and it is matched to Variant Price (what shoppers pay). Prices in the shop would become trade prices`);
+    }
   }
   return out;
 }

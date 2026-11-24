@@ -45,7 +45,6 @@ const running = new Set<string>(); // job ids
 // never waits behind a long export. Previews change nothing, so they get
 // slots of their own: a quick preview doesn't queue behind a long import, or
 // behind another long preview. Keys are "<shop>:<kind>".
-const runningShops = new Map<string, number>();
 const PREVIEWS_PER_SHOP = 2;
 /** A file from this size on is a "large" job: a shop runs one of those at a time, so they don't slow each other to a crawl. */
 const LARGE_FILE_BYTES = Number(process.env.LARGE_FILE_MB ?? 3) * 1024 * 1024;
@@ -73,13 +72,28 @@ const isSmallExport = (job: { type: string; config?: string | null }) => {
 // Large previews have a lane of their own (one at a time); small ones keep their slots and are never stuck behind a large one.
 const slot = (job: { shop: string; type: string; config?: string | null; inputFile?: string | null }) =>
   `${job.shop}:${job.type === "import" && isDryRunConfig(job.config) ? (isLarge(job) ? "preview-large" : "preview") : isSmallExport(job) ? "export-small" : job.type}`;
-const slotFree = (key: string) => (runningShops.get(key) ?? 0) < (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1);
-const takeSlot = (key: string) => runningShops.set(key, (runningShops.get(key) ?? 0) + 1);
-const freeSlot = (key: string) => {
-  const n = (runningShops.get(key) ?? 1) - 1;
-  if (n > 0) runningShops.set(key, n);
-  else runningShops.delete(key);
+// Which lane each running job holds, by job: a lane is as full as the jobs that are really running in it.
+// (Counted this way a lane can't stay "taken" after its job has ended, whatever happened to the job's file meanwhile.)
+const heldSlots = new Map<string, string>();
+const slotFree = (key: string) => {
+  let n = 0;
+  for (const [id, k] of heldSlots) {
+    if (!running.has(id)) heldSlots.delete(id);
+    else if (k === key) n++;
+  }
+  return n < (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1);
 };
+const takeSlot = (id: string, key: string) => heldSlots.set(id, key);
+const freeSlot = (id: string) => heldSlots.delete(id);
+
+/** Why a queued job of this shop is not running yet, in words for its page; null when nothing holds it. */
+export function waitingReason(job: { id: string; shop: string; type: string; config?: string | null; inputFile?: string | null }): string | null {
+  const key = slot(job);
+  const ahead = [...heldSlots.entries()].filter(([id, k]) => running.has(id) && k === key).map(([id]) => id);
+  if (ahead.length >= (key.endsWith(":preview") ? PREVIEWS_PER_SHOP : 1)) return `behind:${ahead.join(",")}`;
+  if (running.size >= CONCURRENCY) return "busy";
+  return null;
+}
 
 async function claimNext() {
   const candidates = await prisma.job.findMany({
@@ -101,7 +115,7 @@ async function claimNext() {
 
 async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   running.add(job.id);
-  takeSlot(slot(job));
+  takeSlot(job.id, slot(job));
   const startedAt = Date.now();
   let timedOut = false;
   let copyError: string | null = null;
@@ -292,7 +306,7 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
   } finally {
     clearInterval(timer);
     running.delete(job.id);
-    freeSlot(slot(job));
+    freeSlot(job.id);
     // Unattended jobs that went wrong are also posted to the store's alert webhook, if it has one.
     try {
       const done = await prisma.job.findUnique({ where: { id: job.id }, select: { status: true, problems: true, error: true, stats: true, config: true } });
@@ -311,6 +325,17 @@ async function runOne(job: Awaited<ReturnType<typeof claimNext>> & {}) {
 async function fireSchedules() {
   const due = await prisma.schedule.findMany({ where: { enabled: true, nextRunAt: { lte: new Date() } } });
   for (const s of due) {
+    try {
+      await fireSchedule(s);
+    } catch (e) {
+      // One schedule that can't be started doesn't hold up the others.
+      console.error(`[worker] schedule ${s.id} could not be started`, e);
+    }
+  }
+}
+
+async function fireSchedule(s: Awaited<ReturnType<typeof prisma.schedule.findMany>>[number]) {
+  {
     // Skip a run if the previous one is still going.
     const prev = s.lastJobId ? await prisma.job.findUnique({ where: { id: s.lastJobId } }) : null;
     const busy = prev && (prev.status === "queued" || prev.status === "running");
@@ -318,7 +343,7 @@ async function fireSchedules() {
     const nextRunAt = nextRun(s, new Date(), s.nextRunAt);
     if (busy) {
       await prisma.schedule.update({ where: { id: s.id }, data: { nextRunAt } });
-      continue;
+      return;
     }
     const job = await prisma.job.create({
       data: { shop: s.shop, type: s.type, config: heldConfig(s.type, s.config), format: s.format, name: s.name, scheduleId: s.id, kind: s.kind },
@@ -368,14 +393,24 @@ export function startWorker() {
   if (started) return;
   started = true;
   let lastCleanup = 0;
+  let lastStallLog = 0;
   const tick = async () => {
     try {
       if (draining) return;
-      await fireSchedules();
+      // A schedule that can't be started must never keep the queue itself from moving.
+      await fireSchedules().catch((e) => console.error("[worker] schedules failed", e));
       while (running.size < CONCURRENCY) {
         const job = await claimNext();
         if (!job) break;
         void runOne(job);
+      }
+      // Something waiting for minutes while nothing runs is a fault here, not load: say so where it is watched.
+      if (running.size === 0 && Date.now() - lastStallLog > 5 * 60_000) {
+        const stuck = await prisma.job.findFirst({ where: { status: "queued", createdAt: { lt: new Date(Date.now() - 2 * 60_000) } }, select: { id: true, shop: true, type: true } });
+        if (stuck) {
+          lastStallLog = Date.now();
+          console.error(`[worker] STALLED: job ${stuck.id} (${stuck.type}, ${stuck.shop}) has waited over 2 minutes with nothing running`);
+        }
       }
       if (Date.now() - lastCleanup > 6 * 3600_000) {
         lastCleanup = Date.now();

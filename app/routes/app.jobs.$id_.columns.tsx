@@ -240,10 +240,10 @@ function MatchColumns() {
                     }}
                   />
                 ) : null}
-                {entity.key === "products" && locations.length > 1 && s.headers.some((h) => looksLikeStock(h) && !st.map[h]) ? (
+                {entity.key === "products" && locations.length > 1 && s.headers.some((h) => looksLikeStock(h) && !st.map[h] && s.samples[h]?.length) ? (
                   <s-banner tone="info" heading="Which location is this stock for?">
                     <s-text>
-                      {s.headers.filter((h) => looksLikeStock(h) && !st.map[h]).map((h) => `"${h}"`).join(", ")} looks like stock. Choose "Available stock at …" for the location it belongs to ({locations.slice(0, 6).join(", ")}
+                      {s.headers.filter((h) => looksLikeStock(h) && !st.map[h] && s.samples[h]?.length).map((h) => `"${h}"`).join(", ")} looks like stock. Choose "Available stock at …" for the location it belongs to ({locations.slice(0, 6).join(", ")}
                       {locations.length > 6 ? "…" : ""}), or leave it as "Not imported".
                     </s-text>
                   </s-banner>

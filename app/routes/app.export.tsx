@@ -10,9 +10,27 @@ import { fixExport } from "../lib/check/check.server";
 import { getTemplate } from "../lib/jobs/templates";
 import { ALL_RULES } from "../lib/check/rules";
 
+/** Whether the shop lets the app read payouts, asked once an hour: a data type that can only fail is not offered. */
+const payoutsAllowed = new Map<string, { at: number; ok: boolean }>();
+async function canReadPayouts(shop: string, admin: { graphql: (q: string) => Promise<Response> }): Promise<boolean> {
+  const known = payoutsAllowed.get(shop);
+  if (known && Date.now() - known.at < 3600_000) return known.ok;
+  let ok = true;
+  try {
+    const body: any = await (await admin.graphql(`#graphql\n      query ExportCanReadPayouts { shopifyPaymentsAccount { id } }`)).json();
+    ok = !(body?.errors ?? []).length;
+  } catch (e: any) {
+    // Refused outright (no read_shopify_payments): hidden. Anything else: shown, and the export says what happened.
+    ok = !/access denied|read_shopify_payments|ACCESS_DENIED/i.test(String(e?.message ?? "") + JSON.stringify(e?.body ?? e?.graphQLErrors ?? ""));
+  }
+  payoutsAllowed.set(shop, { at: Date.now(), ok });
+  return ok;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const auth = await authenticate.admin(request);
   const { session } = auth;
+  const offered = (await canReadPayouts(session.shop, auth.admin)) ? exportableEntities(session.scope) : exportableEntities(session.scope).filter((e) => e.key !== "payouts");
   const user = userOf(auth);
   const params = new URL(request.url).searchParams;
   const editId = params.get("schedule");
@@ -21,7 +39,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (editing) {
     const { config, ...schedule } = editing;
     return {
-      entities: exportableEntities(session.scope),
+      entities: offered,
       presets: await listPresets(session.shop, user),
       latest: { entities: config.entities ?? [], format: schedule.format },
       editing: schedule,
@@ -30,7 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     editing: null,
     scheduleFirst: params.get("scheduled") === "1",
-    entities: exportableEntities(session.scope),
+    entities: offered,
     presets: await listPresets(session.shop, user),
     // What the form starts from, by name, so "Preset" doesn't say "Latest export" for a template.
     startName: params.get("check")

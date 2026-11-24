@@ -40,7 +40,7 @@ describe("import analysis", () => {
 
   it("uses the default command for blank cells and warns about missing key columns", () => {
     const [s] = analyzeSheets([{ name: "Customers", headers: ["First Name"], rows: [{ "First Name": "A" }, { "First Name": "B" }] }], ENTITIES, "UPDATE");
-    expect(s.commands).toEqual({ UPDATE: 1 });
+    expect(s.commands).toEqual({ UPDATE: 2 });
     expect(s.warnings[0]).toMatch(/No ID/);
   });
 });

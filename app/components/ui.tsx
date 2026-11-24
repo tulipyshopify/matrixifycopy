@@ -92,7 +92,7 @@ export const EDIT_PAGES = [
 ];
 export const JOB_PAGES = [
   { href: "/app/jobs", label: "Jobs" },
-  { href: "/app/history", label: "Change history" },
+  { href: "/app/jobs/history", label: "Change history" },
 ];
 
 /** One of the home screen's ways in. */

@@ -286,7 +286,7 @@ function view(job: JobRow) {
     name: job.name || job.inputName || "",
     outcome: health.label,
     problems: health.problems,
-    summary: health.summary,
+    summary: job.status === "cancelled" ? `${health.summary} The rows counted as "skipped" were not processed.`.trim() : health.summary,
     error: job.error,
     progress: job.progress,
     total: job.total,

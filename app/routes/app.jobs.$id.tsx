@@ -4,6 +4,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { usePolling } from "../components/usePolling";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import prisma from "../db.server";
 import { applyDryRun, applyNeeds, markReviewed, cancelJob, downloadLinks, entityCatalog, getJob, readPartialPreview, readPreview, rerunJob, startUndo } from "../lib/jobs/jobs.server";
 import { editableRows, editedRowCount, fixPreviewRows } from "../lib/jobs/fix.server";
 import { createGql } from "../lib/core/gql";
@@ -16,6 +17,21 @@ import { jobHealth } from "../lib/jobs/health";
 import { ExportDetails } from "../components/ExportDetails";
 import { Icon } from "../components/ui";
 import { HealthBadge, StatusBadge, formatDate, isActive, jobSummary, jobTiming, progressText } from "../components/jobs";
+
+/** Why a queued job hasn't started, for its page. */
+async function describeWait(shop: string, job: { id: string; shop: string; type: string; config: string; inputFile: string | null; createdAt: Date }): Promise<string> {
+  const { waitingReason } = await import("../lib/jobs/worker.server");
+  const reason = waitingReason(job);
+  const minutes = Math.floor((Date.now() - new Date(job.createdAt).getTime()) / 60_000);
+  if (reason?.startsWith("behind:")) {
+    const ids = reason.slice(7).split(",");
+    const ahead = await prisma.job.findMany({ where: { shop, id: { in: ids } }, select: { name: true, inputName: true, type: true } });
+    const names = ahead.map((a) => `"${a.name || a.inputName || a.type}"`).join(" and ");
+    return `Waiting for ${names || "another job of this kind"} to finish: jobs of the same kind run one after another, so they don't slow each other down.`;
+  }
+  if (reason === "busy") return "Waiting for a free place: other shops' jobs are running. It starts by itself.";
+  return minutes >= 2 ? `Waiting for ${minutes} minutes with nothing ahead of it. That should not happen: press Stop and start it again, and tell support if it repeats.` : "Starting in a moment.";
+}
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -48,6 +64,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     dryRun,
     preview,
     firstLook,
+    waiting: job.status === "queued" ? await describeWait(session.shop, job) : null,
     editedRows,
     sameUpload,
     feed: await (async () => {
@@ -158,7 +175,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function JobDetail() {
-  const { job, links, entities, dryRun, preview, firstLook, editedRows, sameUpload, share, shareDays, feed, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
+  const { job, links, entities, dryRun, preview, firstLook, waiting, editedRows, sameUpload, share, shareDays, feed, canApply, needs, canUndo, undoDays, undoOf } = useLoaderData<typeof loader>();
   const stopped = job.stats.some((s: any) => s?.stopped);
   const undoRows = job.stats.reduce((n: number, s: any) => n + (Number(s?.undoRows) || 0), 0);
   const undoNotes: string[] = job.stats.flatMap((s: any) => s?.undoNotes ?? []);
@@ -262,7 +279,7 @@ export default function JobDetail() {
                     Results file
                   </s-button>
                 ) : null}
-                <s-button href={`/app/history?job=${job.id}`}>What changed</s-button>
+                <s-button href={`/app/jobs/history?job=${job.id}`}>What changed</s-button>
               </div>
             </div>
           );
@@ -468,6 +485,7 @@ export default function JobDetail() {
               </s-button>
             ) : null}
           </s-stack>
+          {waiting ? <s-text color="subdued">{waiting}</s-text> : null}
           {pct !== null && active ? (
             <s-box background="subdued" borderRadius="base" blockSize="8px">
               <div style={{ width: `${pct}%`, height: 8, borderRadius: 4, background: "var(--s-color-bg-fill-brand, #303030)" }} />
